@@ -11,7 +11,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from app.widgets import ParamForm, FieldRow, ResultsGrid, SectionHeader, Banner, make_spin, make_pct, make_combo
 from app.chart import ChartWidget
-from risk.portfolio import Portfolio, Position
+from domain.portfolio import Position
+from services.portfolio_service import PortfolioService
 
 
 class AddPositionDialog(QDialog):
@@ -69,7 +70,7 @@ class AddPositionDialog(QDialog):
 class PortfolioPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._portfolio = Portfolio("Main Portfolio")
+        self._portfolio = PortfolioService("Main Portfolio")
         self._build_ui()
 
     def _build_ui(self):
@@ -187,12 +188,12 @@ class PortfolioPanel(QWidget):
                     it.setTextAlignment(Qt.AlignRight|Qt.AlignVCenter)
                     self.pos_tbl.setItem(i, j, it)
 
-            # Greek composition chart
-            labels = ["Delta","Gamma\n×100","Vega","Theta\n×10","DV01\n×100"]
-            vals   = [agg["delta"], agg["gamma"]*100, agg["vega"],
-                      agg["theta"]*10, agg["dv01"]*100]
+            # Scenario bucket P&L chart
+            buckets = sc.get("bucket_pnl", {})
+            labels = ["Rates", "FX", "Equity", "Credit", "Volatility"]
+            vals = [buckets.get(label, 0.0) for label in labels]
             self.chart.plot_stress(labels, vals)
-            self.chart._finish(self.chart.ax, "Portfolio Greeks Composition")
+            self.chart._finish(self.chart.ax, "Portfolio Scenario P&L by Bucket")
 
         except Exception as e:
             self.banner.show_error(str(e))
