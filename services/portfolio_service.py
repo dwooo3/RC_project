@@ -5,6 +5,7 @@ from collections import defaultdict
 from domain.portfolio import Portfolio, Position
 from domain.risk_factors import RiskFactorExposure, RiskFactorBucket
 from services.market_data_service import MarketDataService
+from services.pricing_service import PricingService
 
 
 EXPOSURE_BUCKETS: tuple[RiskFactorBucket, ...] = (
@@ -23,6 +24,7 @@ class PortfolioService:
         self,
         portfolio: Portfolio | str | None = None,
         market_data: MarketDataService | None = None,
+        pricing: PricingService | None = None,
     ):
         if isinstance(portfolio, Portfolio):
             self.portfolio = portfolio
@@ -31,6 +33,7 @@ class PortfolioService:
         else:
             self.portfolio = Portfolio()
         self.market_data = market_data or MarketDataService()
+        self.pricing = pricing or PricingService(market_data=self.market_data)
 
     @property
     def positions(self) -> list[Position]:
@@ -94,30 +97,34 @@ class PortfolioService:
         inst = pos.instrument
 
         if inst in ("call", "put", "option"):
-            from models.black_scholes import bsm
-
-            g = bsm(p["S"], p["K"], p["T"], p["r"], p["sigma"], p.get("q", 0), p.get("opt", inst))
-            pos.price = g.price
-            pos.market_value = g.price * qt
-            pos.delta = g.delta * qt
-            pos.gamma = g.gamma * qt
-            pos.vega = g.vega * qt
-            pos.theta = g.theta * qt
-            pos.rho = g.rho * qt
+            res = self.pricing.price_vanilla_option(
+                p["S"], p["K"], p["T"], p["r"], p["sigma"], p.get("q", 0), p.get("opt", inst)
+            )
+            if res["errors"]:
+                raise ValueError("; ".join(res["errors"]))
+            raw = res["raw"] or {}
+            pos.price = res["value"]
+            pos.market_value = pos.price * qt
+            pos.delta = raw.get("delta", 0.0) * qt
+            pos.gamma = raw.get("gamma", 0.0) * qt
+            pos.vega = raw.get("vega", 0.0) * qt
+            pos.theta = raw.get("theta", 0.0) * qt
+            pos.rho = raw.get("rho", 0.0) * qt
             self._add_exposure(pos, "Equity", "spot", pos.delta, "Delta", 1.0)
             self._add_exposure(pos, "Equity", "spot_gamma", pos.gamma, "Gamma", 1.0)
             self._add_exposure(pos, "Volatility", "implied_vol", pos.vega, "Vega", 0.01)
             self._add_exposure(pos, "Rates", "risk_free_rate", pos.rho, "Rho", 0.01)
 
         elif inst == "bond":
-            from instruments.fixed_income import fixed_bond
-
             curve = p.get("curve") or self.market_data.flat_curve(p["r"])
-            res = fixed_bond(p["face"], p["coupon"], p["T"], p.get("freq", 2), curve)
-            pos.price = res["price"]
-            pos.market_value = res["price"] * qt / p["face"]
-            pos.dv01 = res["dv01"] * qt / p["face"]
-            pos.delta = res["mod_duration"] * pos.market_value / 100
+            res = self.pricing.price_bond(p["face"], p["coupon"], p["T"], p.get("freq", 2), curve=curve)
+            if res["errors"]:
+                raise ValueError("; ".join(res["errors"]))
+            raw = res["raw"] or {}
+            pos.price = res["value"]
+            pos.market_value = pos.price * qt / p["face"]
+            pos.dv01 = raw.get("dv01", 0.0) * qt / p["face"]
+            pos.delta = raw.get("mod_duration", 0.0) * pos.market_value / 100
             self._add_exposure(pos, "Rates", "yield_curve", pos.dv01, "DV01", 0.0001)
 
         elif inst == "cds":
@@ -136,13 +143,16 @@ class PortfolioService:
             self._add_exposure(pos, "Credit", "credit_spread", pos.cs01, "CS01", 0.0001)
 
         elif inst in ("irs", "swap"):
-            from instruments.fixed_income import irs
-
             curve = p.get("curve") or self.market_data.flat_curve(p["r"])
-            res = irs(p["notional"], p["fixed_rate"], p["T"], p.get("freq", 4), curve, p.get("pay_fixed", True))
-            pos.price = res["npv"]
-            pos.market_value = res["npv"] * qt
-            pos.dv01 = res["dv01"] * qt
+            res = self.pricing.price_irs(
+                p["notional"], p["fixed_rate"], p["T"], p.get("freq", 4), curve=curve, pay_fixed=p.get("pay_fixed", True)
+            )
+            if res["errors"]:
+                raise ValueError("; ".join(res["errors"]))
+            raw = res["raw"] or {}
+            pos.price = res["value"]
+            pos.market_value = pos.price * qt
+            pos.dv01 = raw.get("dv01", 0.0) * qt
             self._add_exposure(pos, "Rates", "swap_curve", pos.dv01, "DV01", 0.0001)
 
         elif inst == "equity":
@@ -153,11 +163,12 @@ class PortfolioService:
             self._add_exposure(pos, "Equity", "spot", pos.delta, "Delta", 1.0)
 
         elif inst == "fx_forward":
-            from instruments.fx import fx_forward
-
-            res = fx_forward(p["S"], p["r_d"], p["r_f"], p["T"])
-            pos.price = res["forward"]
-            pos.market_value = (res["forward"] - p.get("K", res["forward"])) * qt
+            res = self.pricing.price_fx_forward(p["S"], p["r_d"], p["r_f"], p["T"])
+            if res["errors"]:
+                raise ValueError("; ".join(res["errors"]))
+            raw = res["raw"] or {}
+            pos.price = raw.get("forward", res["value"])
+            pos.market_value = (pos.price - p.get("K", pos.price)) * qt
             pos.fx_delta = qt
             self._add_exposure(pos, "FX", p.get("ccy_pair", pos.ccy_pair or "fx_spot"), pos.fx_delta, "FX Delta", 1.0)
 

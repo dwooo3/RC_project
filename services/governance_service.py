@@ -36,3 +36,13 @@ class GovernanceService:
 
     def is_production_allowed(self, model_id: str) -> bool:
         return self.get_model(model_id).production_allowed
+
+    def warnings_for_model(self, model_id: str) -> list[str]:
+        """Return service-level warnings implied by model governance status."""
+        model = self.get_model(model_id)
+        warnings = list(model.limitations)
+        if not model.production_allowed:
+            warnings.append(f"Model {model_id} is not production allowed: {model.status}.")
+        elif model.status != "Validated":
+            warnings.append(f"Model {model_id} status is {model.status}.")
+        return warnings
