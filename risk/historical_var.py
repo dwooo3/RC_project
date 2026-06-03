@@ -12,6 +12,13 @@ Historical simulation VaR (Hull Ch. 22):
 import numpy as np
 from scipy.stats import norm, chi2
 
+from risk.var import (
+    _as_finite_1d,
+    _loss_var_es,
+    _validate_confidence,
+    _validate_horizon,
+)
+
 
 # ─────────────────────────────────────────────────────────
 # Basic historical simulation
@@ -23,15 +30,13 @@ def hs_var(pnl: np.ndarray, confidence: float = 0.95,
     Historical simulation VaR and CVaR.
     pnl: daily P&L series (negative = loss).
     """
-    pnl_scaled = pnl * np.sqrt(horizon)
-    losses     = -pnl_scaled
-    losses_s   = np.sort(losses)
-    n          = len(losses)
-    cutoff_idx = int(np.ceil(confidence * n)) - 1
-    var        = losses_s[cutoff_idx]
-    cvar       = losses_s[cutoff_idx:].mean()
+    confidence = _validate_confidence(confidence)
+    horizon = _validate_horizon(horizon)
+    pnl = _as_finite_1d(pnl, "pnl")
+    losses = -pnl * np.sqrt(horizon)
+    var, cvar = _loss_var_es(losses, confidence)
     return dict(VaR=var, CVaR=cvar, ES=cvar,
-                confidence=confidence, horizon=horizon, n_obs=n,
+                confidence=confidence, horizon=horizon, n_obs=len(pnl),
                 method="historical_simulation")
 
 
@@ -45,25 +50,19 @@ def hs_age_weighted(pnl: np.ndarray, confidence: float = 0.95,
     Age-weighted historical simulation.
     More recent observations get higher weight (decay^0 most recent, decay^T oldest).
     """
+    confidence = _validate_confidence(confidence)
+    horizon = _validate_horizon(horizon)
+    pnl = _as_finite_1d(pnl, "pnl")
+    if not 0.0 < decay < 1.0:
+        raise ValueError("decay must be between 0 and 1")
     n = len(pnl)
-    # weights: most recent obs = index n-1 → weight ∝ decay^0
+    # weights: most recent obs = index n-1 -> weight proportional to decay^0
     k = np.arange(n-1, -1, -1)  # k=0 is most recent
     w = decay**k * (1-decay) / (1 - decay**n)
     w = w[::-1]  # align with pnl order
 
     losses = -pnl * np.sqrt(horizon)
-    sorted_idx = np.argsort(losses)
-    sorted_losses = losses[sorted_idx]
-    sorted_w      = w[sorted_idx]
-
-    cum_w   = np.cumsum(sorted_w)
-    # VaR = loss at confidence quantile of the loss distribution
-    var_idx = min(np.searchsorted(cum_w, confidence), len(sorted_losses) - 1)
-    var     = sorted_losses[var_idx]
-    # ES = weighted average of losses in the tail >= VaR
-    tail_mask = sorted_losses >= var
-    tail_w    = sorted_w[tail_mask]
-    cvar      = (sorted_losses[tail_mask] * tail_w).sum() / max(tail_w.sum(), 1e-12)
+    var, cvar = _loss_var_es(losses, confidence, w)
 
     return dict(VaR=var, CVaR=cvar, ES=cvar,
                 confidence=confidence, horizon=horizon,
@@ -81,6 +80,9 @@ def filtered_hs_var(returns: np.ndarray, position: float,
     Hull-White (1998) filtered historical simulation.
     Scales each historical return by current_vol / historical_vol.
     """
+    confidence = _validate_confidence(confidence)
+    horizon = _validate_horizon(horizon)
+    returns = _as_finite_1d(returns, "returns")
     from models.garch import ewma_variance
     var_series   = ewma_variance(returns, ewma_lambda)
     current_var  = var_series[-1]
@@ -93,11 +95,7 @@ def filtered_hs_var(returns: np.ndarray, position: float,
     scaled_ret   = std_returns * current_vol * np.sqrt(horizon)
 
     losses = -scaled_ret * position
-    losses_s = np.sort(losses)
-    n = len(losses)
-    var_idx = int(np.ceil(confidence*n))-1
-    var  = losses_s[var_idx]
-    cvar = losses_s[var_idx:].mean()
+    var, cvar = _loss_var_es(losses, confidence)
 
     return dict(VaR=var, CVaR=cvar, ES=cvar,
                 current_vol_annual=current_vol*np.sqrt(252),
@@ -128,7 +126,7 @@ def portfolio_hs_var(returns_matrix: np.ndarray, positions: np.ndarray,
     for i in range(len(positions)):
         pos_up = positions.copy(); pos_up[i] *= (1+eps)
         pnl_up = (returns_matrix * market_values * pos_up).sum(axis=1)
-        var_up = -np.percentile(-pnl_up, confidence*100)
+        var_up = hs_var(pnl_up, confidence, horizon)["VaR"]
         marginal.append((var_up - res["VaR"]) / (positions[i]*eps + 1e-12))
 
     # Component VaR

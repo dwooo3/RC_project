@@ -67,6 +67,51 @@ Monte Carlo, and stress testing that bypasses portfolio and risk-factor contract
 | P2 | 9 | Simplifications that limit accuracy, aggregation, or governance |
 | P3 | 5 | Diagnostics, naming, and test coverage improvements |
 
+## Implementation Status Update
+
+Date: 2026-06-04
+
+Status after VaR/ES convention cleanup:
+
+### Fixed
+
+- RM-001, core engine path: Student-t parametric ES in `risk.var` now uses the
+  loss convention consistently and enforces `ES >= VaR`.
+- RM-002, core engine path: Historical, weighted historical, parametric, and
+  Monte Carlo VaR now report non-negative positive-loss VaR.
+- RM-003: Weighted historical VaR now applies the same horizon scaling as
+  unweighted historical VaR.
+- RM-008, core engine path: Historical quantile logic now uses one shared
+  positive-loss convention for return-based and P&L-based historical VaR.
+- RM-009, core engine path: Historical, weighted historical, parametric, and
+  Monte Carlo ES now use tail loss averaging / analytical loss-tail formulas and
+  enforce `ES >= VaR`.
+- RM-026, partial test gap: deterministic tests were added for known small-array
+  VaR, weighted VaR, ES >= VaR, horizon scaling, invalid confidence, and
+  empty/NaN/inf inputs.
+
+### Partially Fixed
+
+- RM-007: `risk.var` and `risk.historical_var` now share internal loss helpers,
+  but public contracts still differ: `risk.var` accepts returns, while
+  `risk.historical_var` accepts P&L.
+- RM-010: Historical/weighted/parametric/Monte Carlo core methods now apply
+  consistent horizon handling for current approximations, but full repricing MC
+  and UI-local methods still need service routing and validation.
+- RM-011: Parametric/MC standard deviation now uses sample standard deviation
+  where applicable, but estimator policy is still not surfaced as metadata.
+
+### Remaining
+
+- RM-004: `portfolio_hs_var` sign handling was corrected for perturbed VaR, but
+  component VaR methodology still needs a broader portfolio-risk redesign.
+- RM-005: Full-repricing Monte Carlo still replaces repricing failures with zero
+  P&L and remains a P0 issue.
+- UI-local VaR implementations in `app/panels/histvar_panel.py` remain duplicated
+  and are not covered by this cleanup.
+- `RiskService` wraps the corrected core methods, but canonical domain-level
+  risk result contracts are still future work.
+
 ## Detailed Findings
 
 ### RM-001 - Student-t parametric ES formula is incorrect

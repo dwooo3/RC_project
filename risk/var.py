@@ -18,6 +18,70 @@ from scipy.optimize import minimize
 # Base VaR functions
 # ─────────────────────────────────────────────────────────
 
+def _validate_confidence(confidence: float) -> float:
+    confidence = float(confidence)
+    if not 0.0 < confidence < 1.0:
+        raise ValueError("confidence must be between 0 and 1")
+    return confidence
+
+
+def _validate_horizon(horizon: int | float) -> float:
+    horizon = float(horizon)
+    if not np.isfinite(horizon) or horizon <= 0:
+        raise ValueError("horizon must be positive")
+    return horizon
+
+
+def _as_finite_1d(values: np.ndarray, name: str) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    if arr.ndim != 1:
+        raise ValueError(f"{name} must be a one-dimensional array")
+    if arr.size == 0:
+        raise ValueError(f"{name} must not be empty")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"{name} must not contain NaN or inf")
+    return arr
+
+
+def _loss_quantile_index(n: int, confidence: float) -> int:
+    return min(max(int(np.ceil(confidence * n)) - 1, 0), n - 1)
+
+
+def _loss_var_es(losses: np.ndarray, confidence: float,
+                 weights: np.ndarray | None = None) -> tuple[float, float]:
+    """VaR/ES for positive losses using one discrete convention."""
+    confidence = _validate_confidence(confidence)
+    losses = _as_finite_1d(losses, "losses")
+    losses = np.maximum(losses, 0.0)
+    if weights is None:
+        sorted_losses = np.sort(losses)
+        idx = _loss_quantile_index(len(sorted_losses), confidence)
+        var = float(sorted_losses[idx])
+        es = float(sorted_losses[idx:].mean())
+        return max(var, 0.0), max(es, var, 0.0)
+
+    weights = _as_finite_1d(weights, "weights")
+    if weights.shape != losses.shape:
+        raise ValueError("weights must have the same shape as losses")
+    if np.any(weights < 0):
+        raise ValueError("weights must be non-negative")
+    weight_sum = weights.sum()
+    if weight_sum <= 0:
+        raise ValueError("weights must sum to a positive value")
+    weights = weights / weight_sum
+
+    sorted_idx = np.argsort(losses)
+    sorted_losses = losses[sorted_idx]
+    sorted_weights = weights[sorted_idx]
+    cum_w = np.cumsum(sorted_weights)
+    var_idx = min(np.searchsorted(cum_w, confidence, side="left"), len(sorted_losses) - 1)
+    var = float(sorted_losses[var_idx])
+    tail_mask = sorted_losses >= var
+    tail_w = sorted_weights[tail_mask]
+    es = float((sorted_losses[tail_mask] * tail_w).sum() / tail_w.sum())
+    return max(var, 0.0), max(es, var, 0.0)
+
+
 def historical_var(returns: np.ndarray, position_value: float,
                    confidence: float = 0.95, horizon: int = 1,
                    weights: np.ndarray = None) -> dict:
@@ -25,23 +89,17 @@ def historical_var(returns: np.ndarray, position_value: float,
     Historical simulation VaR and CVaR.
     weights: exponential decay weights for EWMA-filtered historical VaR.
     """
-    if weights is not None:
-        weights = np.array(weights) / np.array(weights).sum()
-        sorted_idx = np.argsort(returns)
-        sorted_r   = returns[sorted_idx]
-        sorted_w   = weights[sorted_idx]
-        cum_w      = np.cumsum(sorted_w)
-        var_idx    = np.searchsorted(cum_w, 1 - confidence)
-        var_pct    = sorted_r[max(var_idx, 0)]
-        cvar_pct   = np.sum(sorted_r[:var_idx] * sorted_w[:var_idx]) / max(1-confidence, 1e-10)
-    else:
-        scaled     = returns * np.sqrt(horizon)
-        var_pct    = np.percentile(scaled, (1-confidence)*100)
-        cvar_pct   = scaled[scaled <= var_pct].mean() if (scaled <= var_pct).any() else var_pct
+    confidence = _validate_confidence(confidence)
+    horizon = _validate_horizon(horizon)
+    returns = _as_finite_1d(returns, "returns")
+    position_value = float(position_value)
+    losses_pct = -returns * np.sqrt(horizon)
+    var_pct, cvar_pct = _loss_var_es(losses_pct, confidence, weights)
 
-    return dict(VaR=abs(var_pct)*position_value,
-                CVaR=abs(cvar_pct)*position_value,
-                VaR_pct=abs(var_pct), CVaR_pct=abs(cvar_pct),
+    return dict(VaR=var_pct*position_value,
+                CVaR=cvar_pct*position_value,
+                ES=cvar_pct*position_value,
+                VaR_pct=var_pct, CVaR_pct=cvar_pct,
                 method="historical", confidence=confidence, horizon=horizon,
                 n_obs=len(returns))
 
@@ -53,25 +111,36 @@ def parametric_var(returns: np.ndarray, position_value: float,
     Parametric VaR: normal or Student-t.
     distribution: normal | t
     """
+    confidence = _validate_confidence(confidence)
+    horizon = _validate_horizon(horizon)
+    returns = _as_finite_1d(returns, "returns")
+    position_value = float(position_value)
     mu  = returns.mean()
-    sig = returns.std()
+    sig = returns.std(ddof=1) if len(returns) > 1 else 0.0
 
     if distribution == "t":
         df, loc, scale = t_dist.fit(returns, floc=mu)
-        z     = t_dist.ppf(1-confidence, df)
-        cvar_z= -t_dist.pdf(z, df) / (1-confidence) * scale + mu
-        var_pct = -(loc + scale*z)
-        cvar_pct= abs(cvar_z)
+        q = t_dist.ppf(1 - confidence, df)
+        daily_var = -(loc + scale*q)
+        if df > 1:
+            daily_es = -loc + scale * (
+                t_dist.pdf(q, df) / (1 - confidence)
+                * (df + q**2) / (df - 1)
+            )
+        else:
+            daily_es = np.inf
+        var_pct = max(daily_var * np.sqrt(horizon), 0.0)
+        cvar_pct = max(daily_es * np.sqrt(horizon), var_pct)
     else:
-        z        = norm.ppf(1-confidence)
-        var_pct  = -(mu + sig*z)
-        cvar_pct = -mu + sig*norm.pdf(z)/(1-confidence)
-
-    var_pct  *= np.sqrt(horizon)
-    cvar_pct *= np.sqrt(horizon)
+        z = norm.ppf(confidence)
+        mean_loss = -mu * horizon
+        sig_h = sig * np.sqrt(horizon)
+        var_pct = max(mean_loss + z * sig_h, 0.0)
+        cvar_pct = max(mean_loss + sig_h * norm.pdf(z)/(1-confidence), var_pct)
 
     return dict(VaR=var_pct*position_value,
                 CVaR=cvar_pct*position_value,
+                ES=cvar_pct*position_value,
                 VaR_pct=var_pct, CVaR_pct=cvar_pct,
                 mu=mu, sigma=sig,
                 method=f"parametric_{distribution}", confidence=confidence, horizon=horizon)
@@ -81,14 +150,20 @@ def montecarlo_var(returns: np.ndarray, position_value: float,
                    confidence: float = 0.95, horizon: int = 1,
                    n_sims: int = 100_000, seed: int = 42) -> dict:
     """Monte Carlo VaR from fitted normal distribution."""
+    confidence = _validate_confidence(confidence)
+    horizon = _validate_horizon(horizon)
+    returns = _as_finite_1d(returns, "returns")
+    if n_sims <= 0:
+        raise ValueError("n_sims must be positive")
     rng  = np.random.default_rng(seed)
-    mu   = returns.mean(); sig = returns.std()
+    mu   = returns.mean(); sig = returns.std(ddof=1) if len(returns) > 1 else 0.0
     sim  = rng.normal(mu*horizon, sig*np.sqrt(horizon), n_sims)
-    var_pct  = np.percentile(sim, (1-confidence)*100)
-    cvar_pct = sim[sim <= var_pct].mean()
-    return dict(VaR=abs(var_pct)*position_value,
-                CVaR=abs(cvar_pct)*position_value,
-                VaR_pct=abs(var_pct), CVaR_pct=abs(cvar_pct),
+    losses_pct = -sim
+    var_pct, cvar_pct = _loss_var_es(losses_pct, confidence)
+    return dict(VaR=var_pct*position_value,
+                CVaR=cvar_pct*position_value,
+                ES=cvar_pct*position_value,
+                VaR_pct=var_pct, CVaR_pct=cvar_pct,
                 method="monte_carlo", confidence=confidence,
                 horizon=horizon, n_sims=n_sims)
 

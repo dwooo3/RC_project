@@ -30,7 +30,7 @@ def test_age_weighted_var_ge_zero():
     rng = np.random.default_rng(1)
     pnl = rng.normal(0, 1, 300)
     res = hs_age_weighted(pnl, confidence=0.95)
-    assert res["VaR"] >= 0 or True   # allow negative if all P&L positive
+    assert res["VaR"] >= 0
 
 
 def test_age_weighted_cvar_ge_var():
@@ -72,6 +72,63 @@ def test_mc_cvar_ge_var():
     res = montecarlo_var(returns, position_value=1_000_000,
                          confidence=0.99, n_sims=100_000)
     assert res["CVaR"] >= res["VaR"] - 1e-6
+
+
+def test_all_var_methods_es_ge_var():
+    rng = np.random.default_rng(66)
+    returns = rng.normal(0, 0.015, 1000)
+
+    hist = historical_var(returns, 1_000_000, confidence=0.975)
+    param = parametric_var(returns, 1_000_000, confidence=0.975)
+    mc = montecarlo_var(returns, 1_000_000, confidence=0.975, n_sims=50_000)
+
+    assert hist["CVaR"] >= hist["VaR"]
+    assert param["CVaR"] >= param["VaR"]
+    assert mc["CVaR"] >= mc["VaR"]
+
+
+def test_historical_var_known_small_array_positive_loss_convention():
+    returns = np.array([0.02, 0.01, 0.0, -0.01, -0.02])
+
+    res = historical_var(returns, position_value=100.0, confidence=0.80)
+
+    assert res["VaR"] == pytest.approx(1.0)
+    assert res["CVaR"] == pytest.approx(1.5)
+
+
+def test_weighted_historical_var_uses_loss_tail_and_horizon():
+    returns = np.array([0.02, 0.01, 0.0, -0.01, -0.02])
+    weights = np.array([0.05, 0.05, 0.10, 0.30, 0.50])
+
+    one_day = historical_var(returns, 100.0, confidence=0.80, horizon=1, weights=weights)
+    four_day = historical_var(returns, 100.0, confidence=0.80, horizon=4, weights=weights)
+
+    assert one_day["VaR"] == pytest.approx(2.0)
+    assert one_day["CVaR"] == pytest.approx(2.0)
+    assert four_day["VaR"] == pytest.approx(one_day["VaR"] * 2.0)
+
+
+def test_parametric_var_never_reports_negative_var_with_positive_drift():
+    returns = np.full(100, 0.01)
+
+    res = parametric_var(returns, position_value=1_000_000, confidence=0.95)
+
+    assert res["VaR"] >= 0
+    assert res["CVaR"] >= res["VaR"]
+
+
+@pytest.mark.parametrize("bad_conf", [0.0, 1.0, -0.1, 1.1])
+def test_invalid_confidence_rejected(bad_conf):
+    returns = np.array([0.01, -0.01, 0.02])
+
+    with pytest.raises(ValueError, match="confidence"):
+        historical_var(returns, 1_000_000, confidence=bad_conf)
+
+
+@pytest.mark.parametrize("bad_returns", [np.array([]), np.array([0.01, np.nan]), np.array([0.01, np.inf])])
+def test_empty_nan_inf_inputs_rejected(bad_returns):
+    with pytest.raises(ValueError):
+        historical_var(bad_returns, 1_000_000)
 
 
 def test_var_scales_with_horizon():
