@@ -16,6 +16,7 @@ Fixed income instruments:
 import numpy as np
 from scipy.optimize import brentq
 from scipy.stats import norm
+from curves.yield_curve import YieldCurve as CanonicalYieldCurve
 from models.black_scholes import black76
 
 
@@ -23,16 +24,19 @@ from models.black_scholes import black76
 # Yield curve (flat or bootstrapped)
 # ─────────────────────────────────────────────────────────
 
-class YieldCurve:
-    """Simple piece-wise linear discount curve."""
+class YieldCurve(CanonicalYieldCurve):
+    """Backward-compatible adapter for the canonical curve implementation."""
 
     def __init__(self, tenors: list, rates: list, convention: str = "continuous"):
-        self.tenors = np.array(tenors)
-        self.rates  = np.array(rates)
         self.convention = convention
+        super().__init__(tenors, rates, label="fixed-income-compat", interp="linear")
+
+    @property
+    def rates(self):
+        return self.zero_rates
 
     def rate(self, T: float) -> float:
-        return float(np.interp(T, self.tenors, self.rates))
+        return super().rate(T, "continuous")
 
     def discount(self, T: float) -> float:
         r = self.rate(T)
