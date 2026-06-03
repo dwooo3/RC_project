@@ -89,7 +89,8 @@ class Sidebar(QWidget):
                     font-weight: 600;
                 }
             """)
-            btn.clicked.connect(lambda checked, k=key: self._select(k))
+            # Use toggled so accessibility clicks (AppleScript/VoiceOver) also navigate
+            btn.toggled.connect(lambda checked, k=key: checked and self._select(k))
             self._buttons[key] = btn
             nb.addWidget(btn)
 
@@ -107,7 +108,9 @@ class Sidebar(QWidget):
 
     def _select(self, key: str):
         for k, btn in self._buttons.items():
+            btn.blockSignals(True)
             btn.setChecked(k == key)
+            btn.blockSignals(False)
         self._on_select(key)
 
     def select_key(self, key: str):
