@@ -46,8 +46,10 @@ class CapFloorPanel(QWidget):
     def calculate(self):
         self.banner.clear()
         try:
-            from instruments.fixed_income import cap_floor,collar,swaption,YieldCurve
-            curve=YieldCurve.flat(self.rate.value()/100)
+            from instruments.fixed_income import cap_floor,collar,swaption
+            from services.market_data_service import MarketDataService
+            market_data = MarketDataService()
+            curve=market_data.flat_curve(self.rate.value()/100)
             K=self.strike.value()/100; v=self.vol.value()/100; T=self.T.value()
             N=self.notional.value(); freq=int(self.freq.currentText()); prod=self.prod.currentText()
             if prod=="Cap":

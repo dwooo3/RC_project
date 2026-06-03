@@ -231,8 +231,9 @@ def cmd_variance_swap(args):
 
 
 def cmd_bond(args):
-    from instruments.fixed_income import fixed_bond, YieldCurve
-    curve = YieldCurve.flat(args.rate)
+    from instruments.fixed_income import fixed_bond
+    from services.market_data_service import MarketDataService
+    curve = MarketDataService().flat_curve(args.rate)
     hdr(f"BOND  Face={args.face}  Coupon={args.coupon:.2%}  T={args.expiry}y  Freq={args.freq}/yr")
     res = fixed_bond(args.face, args.coupon, args.expiry, args.freq, curve)
     row("Price:",         f"{res['price']:.4f}")
@@ -253,8 +254,9 @@ def cmd_bond(args):
 
 
 def cmd_irs(args):
-    from instruments.fixed_income import irs, YieldCurve
-    curve = YieldCurve.flat(args.rate)
+    from instruments.fixed_income import irs
+    from services.market_data_service import MarketDataService
+    curve = MarketDataService().flat_curve(args.rate)
     hdr(f"IRS  Notional={args.notional:,.0f}  Fixed={args.fixed_rate:.2%}  T={args.expiry}y  Freq={args.freq}/yr")
     res = irs(args.notional, args.fixed_rate, args.expiry, args.freq, curve, args.pay_fixed)
     row("NPV:",        f"{res['npv']:,.2f}")
@@ -266,8 +268,9 @@ def cmd_irs(args):
 
 
 def cmd_cap_floor(args):
-    from instruments.fixed_income import cap_floor, collar, YieldCurve
-    curve = YieldCurve.flat(args.rate)
+    from instruments.fixed_income import cap_floor, collar
+    from services.market_data_service import MarketDataService
+    curve = MarketDataService().flat_curve(args.rate)
     hdr(f"CAP/FLOOR  Notional={args.notional:,.0f}  K={args.strike:.2%}  T={args.expiry}y  σ={args.vol:.0%}")
     cap   = cap_floor(args.notional, args.strike, args.expiry, args.freq, curve, args.vol, "cap")
     floor = cap_floor(args.notional, args.strike, args.expiry, args.freq, curve, args.vol, "floor")
@@ -280,8 +283,9 @@ def cmd_cap_floor(args):
 
 
 def cmd_swaption(args):
-    from instruments.fixed_income import swaption, YieldCurve
-    curve = YieldCurve.flat(args.rate)
+    from instruments.fixed_income import swaption
+    from services.market_data_service import MarketDataService
+    curve = MarketDataService().flat_curve(args.rate)
     hdr(f"SWAPTION  N={args.notional:,.0f}  K={args.strike:.2%}  T_opt={args.t_option}y  T_swap={args.t_swap}y")
     for opt in ["payer", "receiver"]:
         res = swaption(args.notional, args.strike, args.t_option, args.t_swap,

@@ -12,6 +12,7 @@ Typical tenor structure for Russia: O/N, 1W, 1M, 3M, 6M, 1Y, 2Y, 3Y, 5Y, 7Y, 10Y
 
 import numpy as np
 from curves.yield_curve import YieldCurve, NSCurve, SvenssonCurve, rate_to_df
+from domain.market_data import MarketDataSource
 
 
 # ─────────────────────────────────────────────────────────
@@ -40,14 +41,22 @@ def make_ofz_curve(tenors=None, rates=None, method="cubic",
     """Build OFZ zero curve from par yield inputs."""
     tenors = tenors or OFZ_TENORS_DEFAULT
     rates  = rates  or OFZ_RATES_DEFAULT
-    return YieldCurve(tenors, rates, label=label, interp=method)
+    return YieldCurve(
+        tenors, rates, label=label, interp=method,
+        source=MarketDataSource.DEMO, rate_type="zero_demo",
+        metadata={"source": MarketDataSource.DEMO.value},
+    )
 
 
 def make_ruonia_curve(tenors=None, rates=None,
                       label="RUONIA OIS") -> YieldCurve:
     tenors = tenors or RUONIA_TENORS_DEFAULT
     rates  = rates  or RUONIA_RATES_DEFAULT
-    return YieldCurve(tenors, rates, label=label)
+    return YieldCurve(
+        tenors, rates, label=label,
+        source=MarketDataSource.DEMO, rate_type="zero_demo",
+        metadata={"source": MarketDataSource.DEMO.value},
+    )
 
 
 def make_corporate_curve(base_curve: YieldCurve,
@@ -62,8 +71,12 @@ def make_corporate_curve(base_curve: YieldCurve,
         sp = spreads.get(tier, CORP_SPREAD_1T)
     new_rates = [base_curve.rate(T) + s
                  for T, s in zip(OFZ_TENORS_DEFAULT, sp)]
-    return YieldCurve(OFZ_TENORS_DEFAULT, new_rates,
-                      label=label or f"Corp {tier}")
+    return YieldCurve(
+        OFZ_TENORS_DEFAULT, new_rates,
+        label=label or f"Corp {tier}",
+        source=MarketDataSource.DEMO, rate_type="zero_demo",
+        metadata={"source": MarketDataSource.DEMO.value},
+    )
 
 
 def fit_gcurve_ns(market_tenors: list, market_yields: list) -> NSCurve:
@@ -157,5 +170,11 @@ def apply_curve_scenario(curve: YieldCurve, scenario: str) -> YieldCurve:
         # Twist: linear from 0 at short end to twist at 10Y
         t_factor = min(T / 10.0, 1.0)
         new_rates.append(r + shift + twist * t_factor)
-    return YieldCurve(curve.tenors, new_rates,
-                      label=f"{curve.label} [{scenario}]")
+    return YieldCurve(
+        curve.tenors, new_rates,
+        label=f"{curve.label} [{scenario}]",
+        source=getattr(curve, "source", MarketDataSource.DEMO.value),
+        valuation_date=getattr(curve, "valuation_date", None),
+        rate_type=getattr(curve, "rate_type", "zero"),
+        metadata=getattr(curve, "metadata", {}),
+    )

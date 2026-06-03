@@ -144,40 +144,36 @@ class BondPanel(QWidget):
         root.addWidget(sp)
 
     def _build_curve(self):
-        from curves.yield_curve import YieldCurve
-        from curves.russia import OFZ_TENORS_DEFAULT as OFZ_T, OFZ_RATES_DEFAULT as OFZ_R
+        from services.market_data_service import MarketDataService
         ct = self.curve_type.currentText()
         zs = self.zspread.value() / 10000
+        market_data = MarketDataService()
 
         if "Flat" in ct:
-            curve = YieldCurve.flat(self.rate.value() / 100)
+            curve = market_data.flat_curve(self.rate.value() / 100)
         elif "OFZ" in ct:
-            curve = YieldCurve(OFZ_T, OFZ_R, label="OFZ G-curve")
+            curve = market_data.ofz_curve()
         elif "CBR" in ct:
-            r = self.rate.value() / 100
-            tenors = [0.25, 0.5, 1, 2, 3, 5, 7, 10]
-            rates  = [r - 0.005 * i for i in range(len(tenors))]
-            curve  = YieldCurve(tenors, rates, label="CBR key rate curve")
+            curve = market_data.cbr_key_rate_curve()
         elif "Corporate 1st" in ct:
-            curve = YieldCurve(OFZ_T, [r + 0.015 for r in OFZ_R], label="Corp 1st tier")
+            curve = market_data.corporate_curve("1st")
         elif "HY" in ct:
-            curve = YieldCurve(OFZ_T, [r + 0.04 for r in OFZ_R], label="Corp HY")
+            curve = market_data.corporate_curve("HY")
         else:
-            from curves.russia import RUONIA_TENORS_DEFAULT, RUONIA_RATES_DEFAULT
-            curve = YieldCurve(RUONIA_TENORS_DEFAULT, RUONIA_RATES_DEFAULT, label="RUONIA OIS")
+            curve = market_data.ruonia_curve()
 
         if zs != 0:
-            from curves.yield_curve import YieldCurve as YC
-            curve = curve.add_spread(YC.flat(zs, label="zspread"))
+            curve = curve.add_spread(market_data.flat_curve(zs, label="zspread"))
         return curve
 
     def calculate(self):
         self.banner.clear()
         try:
             from instruments.fixed_income import fixed_bond
-            from curves.yield_curve import YieldCurve
+            from services.market_data_service import MarketDataService
 
             curve = self._build_curve()
+            market_data = MarketDataService()
             res   = fixed_bond(
                 self.face.value(),
                 self.coupon.value() / 100,
@@ -215,7 +211,7 @@ class BondPanel(QWidget):
             prices_y  = []
             dur_mods  = []
             for y in yields:
-                c2 = YieldCurve.flat(y)
+                c2 = market_data.flat_curve(y)
                 r2 = fixed_bond(
                     self.face.value(),
                     self.coupon.value() / 100,

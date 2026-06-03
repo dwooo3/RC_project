@@ -184,9 +184,9 @@ class ShortRatePanel(QWidget):
 
             elif tab == "Hull-White":
                 from models.short_rate import HullWhite
-                from curves.yield_curve import YieldCurve
+                from services.market_data_service import MarketDataService
                 r0 = self.hw_r0.value() / 100
-                flat_curve = YieldCurve.flat(r0)
+                flat_curve = MarketDataService().flat_curve(r0)
                 model = HullWhite(
                     kappa = self.hw_a.value(),
                     sigma = self.hw_sigma.value() / 100,
@@ -213,9 +213,9 @@ class ShortRatePanel(QWidget):
 
             elif tab == "Ho-Lee":
                 from models.short_rate import HoLee
-                from curves.yield_curve import YieldCurve
+                from services.market_data_service import MarketDataService
                 r0 = self.hl_r0.value() / 100
-                flat_curve = YieldCurve.flat(r0)
+                flat_curve = MarketDataService().flat_curve(r0)
                 model = HoLee(sigma=self.hl_sigma.value()/100, curve=flat_curve)
                 self._plot_term_structure(model, Ts, "Ho-Lee")
                 for t, key in [(1,"P(0,1)"), (2,"P(0,2)"), (5,"P(0,5)"), (10,"P(0,10)")]:
@@ -253,16 +253,16 @@ class ShortRatePanel(QWidget):
                 title = "CIR Short Rate Paths"
             elif tab == "Hull-White":
                 from models.short_rate import HullWhite
-                from curves.yield_curve import YieldCurve
+                from services.market_data_service import MarketDataService
                 r0 = self.hw_r0.value()/100
-                model = HullWhite(kappa=self.hw_a.value(), sigma=self.hw_sigma.value()/100, curve=YieldCurve.flat(r0))
+                model = HullWhite(kappa=self.hw_a.value(), sigma=self.hw_sigma.value()/100, curve=MarketDataService().flat_curve(r0))
                 paths = model.simulate(self.hw_T.value(), steps=252, n_sims=n_paths, seed=42)
                 title = "Hull-White Short Rate Paths"
             else:
                 from models.short_rate import HoLee
-                from curves.yield_curve import YieldCurve
+                from services.market_data_service import MarketDataService
                 r0 = self.hl_r0.value()/100
-                model = HoLee(sigma=self.hl_sigma.value()/100, curve=YieldCurve.flat(r0))
+                model = HoLee(sigma=self.hl_sigma.value()/100, curve=MarketDataService().flat_curve(r0))
                 paths = model.simulate(self.hl_T.value(), steps=252, n_sims=n_paths, seed=42)
                 title = "Ho-Lee Short Rate Paths"
 

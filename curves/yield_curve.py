@@ -7,12 +7,21 @@ Conventions: Act/365, Act/360, 30/360, Act/Act.
 import numpy as np
 from scipy.optimize import minimize, brentq
 from scipy.interpolate import CubicSpline, interp1d
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from datetime import date
 from typing import Literal, Optional
+
+from domain.market_data import MarketDataSource
 
 
 DayCount = Literal["act365", "act360", "30360", "actact"]
 Compounding = Literal["continuous", "annual", "semiannual", "simple"]
+
+
+@dataclass(frozen=True)
+class CurveValidation:
+    valid: bool
+    errors: list[str]
 
 
 # ─────────────────────────────────────────────────────────
@@ -65,12 +74,56 @@ class YieldCurve:
     """
 
     def __init__(self, tenors: np.ndarray, zero_rates: np.ndarray,
-                 label: str = "curve", interp: str = "cubic"):
+                 label: str = "curve", interp: str = "cubic",
+                 source: MarketDataSource | str = MarketDataSource.DEMO,
+                 valuation_date: date | None = None,
+                 rate_type: str = "zero",
+                 compounding: Compounding = "continuous",
+                 day_count: DayCount = "act365",
+                 metadata: dict | None = None):
         self.tenors     = np.array(tenors, dtype=float)
         self.zero_rates = np.array(zero_rates, dtype=float)
         self.label      = label
         self._interp    = interp
+        self.source = source.value if isinstance(source, MarketDataSource) else str(source).upper()
+        self.valuation_date = valuation_date
+        self.rate_type = rate_type
+        self.compounding = compounding
+        self.day_count = day_count
+        self.metadata = metadata or {}
+        validation = self.validate()
+        if not validation.valid:
+            raise ValueError(f"Invalid yield curve {label}: {'; '.join(validation.errors)}")
         self._build_interp()
+
+    def validate(self) -> CurveValidation:
+        errors = []
+        if self.tenors.shape != self.zero_rates.shape:
+            errors.append("tenors and zero_rates must have the same length")
+            return CurveValidation(False, errors)
+        if self.tenors.size == 0:
+            errors.append("curve must contain at least one tenor")
+            return CurveValidation(False, errors)
+        if not np.all(np.isfinite(self.tenors)):
+            errors.append("tenors contain NaN or inf")
+        if not np.all(np.isfinite(self.zero_rates)):
+            errors.append("zero_rates contain NaN or inf")
+        if np.any(self.tenors <= 0):
+            errors.append("tenors must be positive")
+        if np.any(np.diff(self.tenors) <= 0):
+            errors.append("tenors must be strictly increasing")
+        if errors:
+            return CurveValidation(False, errors)
+
+        dfs = np.array([rate_to_df(r, T, "continuous")
+                        for T, r in zip(self.tenors, self.zero_rates)])
+        if not np.all(np.isfinite(dfs)):
+            errors.append("discount factors contain NaN or inf")
+        if np.any(dfs <= 0):
+            errors.append("discount factors must be positive")
+        if np.any(np.diff(dfs) > 1e-12):
+            errors.append("discount factors must be monotonic non-increasing")
+        return CurveValidation(not errors, errors)
 
     def _build_interp(self):
         if self._interp == "cubic" and len(self.tenors) >= 3:
@@ -148,20 +201,30 @@ class YieldCurve:
     def parallel_shift(self, bps: float) -> "YieldCurve":
         """Return shifted curve (+bps basis points)."""
         return YieldCurve(self.tenors, self.zero_rates + bps/10000,
-                          label=f"{self.label}+{bps}bp", interp=self._interp)
+                          label=f"{self.label}+{bps}bp", interp=self._interp,
+                          source=self.source, valuation_date=self.valuation_date,
+                          rate_type=self.rate_type, compounding=self.compounding,
+                          day_count=self.day_count, metadata=self.metadata)
 
     def add_spread(self, spread_curve: "YieldCurve") -> "YieldCurve":
         """Add z-spread curve."""
         new_rates = self.zero_rates + np.array([spread_curve.rate(T)
                                                  for T in self.tenors])
-        return YieldCurve(self.tenors, new_rates, label=f"{self.label}+spread")
+        return YieldCurve(self.tenors, new_rates, label=f"{self.label}+spread",
+                          source=self.source, valuation_date=self.valuation_date,
+                          rate_type=self.rate_type, compounding=self.compounding,
+                          day_count=self.day_count, metadata=self.metadata)
 
     # ── Factories ───────────────────────────────────────────
 
     @classmethod
-    def flat(cls, rate: float, label="flat") -> "YieldCurve":
+    def flat(cls, rate: float, label="flat",
+             source: MarketDataSource | str = MarketDataSource.DEMO,
+             valuation_date: date | None = None,
+             metadata: dict | None = None) -> "YieldCurve":
         return cls([0.001, 0.25, 0.5, 1, 2, 3, 5, 7, 10, 20, 30],
-                   [rate]*11, label=label)
+                   [rate]*11, label=label, source=source,
+                   valuation_date=valuation_date, metadata=metadata)
 
     @classmethod
     def from_par_rates(cls, tenors: list, par_rates: list,
@@ -196,6 +259,35 @@ class YieldCurve:
                     disc_factors[t] = np.exp(-np.interp(t, tenors[:len(zero_rates)], zero_rates)*t)
 
         return cls(tenors, zero_rates, label=label)
+
+    @classmethod
+    def bootstrap(cls, instruments: list) -> "YieldCurve":
+        """
+        Backward-compatible bootstrap from (maturity, coupon_rate, price, freq).
+        New code should use MarketDataService / from_par_rates.
+        """
+        tenors = []
+        rates = []
+        for T, coupon, price, freq in sorted(instruments):
+            periods = int(round(T * freq))
+            dt = 1.0 / freq
+
+            def eq(r):
+                base_tenors = [0.001] + tenors
+                base_rates = [rates[0] if rates else r] + rates
+                pv = sum(coupon / freq * np.exp(-float(np.interp(
+                    i * dt, base_tenors, base_rates)) * i * dt)
+                    for i in range(1, periods))
+                pv += (1 + coupon / freq) * np.exp(-r * T)
+                return pv - price
+
+            try:
+                r = brentq(eq, -0.05, 0.5)
+            except Exception:
+                r = 0.03
+            tenors.append(T)
+            rates.append(r)
+        return cls(tenors, rates, label="bootstrapped", source=MarketDataSource.MANUAL)
 
 
 # ─────────────────────────────────────────────────────────

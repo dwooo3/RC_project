@@ -74,8 +74,9 @@ class Portfolio:
             pos.rho           = g.rho   * qt
 
         elif inst == "bond":
-            from instruments.fixed_income import fixed_bond, YieldCurve
-            curve = p.get("curve") or YieldCurve.flat(p["r"])
+            from instruments.fixed_income import fixed_bond
+            from services.market_data_service import MarketDataService
+            curve = p.get("curve") or MarketDataService().flat_curve(p["r"])
             res   = fixed_bond(p["face"], p["coupon"], p["T"], p.get("freq",2), curve)
             pos.price        = res["price"]
             pos.market_value = res["price"] * qt / p["face"]
@@ -93,8 +94,9 @@ class Portfolio:
             pos.cs01         = res["dv01"] * qt
 
         elif inst in ("irs", "swap"):
-            from instruments.fixed_income import irs, YieldCurve
-            curve  = p.get("curve") or YieldCurve.flat(p["r"])
+            from instruments.fixed_income import irs
+            from services.market_data_service import MarketDataService
+            curve  = p.get("curve") or MarketDataService().flat_curve(p["r"])
             res    = irs(p["notional"], p["fixed_rate"], p["T"], p.get("freq",4),
                          curve, p.get("pay_fixed",True))
             pos.price        = res["npv"]

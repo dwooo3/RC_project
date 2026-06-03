@@ -16,71 +16,8 @@ Fixed income instruments:
 import numpy as np
 from scipy.optimize import brentq
 from scipy.stats import norm
-from curves.yield_curve import YieldCurve as CanonicalYieldCurve
+from curves.yield_curve import YieldCurve
 from models.black_scholes import black76
-
-
-# ─────────────────────────────────────────────────────────
-# Yield curve (flat or bootstrapped)
-# ─────────────────────────────────────────────────────────
-
-class YieldCurve(CanonicalYieldCurve):
-    """Backward-compatible adapter for the canonical curve implementation."""
-
-    def __init__(self, tenors: list, rates: list, convention: str = "continuous"):
-        self.convention = convention
-        super().__init__(tenors, rates, label="fixed-income-compat", interp="linear")
-
-    @property
-    def rates(self):
-        return self.zero_rates
-
-    def rate(self, T: float) -> float:
-        return super().rate(T, "continuous")
-
-    def discount(self, T: float) -> float:
-        r = self.rate(T)
-        if self.convention == "continuous":
-            return np.exp(-r * T)
-        elif self.convention == "annual":
-            return 1 / (1 + r)**T
-        else:  # simple
-            return 1 / (1 + r*T)
-
-    def forward_rate(self, T1: float, T2: float) -> float:
-        """Continuously compounded forward rate between T1 and T2."""
-        if T2 <= T1:
-            return self.rate(T1)
-        d1 = self.discount(T1); d2 = self.discount(T2)
-        return -np.log(d2/d1) / (T2 - T1)
-
-    @classmethod
-    def flat(cls, rate: float):
-        return cls([0.001, 100], [rate, rate])
-
-    @classmethod
-    def bootstrap(cls, instruments: list) -> "YieldCurve":
-        """
-        Bootstrap from (maturity, coupon_rate, price) for bonds.
-        instruments: list of (T, coupon, price, freq) tuples.
-        """
-        tenors = []; rates = []
-        for T, coupon, price, freq in sorted(instruments):
-            periods = int(round(T * freq))
-            dt      = 1.0 / freq
-            def eq(r):
-                pv = sum(coupon/freq * np.exp(-float(np.interp(i*dt,
-                         [0.001]+tenors, [rates[0] if rates else r]+rates)) * i*dt)
-                         for i in range(1, periods))
-                pv += (1 + coupon/freq) * np.exp(-r*T)
-                return pv - price
-            r0 = 0.03
-            try:
-                r = brentq(eq, -0.05, 0.5)
-            except Exception:
-                r = r0
-            tenors.append(T); rates.append(r)
-        return cls(tenors, rates)
 
 
 # ─────────────────────────────────────────────────────────

@@ -153,8 +153,9 @@ class RatesPanel(QWidget):
             self.banner.show_error(str(e))
 
     def _calc_bond(self):
-        from instruments.fixed_income import fixed_bond, YieldCurve
-        curve = YieldCurve.flat(self.b_rate.value()/100)
+        from instruments.fixed_income import fixed_bond
+        from services.market_data_service import MarketDataService
+        curve = MarketDataService().flat_curve(self.b_rate.value()/100)
         res = fixed_bond(self.b_face.value(), self.b_coupon.value()/100,
                          self.b_expiry.value(), int(self.b_freq.currentText()), curve)
         self.grid.set("Price / NPV",    res["price"], color="#d97757")
@@ -183,8 +184,9 @@ class RatesPanel(QWidget):
         self.chart.plot_yield_curve(tenors, rates)
 
     def _calc_irs(self):
-        from instruments.fixed_income import irs, YieldCurve
-        curve = YieldCurve.flat(self.i_rate.value()/100)
+        from instruments.fixed_income import irs
+        from services.market_data_service import MarketDataService
+        curve = MarketDataService().flat_curve(self.i_rate.value()/100)
         pay_fixed = self.i_pay_fixed.currentText() == "Pay fixed"
         res = irs(self.i_notional.value(), self.i_fixed.value()/100,
                   self.i_expiry.value(), int(self.i_freq.currentText()), curve, pay_fixed)
@@ -194,8 +196,9 @@ class RatesPanel(QWidget):
         self.grid.set("Annuity",        res["annuity"])
 
     def _calc_cap(self):
-        from instruments.fixed_income import cap_floor, collar, YieldCurve
-        curve = YieldCurve.flat(self.c_rate.value()/100)
+        from instruments.fixed_income import cap_floor, collar
+        from services.market_data_service import MarketDataService
+        curve = MarketDataService().flat_curve(self.c_rate.value()/100)
         K = self.c_strike.value()/100
         vol = self.c_vol.value()/100
         t = self.c_type.currentText()
@@ -209,8 +212,9 @@ class RatesPanel(QWidget):
             self.grid.set("Price / NPV", res["price"], color="#d97757")
 
     def _calc_swaption(self):
-        from instruments.fixed_income import swaption, YieldCurve
-        curve = YieldCurve.flat(self.s_rate.value()/100)
+        from instruments.fixed_income import swaption
+        from services.market_data_service import MarketDataService
+        curve = MarketDataService().flat_curve(self.s_rate.value()/100)
         for opt in ["payer", "receiver"]:
             res = swaption(self.s_notional.value(), self.s_strike.value()/100,
                            self.s_t_opt.value(), self.s_t_swap.value(),

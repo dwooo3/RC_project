@@ -6,7 +6,15 @@ pricing engines yet.
 
 from dataclasses import dataclass, field
 from datetime import date
+from enum import Enum
 from typing import Any
+
+
+class MarketDataSource(str, Enum):
+    DEMO = "DEMO"
+    MANUAL = "MANUAL"
+    MOEX = "MOEX"
+    CSV = "CSV"
 
 
 @dataclass(frozen=True)
@@ -15,8 +23,8 @@ class MarketDataSnapshot:
 
     snapshot_id: str
     valuation_date: date
-    source: str
-    quality: str = "demo"
+    source: MarketDataSource | str
+    quality: str = MarketDataSource.DEMO.value
     curves: dict[str, Any] = field(default_factory=dict)
     vol_surfaces: dict[str, Any] = field(default_factory=dict)
     fx_rates: dict[str, float] = field(default_factory=dict)
@@ -25,4 +33,7 @@ class MarketDataSnapshot:
 
     @property
     def is_demo(self) -> bool:
-        return self.quality.lower() in {"demo", "manual"}
+        return self.quality.upper() in {
+            MarketDataSource.DEMO.value,
+            MarketDataSource.MANUAL.value,
+        }

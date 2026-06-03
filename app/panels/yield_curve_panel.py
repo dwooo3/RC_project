@@ -122,7 +122,8 @@ class YieldCurvePanel(QWidget):
         if len(tenors) < 2:
             self.banner.show_error("Need at least 2 tenor/rate pairs"); return
         try:
-            from curves.yield_curve import YieldCurve, NSCurve, SvenssonCurve
+            from curves.yield_curve import NSCurve, SvenssonCurve
+            from services.market_data_service import MarketDataService
             method = self.method.currentText()
             if "Nelson" in method:
                 curve = NSCurve.fit(tenors, rates, label="OFZ NS")
@@ -131,7 +132,9 @@ class YieldCurvePanel(QWidget):
                 curve = SvenssonCurve.fit(tenors, rates, label="OFZ SV")
                 rmse = getattr(curve, "rmse", 0)
             else:
-                curve = YieldCurve(tenors, rates, label="OFZ Bootstrap", interp="cubic")
+                curve = MarketDataService().curve_from_rates(
+                    tenors, rates, label="OFZ Bootstrap", interp="cubic"
+                )
                 rmse = 0.0
             self._curve = curve
 

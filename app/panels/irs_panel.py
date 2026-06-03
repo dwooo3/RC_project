@@ -46,8 +46,10 @@ class IRSPanel(QWidget):
     def calculate(self):
         self.banner.clear()
         try:
-            from instruments.fixed_income import irs,ois,basis_swap,YieldCurve
-            curve=YieldCurve.flat(self.rate.value()/100)
+            from instruments.fixed_income import irs,ois,basis_swap
+            from services.market_data_service import MarketDataService
+            market_data = MarketDataService()
+            curve=market_data.flat_curve(self.rate.value()/100)
             prod=self.prod.currentText(); pay=self.direction.currentText()=="Pay fixed"
             if "OIS" in prod:
                 res=ois(self.notional.value(),self.fixed.value()/100,self.T.value(),curve)
@@ -55,7 +57,7 @@ class IRSPanel(QWidget):
                 self.grid.set("Fair Rate",res["fair_ois_rate"],sub=f"{res['fair_ois_rate']*100:.3f}%")
                 self.grid.set("DV01",res["dv01"])
             elif "Basis" in prod:
-                curve2=YieldCurve.flat(self.rate.value()/100+self.spread.value()/100)
+                curve2=market_data.flat_curve(self.rate.value()/100+self.spread.value()/100)
                 res=basis_swap(self.notional.value(),self.spread.value()/100,self.T.value(),int(self.freq.currentText()),curve,curve2)
                 self.grid.set("NPV",res["npv"],color="#d97757")
                 self.grid.set("Fair Rate",res["fair_spread"],sub=f"{res['fair_spread']*10000:.1f}bps")
@@ -71,7 +73,7 @@ class IRSPanel(QWidget):
             rates=np.linspace(max(0.001,self.rate.value()/100-0.04),self.rate.value()/100+0.04,60)
             npvs=[]
             for r2 in rates:
-                c2=YieldCurve.flat(r2)
+                c2=market_data.flat_curve(r2)
                 r2_res=irs(self.notional.value(),self.fixed.value()/100,self.T.value(),int(self.freq.currentText()),c2,pay)
                 npvs.append(r2_res["npv"])
             self.chart.plot_payoff(rates*100,npvs,"IRS NPV",self.rate.value(),[self.fixed.value()])
