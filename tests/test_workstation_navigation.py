@@ -43,3 +43,17 @@ def test_main_window_uses_workspace_shell_not_inline_navigation():
     assert "WorkspaceShell" in source
     assert "class Sidebar" not in source
     assert "QStackedWidget" not in source
+
+
+def test_portfolio_workspace_uses_portfolio_service_boundary_only():
+    import inspect
+    import app.panels.portfolio_panel as portfolio_panel
+
+    source = inspect.getsource(portfolio_panel)
+
+    assert "from services.portfolio_service import PortfolioService" in source
+    assert "from domain.portfolio import Position" in source
+    assert "from models" not in source
+    assert "from instruments" not in source
+    assert "from risk" not in source
+    assert "from curves" not in source

@@ -1,65 +1,135 @@
-"""Portfolio workstation: positions, valuation, exposure, scenario P&L, attribution."""
+"""Portfolio Workspace v1 backed exclusively by PortfolioService."""
 
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
+from PySide6.QtWidgets import QTabWidget
+
+from domain.portfolio import Position
+from services.portfolio_service import PortfolioService
 from ui.components import DataSourceChip, DenseTable, KpiStrip, StatusChip, WorkstationPanel, make_action
 from ui.layouts import WorkstationWorkspace
 
 
 class PortfolioPanel(WorkstationWorkspace):
-    """Portfolio-centered workspace for production risk workflows."""
+    """Institutional portfolio workstation using PortfolioService as the UI boundary."""
 
     def __init__(self, parent=None):
+        self.portfolio_service = PortfolioService("Main Portfolio")
+        self._seed_demo_portfolio()
+        self.valuation = self.portfolio_service.value()
+        self.aggregate = self.portfolio_service.aggregate()
+        self.scenario = self.portfolio_service.scenario_pnl(
+            dS=-5.0,
+            dVol=0.05,
+            dr=0.01,
+            dSpread=0.0025,
+        )
+        self.pnl_explain = self.portfolio_service.explain_pnl(
+            scenario=None,
+            dS=-5.0,
+            dVol=0.05,
+            dr=0.01,
+            dSpread=0.0025,
+        )
+
         super().__init__(
             "Portfolio",
-            "Positions, valuation, risk-factor exposure, scenario P&L, and attribution",
-            chips=[DataSourceChip("DEMO"), StatusChip("Approximation", text="Valuation not run today")],
+            "Positions, exposures, P&L, scenario analysis, and valuation",
+            chips=self._status_chips(),
             actions=[
                 make_action("Add Position"),
                 make_action("Import"),
                 make_action("Value", primary=True),
-                make_action("Run Risk"),
+                make_action("Scenario"),
                 make_action("Export"),
             ],
-            kpi_strip=KpiStrip(
-                [
-                    ("Market Value", "124.8m", "RUB"),
-                    ("Daily P&L", "+482k", "Demo"),
-                    ("Positions", "128", "Trading"),
-                    ("Rates DV01", "42k", "RUB/bp"),
-                    ("FX Delta", "-1.2m", "USD/RUB"),
-                    ("Vol Vega", "318k", "1 vol pt"),
-                    ("CS01", "76k", "Credit"),
-                ]
-            ),
-            left=self._build_scope(),
-            center=self._build_positions(),
-            right=self._build_position_context(),
-            bottom=self._build_exposure(),
-            context_items=[
-                ("Layer", "Portfolio"),
-                ("Portfolio", "Main Portfolio"),
-                ("Book", "Trading"),
-                ("Base Currency", "RUB"),
-                ("Snapshot", "DEMO:snap_20260604:v3"),
-                ("Workflow", "Portfolio -> Risk -> Governance"),
-            ],
+            kpi_strip=self._summary_kpis(),
+            left=self._portfolio_summary_panel(),
+            center=self._workspace_tabs(),
+            right=self._position_context_panel(),
+            bottom=self._valuation_panel(),
+            context_items=self._context_items(),
             parent=parent,
         )
 
-    def _build_scope(self):
-        panel = WorkstationPanel("Portfolio Scope")
+    def _seed_demo_portfolio(self):
+        if self.portfolio_service.positions:
+            return
+        positions = [
+            Position(
+                id="pos_option_001",
+                instrument="call",
+                description="ATM equity call",
+                quantity=2500,
+                params={"S": 100.0, "K": 100.0, "T": 0.5, "r": 0.05, "sigma": 0.20, "q": 0.0, "opt": "call"},
+                currency="RUB",
+                book="Trading",
+            ),
+            Position(
+                id="pos_bond_001",
+                instrument="bond",
+                description="5Y fixed-rate bond",
+                quantity=1_000_000,
+                params={"face": 100.0, "coupon": 0.075, "T": 5.0, "freq": 2, "r": 0.08},
+                currency="RUB",
+                book="Trading",
+            ),
+            Position(
+                id="pos_irs_001",
+                instrument="irs",
+                description="RUB IRS pay fixed 5Y",
+                quantity=1.0,
+                params={"notional": 50_000_000.0, "fixed_rate": 0.075, "T": 5.0, "freq": 4, "r": 0.08, "pay_fixed": True},
+                currency="RUB",
+                book="Trading",
+            ),
+            Position(
+                id="pos_fx_001",
+                instrument="fx_forward",
+                description="USD/RUB forward",
+                quantity=1_000_000,
+                params={"S": 90.0, "K": 91.0, "r_d": 0.10, "r_f": 0.045, "T": 0.25, "ccy_pair": "USD/RUB"},
+                currency="RUB",
+                book="Trading",
+                ccy_pair="USD/RUB",
+            ),
+        ]
+        for position in positions:
+            self.portfolio_service.add(position)
+
+    def _status_chips(self):
+        status = "Approximation" if self.valuation.warnings else "Validated"
+        text = "PortfolioService boundary"
+        return [DataSourceChip("DEMO"), StatusChip(status, text=text)]
+
+    def _summary_kpis(self):
+        return KpiStrip(
+            [
+                ("Market Value", self._money(self.valuation.total_market_value), self.valuation.base_currency),
+                ("Positions", str(len(self.portfolio_service.positions)), "Active"),
+                ("Rates DV01", self._number(self.aggregate.get("dv01", 0.0)), "DV01"),
+                ("FX Delta", self._number(self.aggregate.get("fx_delta", 0.0)), "FX"),
+                ("Vol Vega", self._number(self.aggregate.get("vega", 0.0)), "Vega"),
+                ("Scenario P&L", self._money(self.scenario.get("pnl", 0.0)), "Service scenario"),
+                ("Residual", self._money(self.pnl_explain.residual), "PnL explain"),
+            ]
+        )
+
+    def _portfolio_summary_panel(self):
+        panel = WorkstationPanel("Portfolio Summary")
+        portfolio = self.portfolio_service.portfolio
         panel.layout.addWidget(
             DenseTable(
-                ["Filter", "Value"],
+                ["Field", "Value"],
                 [
-                    ["Portfolio", "Main Portfolio"],
+                    ["Portfolio", portfolio.name],
+                    ["Portfolio ID", portfolio.portfolio_id],
                     ["Book", "Trading"],
-                    ["Currency", "RUB"],
-                    ["Valuation Date", "2026-06-04"],
-                    ["Snapshot", "DEMO:v3"],
-                    ["Mode", "Demo"],
+                    ["Base Currency", portfolio.base_currency],
+                    ["Valuation Date", str(portfolio.valuation_date or "Current session")],
+                    ["Snapshot", portfolio.market_data_snapshot_id or "DEMO / service-created"],
+                    ["Service", "PortfolioService"],
                 ],
             )
         )
@@ -67,84 +137,191 @@ class PortfolioPanel(WorkstationWorkspace):
             DenseTable(
                 ["Action", "Shortcut"],
                 [
-                    ["Add Position", "N"],
-                    ["Import Positions", "I"],
                     ["Value Portfolio", "V"],
-                    ["Run VaR", "Shift+V"],
-                    ["Scenario P&L", "S"],
-                    ["P&L Explain", "A"],
+                    ["Scenario Analysis", "S"],
+                    ["PnL Explain", "A"],
+                    ["Run Risk", "Shift+V"],
+                    ["Export Report", "Ctrl+E"],
                 ],
             )
         )
         return panel
 
-    def _build_positions(self):
+    def _workspace_tabs(self):
+        tabs = QTabWidget()
+        tabs.addTab(self._positions_section(), "Positions")
+        tabs.addTab(self._exposures_section(), "Exposures")
+        tabs.addTab(self._pnl_section(), "PnL")
+        tabs.addTab(self._scenario_section(), "Scenario Analysis")
+        tabs.addTab(self._valuation_section(), "Valuation")
+        return tabs
+
+    def _positions_section(self):
         panel = WorkstationPanel("Positions")
-        panel.layout.addWidget(
-            DenseTable(
-                ["ID", "Product", "Qty", "MV", "P&L", "Rates", "FX", "Vol", "Status"],
+        rows = []
+        for row in self.portfolio_service.positions_table():
+            rows.append(
                 [
-                    ["pos_001", "Bond", "10m", "9.8m", "+12k", "8.2k", "-", "-", "Approx"],
-                    ["pos_002", "IRS", "20m", "4.8m", "-31k", "11.4k", "-", "-", "Approx"],
-                    ["pos_003", "FXO", "5m", "1.1m", "+22k", "-", "1.2m", "33k", "Validated"],
-                    ["pos_004", "Equity Opt", "2m", "0.9m", "+8k", "-", "-", "18k", "Validated"],
-                    ["pos_005", "CDS", "15m", "-0.4m", "-11k", "-", "-", "-", "Prototype"],
-                ],
+                    row["id"],
+                    row["instrument"],
+                    row["description"],
+                    row["quantity"],
+                    row["price"],
+                    row["market_value"],
+                    row["dv01"],
+                    row["currency"],
+                    row["book"],
+                ]
             )
-        )
         panel.layout.addWidget(
             DenseTable(
-                ["Risk Factor", "Bucket", "Exposure", "Contribution", "Limit", "Utilization"],
-                [
-                    ["rates.yield_curve", "Rates", "42k DV01", "-4.1m", "6.0m", "68%"],
-                    ["fx.usdrub", "FX", "-1.2m delta", "-2.7m", "5.0m", "54%"],
-                    ["vol.implied", "Volatility", "318k vega", "-0.9m", "2.0m", "45%"],
-                    ["credit.spread", "Credit", "76k CS01", "-1.9m", "4.0m", "48%"],
-                ],
+                ["ID", "Product", "Description", "Qty", "Price", "MV", "DV01", "Ccy", "Book"],
+                rows,
             )
         )
         return panel
 
-    def _build_position_context(self):
-        panel = WorkstationPanel("Position Context")
+    def _exposures_section(self):
+        panel = WorkstationPanel("Risk Factor Exposure Grid")
+        exposure_rows = []
+        for factor_id, factor in sorted(self.aggregate.get("risk_factors", {}).items()):
+            exposure_rows.append(
+                [
+                    factor_id,
+                    factor.get("bucket", ""),
+                    factor.get("unit", ""),
+                    self._number(float(factor.get("sensitivity", 0.0))),
+                    self._money(float(factor.get("contribution", 0.0))),
+                    factor.get("currency", ""),
+                ]
+            )
+        panel.layout.addWidget(
+            DenseTable(
+                ["Factor", "Bucket", "Unit", "Exposure", "Contribution", "Ccy"],
+                exposure_rows,
+            )
+        )
+        bucket_rows = [
+            [bucket, ", ".join(f"{unit}: {self._number(value)}" for unit, value in values.items()) or "0"]
+            for bucket, values in self.aggregate.get("exposure_buckets", {}).items()
+        ]
+        panel.layout.addWidget(DenseTable(["Bucket", "Aggregated Exposure"], bucket_rows))
+        return panel
+
+    def _pnl_section(self):
+        panel = WorkstationPanel("PnL Summary")
+        panel.layout.addWidget(
+            DenseTable(
+                ["Component", "Amount"],
+                [
+                    ["Delta P&L", self._money(self.pnl_explain.delta_pnl)],
+                    ["Gamma P&L", self._money(self.pnl_explain.gamma_pnl)],
+                    ["Vega P&L", self._money(self.pnl_explain.vega_pnl)],
+                    ["Theta P&L", self._money(self.pnl_explain.theta_pnl)],
+                    ["Rate P&L", self._money(self.pnl_explain.rate_pnl)],
+                    ["FX P&L", self._money(self.pnl_explain.fx_pnl)],
+                    ["Explained P&L", self._money(self.pnl_explain.explained_pnl)],
+                    ["Residual", self._money(self.pnl_explain.residual)],
+                ],
+            )
+        )
+        factor_rows = [[factor, self._money(value)] for factor, value in sorted(self.pnl_explain.factor_pnl.items())]
+        panel.layout.addWidget(DenseTable(["Factor", "PnL"], factor_rows or [["No factor PnL", "0"]]))
+        return panel
+
+    def _scenario_section(self):
+        panel = WorkstationPanel("Scenario Summary")
+        bucket_pnl = self.scenario.get("bucket_pnl", {})
+        panel.layout.addWidget(
+            DenseTable(
+                ["Scenario Input", "Value"],
+                [
+                    ["Equity / FX shock", "-5.0"],
+                    ["Volatility shock", "+5 vol pts"],
+                    ["Rates shock", "+100bp"],
+                    ["Credit shock", "+25bp"],
+                    ["Total P&L", self._money(self.scenario.get("pnl", 0.0))],
+                ],
+            )
+        )
+        panel.layout.addWidget(
+            DenseTable(
+                ["Bucket", "P&L"],
+                [[bucket, self._money(value)] for bucket, value in bucket_pnl.items()],
+            )
+        )
+        return panel
+
+    def _valuation_section(self):
+        panel = WorkstationPanel("Valuation")
         panel.layout.addWidget(
             DenseTable(
                 ["Field", "Value"],
                 [
-                    ["Selected", "pos_002"],
-                    ["Product", "IRS 5Y"],
-                    ["Market Value", "4.8m"],
-                    ["DV01", "11.4k"],
-                    ["Model", "irs"],
-                    ["Status", "Approximation"],
-                    ["Warning", "Single-curve limitation"],
+                    ["Portfolio ID", self.valuation.portfolio_id],
+                    ["Base Currency", self.valuation.base_currency],
+                    ["Total Market Value", self._money(self.valuation.total_market_value)],
+                    ["Positions Valued", str(len(self.valuation.positions))],
+                    ["Warnings", str(len(self.valuation.warnings))],
+                    ["Errors", str(len(self.valuation.errors))],
+                ],
+            )
+        )
+        warning_rows = [[warning] for warning in self.valuation.warnings] or [["No warnings"]]
+        error_rows = [[error] for error in self.valuation.errors] or [["No errors"]]
+        panel.layout.addWidget(DenseTable(["Warnings"], warning_rows))
+        panel.layout.addWidget(DenseTable(["Errors"], error_rows))
+        return panel
+
+    def _position_context_panel(self):
+        panel = WorkstationPanel("Position Context")
+        position = self.valuation.positions[0] if self.valuation.positions else None
+        if position is None:
+            rows = [["Selected", "No positions"]]
+        else:
+            rows = [
+                ["Selected", position.id],
+                ["Product", position.instrument],
+                ["Description", position.description],
+                ["Market Value", self._money(position.market_value)],
+                ["Model", position.model_id or "PortfolioService"],
+                ["Model Status", position.model_status or "Manual"],
+                ["Warnings", str(len(position.warnings))],
+                ["Errors", str(len(position.errors))],
+            ]
+        panel.layout.addWidget(DenseTable(["Field", "Value"], rows))
+        return panel
+
+    def _valuation_panel(self):
+        panel = WorkstationPanel("Valuation / Service Notes")
+        panel.layout.addWidget(
+            DenseTable(
+                ["Contract", "State"],
+                [
+                    ["UI boundary", "PortfolioService only"],
+                    ["Direct model calls", "None in PortfolioPanel"],
+                    ["Valuation", "PortfolioService.value()"],
+                    ["Exposure aggregation", "PortfolioService.aggregate()"],
+                    ["Scenario analysis", "PortfolioService.scenario_pnl()"],
+                    ["PnL explain", "PortfolioService.explain_pnl()"],
                 ],
             )
         )
         return panel
 
-    def _build_exposure(self):
-        panel = WorkstationPanel("Scenario P&L / Attribution")
-        panel.layout.addWidget(
-            DenseTable(
-                ["Scenario", "Rates", "FX", "Equity", "Credit", "Vol", "Total P&L"],
-                [
-                    ["2020 Liquidity Shock", "-4.1m", "-2.7m", "-0.8m", "-1.9m", "-0.1m", "-9.6m"],
-                    ["Parallel +100bp", "-4.1m", "0.0m", "0.0m", "-0.2m", "0.0m", "-4.3m"],
-                    ["RUB -12%", "0.0m", "-2.7m", "0.0m", "0.0m", "0.0m", "-2.7m"],
-                ],
-            )
-        )
-        panel.layout.addWidget(
-            DenseTable(
-                ["P&L Component", "Amount", "Notes"],
-                [
-                    ["Delta P&L", "-2.7m", "FX/equity spot"],
-                    ["Rate P&L", "-4.1m", "Curve shift"],
-                    ["Credit P&L", "-1.9m", "Spread widening"],
-                    ["Vega P&L", "-0.1m", "Vol shock"],
-                    ["Residual", "-0.8m", "Model/scenario residual"],
-                ],
-            )
-        )
-        return panel
+    def _context_items(self):
+        return [
+            ("Layer", "Portfolio"),
+            ("Service", "PortfolioService"),
+            ("Portfolio", self.portfolio_service.portfolio.name),
+            ("Base Currency", self.valuation.base_currency),
+            ("Positions", str(len(self.valuation.positions))),
+            ("Warnings", str(len(self.valuation.warnings))),
+            ("Errors", str(len(self.valuation.errors))),
+        ]
+
+    def _money(self, value: float) -> str:
+        return f"{value:,.2f}"
+
+    def _number(self, value: float) -> str:
+        return f"{value:,.4f}"
