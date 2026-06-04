@@ -19,27 +19,29 @@ class PricingWorkspace(WorkstationWorkspace):
         self.snapshot = self.market_data.demo_snapshot()
         self.pricing = PricingService(market_data=self.market_data)
         self.results = self._calculate_results()
+        self.audit_trail = self.pricing.audit.audit_trail()
 
         super().__init__(
             "Pricing",
-            "Governed pricing workflows routed through PricingService",
+            "Institutional pricing workstation for governed rates, FX, equity, credit, and structured workflows",
             chips=[
                 DataSourceChip(self.snapshot.source_value),
                 StatusChip(self._worst_status(), text=f"Governance: {self._worst_status()}"),
             ],
-            actions=[make_action("Run Pricing", True), make_action("Save"), make_action("Export")],
+            actions=[make_action("Run Pricing", True), make_action("Save Set"), make_action("Export Audit")],
             kpi_strip=self._kpi_strip(),
-            left=self._workflow_inventory(),
+            left=self._pricing_inventory(),
             center=self._pricing_tabs(),
             right=self._governance_context(),
-            bottom=self._warning_log(),
+            bottom=self._audit_trail_panel(),
             context_items=[
                 ("Layer", "Pricing"),
                 ("Service", "PricingService"),
                 ("Market Data", self.snapshot.snapshot_id),
+                ("Snapshot Version", f"v{self.snapshot.version}"),
                 ("Source", self.snapshot.source_value),
                 ("Governance", "Model registry enforced"),
-                ("Legacy Calculators", "Removed from workspace navigation"),
+                ("Audit Records", str(len(self.audit_trail))),
             ],
             parent=parent,
         )
@@ -156,20 +158,32 @@ class PricingWorkspace(WorkstationWorkspace):
         return KpiStrip(
             [
                 ("Snapshot", f"v{self.snapshot.version}", self.snapshot.snapshot_id),
-                ("Workflows", str(len(all_results)), "Rates / FX / Equity / Credit / Structured"),
+                ("Pricing Tasks", str(len(all_results)), "Rates / FX / Equity / Credit / Structured"),
                 ("Priced", str(available), "service calculations"),
                 ("Blocked", str(blocked), "governance/readiness"),
                 ("Warnings", str(warning_count), "visible"),
-                ("Errors", str(error_count), "blocked"),
+                ("Audit Records", str(len(self.audit_trail)), f"{error_count} errors"),
             ]
         )
 
-    def _workflow_inventory(self):
+    def _pricing_inventory(self):
         panel = WorkstationPanel("Pricing Sections")
         rows = []
         for section, items in self.results.items():
             rows.append([section, len(items), self._section_status(items), self._section_models(items)])
-        panel.layout.addWidget(DenseTable(["Section", "Workflows", "Status", "Models"], rows))
+        panel.layout.addWidget(DenseTable(["Section", "Pricing Tasks", "Status", "Models"], rows))
+        panel.layout.addWidget(
+            DenseTable(
+                ["Active Snapshot", "Value"],
+                [
+                    ["Snapshot ID", self.snapshot.snapshot_id],
+                    ["Version", f"v{self.snapshot.version}"],
+                    ["Source", self.snapshot.source_value],
+                    ["Quality", self.snapshot.quality],
+                    ["Last Update", self.snapshot.created_at.isoformat(timespec="seconds")],
+                ],
+            )
+        )
         return panel
 
     def _pricing_tabs(self):
@@ -186,18 +200,31 @@ class PricingWorkspace(WorkstationWorkspace):
         panel.layout.addWidget(
             DenseTable(
                 [
-                    "Workflow",
-                    "Input",
+                    "Pricing Task",
+                    "Inputs",
                     "Value",
                     "Model",
                     "Version",
                     "Governance",
+                    "Market Snapshot",
+                    "Warnings",
+                    "Audit ID",
+                    "Inputs Hash",
+                ],
+                [self._result_row(item) for item in self.results[section]],
+            )
+        )
+        panel.layout.addWidget(
+            DenseTable(
+                [
+                    "Pricing Task",
                     "Market Source",
-                    "Snapshot ID",
+                    "Quality",
+                    "Last Update",
                     "Warnings",
                     "Errors",
                 ],
-                [self._result_row(item) for item in self.results[section]],
+                [self._provenance_row(item) for item in self.results[section]],
             )
         )
         return panel
@@ -226,8 +253,26 @@ class PricingWorkspace(WorkstationWorkspace):
         )
         return panel
 
-    def _warning_log(self):
-        panel = WorkstationPanel("Warnings")
+    def _audit_trail_panel(self):
+        panel = WorkstationPanel("Pricing Audit Trail")
+        audit_rows = [
+            [
+                record.get("timestamp", ""),
+                record.get("calculation_type", ""),
+                record.get("model_id", ""),
+                record.get("model_version", ""),
+                record.get("snapshot_id", ""),
+                record.get("calculation_id", ""),
+                self._short_hash(record.get("inputs_hash", "")),
+            ]
+            for record in self.audit_trail
+        ]
+        panel.layout.addWidget(
+            DenseTable(
+                ["Timestamp", "Calculation", "Model", "Version", "Snapshot", "Audit ID", "Inputs Hash"],
+                audit_rows,
+            )
+        )
         rows = []
         for section, items in self.results.items():
             for item in items:
@@ -235,11 +280,12 @@ class PricingWorkspace(WorkstationWorkspace):
                 messages = result.get("errors") or result.get("warnings") or ["No warnings"]
                 for message in messages[:3]:
                     rows.append([section, item["workflow"], result.get("model_id", ""), message])
-        panel.layout.addWidget(DenseTable(["Section", "Workflow", "Model", "Message"], rows))
+        panel.layout.addWidget(DenseTable(["Section", "Pricing Task", "Model", "Message"], rows))
         return panel
 
     def _result_row(self, item: dict) -> list:
         result = item["result"]
+        audit_id = result.get("calculation_id", "")
         return [
             item["workflow"],
             item["input"],
@@ -247,9 +293,20 @@ class PricingWorkspace(WorkstationWorkspace):
             result.get("model_id", ""),
             result.get("model_version", ""),
             result.get("model_status", ""),
-            result.get("market_data_source", ""),
             result.get("market_data_snapshot_id", ""),
             len(result.get("warnings", [])),
+            audit_id,
+            self._short_hash(result.get("inputs_hash", "")),
+        ]
+
+    def _provenance_row(self, item: dict) -> list:
+        result = item["result"]
+        return [
+            item["workflow"],
+            result.get("market_data_source", ""),
+            result.get("market_data_quality", ""),
+            self.snapshot.created_at.isoformat(timespec="seconds"),
+            "; ".join(result.get("warnings", [])[:2]),
             "; ".join(result.get("errors", [])),
         ]
 
@@ -280,3 +337,6 @@ class PricingWorkspace(WorkstationWorkspace):
         if isinstance(value, float):
             return f"{value:,.4f}"
         return str(value)
+
+    def _short_hash(self, value: str) -> str:
+        return value[:12] if value else ""

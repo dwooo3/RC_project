@@ -129,6 +129,15 @@ def test_pricing_workspace_uses_pricing_service_boundary_only():
     assert 'tabs.addTab(self._section_tab("Equity"), "Equity")' in source
     assert 'tabs.addTab(self._section_tab("Credit"), "Credit")' in source
     assert 'tabs.addTab(self._section_tab("Structured"), "Structured")' in source
+    assert "Pricing Audit Trail" in source
+    assert "audit_trail" in source
+    assert "inputs_hash" in source
+    assert "Market Snapshot" in source
+    assert "Governance" in source
+    assert "model_version" in source
+    assert "warnings" in source
+    assert "Calculator" not in source
+    assert "Calculators" not in source
     assert "QStackedWidget" not in source
     assert "_make_panel" not in source
     assert "from app.panels" not in source
