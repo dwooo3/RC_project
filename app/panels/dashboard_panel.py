@@ -1,184 +1,126 @@
-"""Dashboard — clean starting screen with KPIs, quick nav, compact model status."""
+"""Dashboard workstation: daily risk control tower."""
+
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QFrame, QGridLayout, QScrollArea
-)
-from PySide6.QtCore import Qt
-
-from app.widgets import ModelStatusBadge
-from models.registry import summary as registry_summary, MODEL_REGISTRY
-from ui.components import KpiCard, QuickNavCard, StatusChip
-from ui.theme import PALETTE
+from ui.components import DataSourceChip, DenseTable, KpiStrip, StatusChip, WorkstationPanel, make_action
+from ui.layouts import WorkstationWorkspace
 
 
-def _sep():
-    f = QFrame(); f.setFrameShape(QFrame.HLine)
-    f.setStyleSheet(f"color:{PALETTE.bg3};max-height:1px;")
-    return f
+class DashboardPanel(WorkstationWorkspace):
+    """Daily operating console for portfolio, risk, data, and model status."""
 
-
-class DashboardPanel(QWidget):
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self._build()
+        super().__init__(
+            "Dashboard",
+            "Market risk and pricing control tower",
+            chips=[DataSourceChip("DEMO"), StatusChip("Approximation", text="Warnings: 4")],
+            actions=[
+                make_action("Refresh"),
+                make_action("Run Daily Pack", primary=True),
+                make_action("Export"),
+            ],
+            kpi_strip=KpiStrip(
+                [
+                    ("Market Value", "124.8m RUB", "+0.4%"),
+                    ("Daily P&L", "+482k", "Demo portfolio"),
+                    ("VaR 99%", "3.8m", "Not run today"),
+                    ("ES 99%", "5.1m", "Not run today"),
+                    ("Worst Stress", "-9.6m", "2020 shock"),
+                    ("Warnings", "4", "Open log"),
+                ]
+            ),
+            left=self._build_checklist(),
+            center=self._build_status(),
+            right=self._build_warnings(),
+            bottom=self._build_alerts(),
+            context_items=[
+                ("Portfolio", "Main Portfolio"),
+                ("Book", "Trading"),
+                ("Valuation Date", "2026-06-04"),
+                ("Snapshot", "DEMO:snap_20260604:v3"),
+                ("Mode", "Demo"),
+                ("Last Calculation", "No run in this session"),
+            ],
+            parent=parent,
+        )
 
-    def _build(self):
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
+    def _build_checklist(self):
+        panel = WorkstationPanel("Daily Checklist")
+        panel.layout.addWidget(
+            DenseTable(
+                ["Done", "Task", "Action"],
+                [
+                    ["Yes", "Market data snapshot", "Open Market Data"],
+                    ["Yes", "Portfolio loaded", "Open Portfolio"],
+                    ["No", "Portfolio valued today", "Value Portfolio"],
+                    ["No", "VaR run today", "Run VaR"],
+                    ["No", "Stress pack run", "Run Stress"],
+                    ["No", "Export report", "Export"],
+                ],
+            )
+        )
+        return panel
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    def _build_status(self):
+        panel = WorkstationPanel("Portfolio / Risk Status")
+        panel.layout.addWidget(
+            DenseTable(
+                ["Area", "Metric", "Value", "Status"],
+                [
+                    ["Portfolio", "Positions", "128", "Loaded"],
+                    ["Portfolio", "Market Value", "124.8m RUB", "Stale"],
+                    ["Risk", "VaR 99%", "3.8m", "Needs run"],
+                    ["Risk", "Worst Stress", "-9.6m", "Needs run"],
+                    ["Market Data", "Snapshot", "DEMO:v3", "Demo"],
+                    ["Governance", "Blocked Models", "2", "Review"],
+                ],
+            )
+        )
+        panel.layout.addWidget(
+            DenseTable(
+                ["Time", "Type", "Status", "Warnings"],
+                [
+                    ["10:42:18", "VaR", "Demo", "Synthetic returns"],
+                    ["10:31:18", "Market Data", "Created", "Demo source"],
+                    ["09:55:02", "Bond Pricing", "Approx", "Methodology warning"],
+                ],
+            )
+        )
+        return panel
 
-        body = QWidget()
-        body.setStyleSheet(f"background:{PALETTE.bg1_alt};")
-        lay = QVBoxLayout(body)
-        lay.setContentsMargins(32, 28, 32, 32)
-        lay.setSpacing(24)
+    def _build_warnings(self):
+        panel = WorkstationPanel("Warnings / Required Actions")
+        panel.layout.addWidget(
+            DenseTable(
+                ["Severity", "Message", "Action"],
+                [
+                    ["Warning", "Demo market data active", "Open Market Data"],
+                    ["Warning", "Bond model approximation", "Open Governance"],
+                    ["Error", "Broken model blocked", "Open Model Registry"],
+                    ["Warning", "IRS single-curve limitation", "Open Pricing"],
+                ],
+            )
+        )
+        panel.layout.addWidget(
+            DenseTable(
+                ["Model Status", "Count"],
+                [["Validated", 8], ["Approximation", 6], ["Prototype", 9], ["Blocked", 2]],
+            )
+        )
+        return panel
 
-        # ── Header ────────────────────────────────────────
-        hdr = QHBoxLayout()
-        col = QVBoxLayout(); col.setSpacing(3)
-        title = QLabel("RiskCalc")
-        title.setStyleSheet(
-            f"color:{PALETTE.txt0};font-size:28px;font-weight:700;"
-            f"letter-spacing:-0.6px;background:transparent;")
-        sub = QLabel("Market Risk & Pricing Engine")
-        sub.setStyleSheet(f"color:{PALETTE.txt2};font-size:12px;background:transparent;")
-        col.addWidget(title); col.addWidget(sub)
-        hdr.addLayout(col); hdr.addStretch()
-
-        data_chip = StatusChip("Approximation", text="⬤  Data: Demo / Manual")
-        hdr.addWidget(data_chip, alignment=Qt.AlignTop)
-        lay.addLayout(hdr)
-        lay.addWidget(_sep())
-
-        # ── KPI row ───────────────────────────────────────
-        kpi_lbl = QLabel("KEY METRICS")
-        kpi_lbl.setStyleSheet(
-            f"color:{PALETTE.txt2};font-size:10px;font-weight:700;"
-            f"letter-spacing:1px;background:transparent;")
-        lay.addWidget(kpi_lbl)
-
-        kpi_grid = QGridLayout(); kpi_grid.setSpacing(10)
-        kpi_data = [
-            ("Portfolio MV",  "—",   "",             PALETTE.txt0,  True),
-            ("Daily P&L",     "—",   "",             PALETTE.txt0,  False),
-            ("VaR 95% (1d)",  "—",   "Not computed", PALETTE.red,   False),
-            ("ES 95% (1d)",   "—",   "Not computed", PALETTE.red,   False),
-            ("DV01",          "—",   "",             PALETTE.txt0,  False),
-            ("Vega",          "—",   "",             PALETTE.txt0,  False),
-        ]
-        self._kpi: dict = {}
-        for i, (lbl, val, sub, col, hl) in enumerate(kpi_data):
-            card = KpiCard(lbl, val, sub, col, hl)
-            self._kpi[lbl] = card
-            kpi_grid.addWidget(card, i // 3, i % 3)
-        lay.addLayout(kpi_grid)
-        lay.addWidget(_sep())
-
-        # ── Quick navigation ──────────────────────────────
-        nav_lbl = QLabel("QUICK ACCESS")
-        nav_lbl.setStyleSheet(
-            f"color:{PALETTE.txt2};font-size:10px;font-weight:700;"
-            f"letter-spacing:1px;background:transparent;")
-        lay.addWidget(nav_lbl)
-
-        nav_grid = QGridLayout(); nav_grid.setSpacing(8)
-        nav_items = [
-            ("Market",      "market",    "Yield Curves · Vol Surface · FX"),
-            ("Pricing",     "pricing",   "Bonds · Options · IRS · Exotics"),
-            ("Portfolio",   "portfolio", "Positions · Exposure · Attribution"),
-            ("Risk",        "risk",      "VaR · Stress Testing · Greeks"),
-            ("Analytics",   "analytics", "Trees · MC · Heston/SABR · GARCH"),
-            ("Settings",    "settings",  "Theme · Data sources · About"),
-        ]
-        for i, (nm, key, hint) in enumerate(nav_items):
-            card = QuickNavCard(nm, hint, on_click=lambda k=key: self._navigate(k))
-            nav_grid.addWidget(card, i // 3, i % 3)
-        lay.addLayout(nav_grid)
-        lay.addWidget(_sep())
-
-        # ── Compact model status ──────────────────────────
-        ms_hdr = QHBoxLayout()
-        ms_title = QLabel("MODEL VALIDATION STATUS")
-        ms_title.setStyleSheet(
-            f"color:{PALETTE.txt2};font-size:10px;font-weight:700;"
-            f"letter-spacing:1px;background:transparent;")
-        ms_hdr.addWidget(ms_title)
-        ms_hdr.addStretch()
-
-        # Summary counts
-        counts = registry_summary()
-        summary_parts = []
-        for status, count in counts.items():
-            if count > 0:
-                summary_parts.append(f"{count} {status.value.lower()}")
-        summary_str = "  ·  ".join(summary_parts)
-        ms_summary = QLabel(summary_str)
-        ms_summary.setStyleSheet(f"color:{PALETTE.txt2};font-size:10px;background:transparent;")
-        ms_hdr.addWidget(ms_summary)
-        lay.addLayout(ms_hdr)
-
-        # Compact status grid — show only non-validated entries as warning
-        ms_frame = QFrame()
-        ms_frame.setStyleSheet(
-            f"QFrame{{background:{PALETTE.bg2_alt};border:1px solid {PALETTE.bg3};border-radius:8px;}}")
-        ms_lay = QVBoxLayout(ms_frame)
-        ms_lay.setContentsMargins(14, 10, 14, 10)
-        ms_lay.setSpacing(0)
-
-        # Group by domain
-        domain_entries: dict[str, list] = {}
-        for model_id, info in MODEL_REGISTRY.items():
-            domain = info["domain"]
-            domain_entries.setdefault(domain, []).append((info["name"], info["status"], info["notes"]))
-
-        first_domain = True
-        for domain, entries in sorted(domain_entries.items()):
-            if not first_domain:
-                div = QFrame(); div.setFrameShape(QFrame.HLine)
-                div.setStyleSheet(f"color:{PALETTE.bg3};max-height:1px;margin:4px 0;")
-                ms_lay.addWidget(div)
-            first_domain = False
-
-            dom_lbl = QLabel(domain.upper())
-            dom_lbl.setStyleSheet(
-                f"color:{PALETTE.txt2};font-size:9px;font-weight:700;"
-                f"letter-spacing:0.8px;background:transparent;margin-top:4px;")
-            ms_lay.addWidget(dom_lbl)
-
-            for name, status, notes in entries:
-                row = QHBoxLayout(); row.setSpacing(8)
-                nm = QLabel(name)
-                nm.setStyleSheet(
-                    f"color:{PALETTE.txt1};font-size:11px;background:transparent;")
-                nm.setFixedWidth(220)
-                badge = ModelStatusBadge(status)
-                nt = QLabel(notes)
-                nt.setStyleSheet(
-                    f"color:{PALETTE.txt2};font-size:10px;background:transparent;")
-                nt.setWordWrap(True)
-                row.addWidget(nm)
-                row.addWidget(badge)
-                row.addWidget(nt, 1)
-                ms_lay.addLayout(row)
-
-        lay.addWidget(ms_frame)
-        lay.addStretch()
-
-        scroll.setWidget(body)
-        outer.addWidget(scroll)
-
-    def _navigate(self, key: str):
-        w = self
-        while w is not None:
-            if hasattr(w, "sidebar") and hasattr(w.sidebar, "select_key"):
-                w.sidebar.select_key(key)
-                break
-            w = w.parent()
+    def _build_alerts(self):
+        panel = WorkstationPanel("Alerts")
+        panel.layout.addWidget(
+            DenseTable(
+                ["Severity", "Object", "Message", "Owner", "Action"],
+                [
+                    ["P1", "Market Data", "Snapshot uses demo data", "MarketDataService", "Validate"],
+                    ["P1", "Portfolio", "Valuation not run today", "PortfolioService", "Value"],
+                    ["P1", "Risk", "VaR based on synthetic returns", "RiskService", "Load P&L"],
+                    ["P2", "Governance", "Validation evidence incomplete", "GovernanceService", "Review"],
+                ],
+            )
+        )
+        return panel

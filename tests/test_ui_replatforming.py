@@ -34,8 +34,9 @@ def test_dashboard_uses_shared_cards_not_local_duplicate_card_classes():
 
     assert "class _KpiCard" not in source
     assert "class _NavCard" not in source
-    assert "KpiCard(" in source
-    assert "QuickNavCard(" in source
+    assert "KpiStrip(" in source
+    assert "WorkstationPanel(" in source
+    assert "DenseTable(" in source
     assert "StatusChip(" in source
 
 
