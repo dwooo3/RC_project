@@ -202,6 +202,38 @@ class MarketDataDB:
         )
         self.conn.commit()
 
+    def save_equity_quote(self, snapshot_id: str, row: dict) -> None:
+        self.conn.execute(
+            """INSERT OR REPLACE INTO equity_quotes
+               (snapshot_id, secid, last, prevprice, board, volume) VALUES (?,?,?,?,?,?)""",
+            (snapshot_id, row["secid"], row.get("last"), row.get("prevprice"),
+             row.get("board"), row.get("volume")),
+        )
+        self.conn.commit()
+
+    def save_index_value(self, snapshot_id: str, indexid: str,
+                         value: float | None, trade_date: str | None) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO index_values (snapshot_id, indexid, value, trade_date) VALUES (?,?,?,?)",
+            (snapshot_id, indexid, value, trade_date),
+        )
+        self.conn.commit()
+
+    def get_equity_quotes(self, snapshot_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM equity_quotes WHERE snapshot_id=?", (snapshot_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_equity_spot(self, snapshot_id: str, secid: str) -> float | None:
+        row = self.conn.execute(
+            "SELECT last, prevprice FROM equity_quotes WHERE snapshot_id=? AND secid=?",
+            (snapshot_id, secid),
+        ).fetchone()
+        if not row:
+            return None
+        return row["last"] if row["last"] is not None else row["prevprice"]
+
     def save_time_series(self, factor_id: str, kind: str,
                          points: list[tuple[str, float]]) -> None:
         self.conn.executemany(

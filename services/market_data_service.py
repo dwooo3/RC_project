@@ -3,6 +3,8 @@
 from datetime import date
 from typing import Any, Protocol
 
+import numpy as np
+
 from curves import russia
 from curves.yield_curve import YieldCurve
 from domain.market_data import MarketDataSnapshot, MarketDataSource, MarketDataStore
@@ -448,6 +450,27 @@ class MarketDataService:
             }
             for snapshot in self.store.list_versions(snapshot_id)
         ]
+
+    def get_returns(
+        self,
+        factor_id: str,
+        kind: str = "price",
+        method: str = "log",
+    ) -> np.ndarray:
+        """
+        Build a returns series from the local time_series store for a risk factor
+        (e.g. "IMOEX:price", "SBER:price"). Feeds VaR / backtest / stress
+        (architecture §10.4). Requires a configured market_db.
+        """
+        if self.market_db is None:
+            raise RuntimeError("get_returns requires a configured market_db (Phase C time series)")
+        rows = self.market_db.get_time_series(factor_id, kind)
+        prices = np.array([r["value"] for r in rows], dtype=float)
+        if prices.size < 2 or np.any(prices <= 0):
+            return prices[1:] - prices[:-1] if prices.size >= 2 else np.array([])
+        if method == "log":
+            return np.diff(np.log(prices))
+        return prices[1:] / prices[:-1] - 1.0
 
     def get_fx_rate(self, pair: str, snapshot: MarketDataSnapshot | None = None) -> float:
         snapshot = snapshot or self.demo_snapshot()

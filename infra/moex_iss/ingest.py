@@ -231,6 +231,103 @@ class MoexIngestor:
             self.db.log_ingest(endpoint, "error", 0, started, datetime.now(), str(exc))
             raise
 
+    # -- Equity price history (TQBR) -> time_series ------------------------
+    def ingest_equity_history(
+        self,
+        secid: str,
+        from_date: date,
+        till_date: date | None = None,
+        *,
+        board: str = "TQBR",
+    ) -> int:
+        """
+        Ingest a share's close-price history into time_series (kind='price').
+
+        Spec §2: /history/engines/stock/markets/shares/boards/<board>/securities/<secid>.
+        Day-scoped fill: pass from==till (e.g. 2026-06-02).
+        """
+        started = datetime.now()
+        endpoint = f"history/engines/stock/markets/shares/boards/{board}/securities/{secid}"
+        return self._ingest_price_history(
+            endpoint, f"{secid}:price", from_date, till_date, started,
+            price_cols=("CLOSE", "LEGALCLOSEPRICE", "WAPRICE", "close"),
+        )
+
+    # -- Index history (IMOEX / RVI / RTSI) -> time_series -----------------
+    def ingest_index_history(
+        self,
+        indexid: str,
+        from_date: date,
+        till_date: date | None = None,
+    ) -> int:
+        """
+        Ingest an index close-value history into time_series (kind='price').
+
+        Spec §2: index values come from the index market history
+        (/history/engines/stock/markets/index/securities/<indexid>), NOT /analytics.
+        """
+        started = datetime.now()
+        endpoint = f"history/engines/stock/markets/index/securities/{indexid}"
+        return self._ingest_price_history(
+            endpoint, f"{indexid}:price", from_date, till_date, started,
+            price_cols=("CLOSE", "close", "VALUE"),
+        )
+
+    def _ingest_price_history(self, endpoint, factor_id, from_date, till_date,
+                              started, *, price_cols) -> int:
+        till_date = till_date or from_date
+        try:
+            rows = self.client.get_block_paginated(
+                endpoint, "history",
+                {"from": from_date.isoformat(), "till": till_date.isoformat()},
+            )
+            points: list[tuple[str, float]] = []
+            for row in rows:
+                dt = row.get("TRADEDATE") or row.get("tradedate")
+                price = None
+                for col in price_cols:
+                    if col in row:
+                        price = _to_float(row[col])
+                        if price is not None:
+                            break
+                if dt and price is not None:
+                    points.append((str(dt), price))
+            self.db.save_time_series(factor_id, "price", points)
+            self.db.log_ingest(endpoint, "ok", len(points), started, datetime.now())
+            return len(points)
+        except Exception as exc:
+            self.db.log_ingest(endpoint, "error", 0, started, datetime.now(), str(exc))
+            raise
+
+    # -- Equity current quotes (TQBR) -> equity_quotes ---------------------
+    def ingest_equity_quotes(self, snapshot_id: str, valuation_date: date,
+                             *, board: str = "TQBR") -> int:
+        """Ingest current share quotes (spot) into equity_quotes."""
+        started = datetime.now()
+        endpoint = f"engines/stock/markets/shares/boards/{board}/securities"
+        try:
+            blocks = self.client.get_blocks(endpoint, {"iss.only": "securities,marketdata"})
+            sec = {r.get("SECID"): r for r in blocks.get("securities", [])}
+            md = {r.get("SECID"): r for r in blocks.get("marketdata", [])}
+            count = 0
+            for secid, s in sec.items():
+                if not secid:
+                    continue
+                m = md.get(secid, {})
+                self.db.save_equity_quote(snapshot_id, {
+                    "secid": secid,
+                    "last": _to_float(m.get("LAST") or m.get("LCLOSEPRICE")),
+                    "prevprice": _to_float(s.get("PREVPRICE") or m.get("LCLOSEPRICE")),
+                    "board": board,
+                    "volume": _to_float(m.get("VALTODAY")),
+                })
+                count += 1
+            self.db.log_ingest(endpoint, "ok", count, started, datetime.now())
+            return count
+        except Exception as exc:
+            self.db.log_ingest(endpoint, "error", 0, started, datetime.now(), str(exc))
+            raise
+
     # -- Corporate curves (issuer/sector spreads over КБД) -----------------
     def ingest_corporate_curves(
         self,
