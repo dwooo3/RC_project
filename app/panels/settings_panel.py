@@ -40,7 +40,7 @@ class SettingsPanel(QWidget):
         title = QLabel("Settings")
         title.setStyleSheet(
             f"color:{_TXT0};font-size:24px;font-weight:700;"
-            f"letter-spacing:-0.5px;background:transparent;")
+            f"letter-spacing:0;background:transparent;")
         lay.addWidget(title)
 
         sep = QFrame(); sep.setFrameShape(QFrame.HLine)

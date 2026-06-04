@@ -28,8 +28,8 @@ class WorkstationWorkspace(QWidget):
         super().__init__(parent)
         self.setStyleSheet(f"background:{PALETTE.bg_workspace};")
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 10, 12, 10)
-        root.setSpacing(8)
+        root.setContentsMargins(10, 8, 10, 8)
+        root.setSpacing(6)
 
         root.addWidget(WorkspaceHeader(title, subtitle, chips=chips, actions=actions))
         if kpi_strip is not None:
@@ -39,14 +39,14 @@ class WorkstationWorkspace(QWidget):
         main.setHandleWidth(1)
         main.setStyleSheet(f"QSplitter::handle{{background:{PALETTE.divider};}}")
         if left is not None:
-            left.setMinimumWidth(280)
-            left.setMaximumWidth(380)
+            left.setMinimumWidth(260)
+            left.setMaximumWidth(340)
             main.addWidget(left)
         if center is not None:
             main.addWidget(center)
         if right is not None:
-            right.setMinimumWidth(280)
-            right.setMaximumWidth(420)
+            right.setMinimumWidth(260)
+            right.setMaximumWidth(360)
             main.addWidget(right)
         context = ContextDrawer()
         context.set_items(context_items or [])
@@ -55,7 +55,7 @@ class WorkstationWorkspace(QWidget):
 
         root.addWidget(main, 1)
         if bottom is not None:
-            bottom.setMinimumHeight(150)
+            bottom.setMinimumHeight(132)
             root.addWidget(bottom)
 
 

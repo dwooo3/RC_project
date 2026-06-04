@@ -52,7 +52,7 @@ class WorkspaceCard(QFrame):
             self.setFixedHeight(fixed_height)
         self.setStyleSheet(
             f"QFrame#{object_name}{{background:{PALETTE.bg_panel};"
-            f"border:1px solid {PALETTE.border_default};border-radius:6px;}}"
+            f"border:1px solid {PALETTE.border_soft};border-radius:4px;}}"
         )
 
 
@@ -62,8 +62,8 @@ class WorkstationPanel(WorkspaceCard):
     def __init__(self, title: str = "", parent=None):
         super().__init__(parent, object_name="workstation_panel")
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(10, 8, 10, 10)
-        self.layout.setSpacing(8)
+        self.layout.setContentsMargins(9, 7, 9, 8)
+        self.layout.setSpacing(6)
         if title:
             label = SectionLabel(title)
             self.layout.addWidget(label)
@@ -85,11 +85,11 @@ class KpiCard(WorkspaceCard):
             parent,
             object_name="metric_card_highlight" if highlight else "metric_card",
         )
-        self.setMinimumHeight(88)
+        self.setMinimumHeight(64)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 8, 12, 8)
-        lay.setSpacing(3)
+        lay.setContentsMargins(10, 6, 10, 6)
+        lay.setSpacing(1)
 
         self._name_lbl = QLabel(label.upper())
         self._name_lbl.setObjectName("metric_name")
@@ -97,7 +97,7 @@ class KpiCard(WorkspaceCard):
         self._val_lbl = QLabel(str(value))
         self._val_lbl.setObjectName("metric_value")
         font = QFont()
-        font.setPointSize(17)
+        font.setPointSize(15)
         font.setBold(True)
         self._val_lbl.setFont(font)
 
@@ -114,14 +114,14 @@ class KpiCard(WorkspaceCard):
         self._sub_lbl.setText(sub)
         resolved_color = color or value_color(value)
         self._val_lbl.setStyleSheet(
-            f"color:{resolved_color};font-size:17px;font-weight:700;"
-            "letter-spacing:-0.4px;background:transparent;"
+            f"color:{resolved_color};font-size:15px;font-weight:700;"
+            "letter-spacing:0;background:transparent;"
         )
 
     def clear(self):
         self._val_lbl.setText("—")
         self._val_lbl.setStyleSheet(
-            f"color:{PALETTE.bg4};font-size:17px;font-weight:700;background:transparent;"
+            f"color:{PALETTE.bg4};font-size:15px;font-weight:700;background:transparent;"
         )
         self._sub_lbl.setText("")
 
@@ -152,8 +152,8 @@ class StatusChip(QLabel):
         status_value = status.value if hasattr(status, "value") else str(status)
         style, default_text = status_style(status_value)
         self.setText(text or f"{prefix}{default_text}")
-        self.setStyleSheet(f"{style} border-radius:4px; padding:2px 7px; "
-                           "font-size:10px; font-weight:700; letter-spacing:0.2px;")
+        self.setStyleSheet(f"{style} border-radius:3px; padding:1px 6px; "
+                           "font-size:9px; font-weight:700; letter-spacing:0.2px;")
         self.setToolTip(f"Status: {status_value}")
 
 
@@ -175,8 +175,8 @@ class DataSourceChip(QLabel):
         bg, fg = self._COLORS.get(key, (PALETTE.bg_panel_elevated, PALETTE.txt1))
         self.setText(key)
         self.setStyleSheet(
-            f"background:{bg};color:{fg};border:1px solid {PALETTE.border_default};"
-            "border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;"
+            f"background:{bg};color:{fg};border:1px solid {PALETTE.border_soft};"
+            "border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700;"
         )
 
 
@@ -193,20 +193,20 @@ class WarningBanner(QLabel):
         self.setObjectName("banner_error")
         self.setStyleSheet(
             f"background:{PALETTE.status_broken_bg};border:1px solid {PALETTE.status_broken_border};"
-            f"border-radius:6px;color:{PALETTE.red_text};padding:7px 14px;"
-            "font-size:11px;margin:4px 14px;"
+            f"border-radius:4px;color:{PALETTE.red_text};padding:6px 10px;"
+            "font-size:11px;margin:2px 0;"
         )
-        self.setText(f"⚠  {msg}")
+        self.setText(f"WARN | {msg}")
         self.show()
 
     def show_ok(self, msg: str):
         self.setObjectName("banner_ok")
         self.setStyleSheet(
             f"background:{PALETTE.status_valid_bg};border:1px solid {PALETTE.status_valid_border};"
-            f"border-radius:6px;color:{PALETTE.green};padding:7px 14px;"
-            "font-size:11px;margin:4px 14px;"
+            f"border-radius:4px;color:{PALETTE.green};padding:6px 10px;"
+            "font-size:11px;margin:2px 0;"
         )
-        self.setText(f"✓  {msg}")
+        self.setText(f"OK | {msg}")
         self.show()
 
     def clear(self):
@@ -220,8 +220,8 @@ class SectionLabel(QLabel):
     def __init__(self, text: str, parent=None):
         super().__init__(text.upper(), parent)
         self.setStyleSheet(
-            f"color:{PALETTE.txt2};font-size:10px;font-weight:700;"
-            "letter-spacing:0.8px;background:transparent;"
+            f"color:{PALETTE.txt2};font-size:9px;font-weight:700;"
+            "letter-spacing:0.6px;background:transparent;"
         )
 
 
@@ -239,13 +239,13 @@ class WorkspaceHeader(QWidget):
         super().__init__(parent)
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(10)
+        row.setSpacing(8)
 
         title_col = QVBoxLayout()
         title_col.setSpacing(1)
         title_label = QLabel(title)
         title_label.setStyleSheet(
-            f"color:{PALETTE.txt0};font-size:20px;font-weight:700;background:transparent;"
+            f"color:{PALETTE.txt0};font-size:18px;font-weight:700;background:transparent;"
         )
         title_col.addWidget(title_label)
         if subtitle:
@@ -269,11 +269,11 @@ class CommandBar(QWidget):
         super().__init__(parent)
         self.setFixedHeight(44)
         self.setStyleSheet(
-            f"background:{PALETTE.bg_topbar};border-bottom:1px solid {PALETTE.border_default};"
+            f"background:{PALETTE.bg_topbar};border-bottom:1px solid {PALETTE.border_soft};"
         )
         row = QHBoxLayout(self)
         row.setContentsMargins(10, 6, 10, 6)
-        row.setSpacing(8)
+        row.setSpacing(6)
 
         title = QLabel("RiskCalc")
         title.setStyleSheet(f"color:{PALETTE.txt0};font-size:14px;font-weight:700;")
@@ -313,11 +313,11 @@ class ContextDrawer(WorkspaceCard):
         self.setFixedWidth(320)
         self.setStyleSheet(
             f"QFrame#context_drawer{{background:{PALETTE.bg_panel};"
-            f"border-left:1px solid {PALETTE.border_default};border-radius:0;}}"
+            f"border-left:1px solid {PALETTE.border_soft};border-radius:0;}}"
         )
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(12, 10, 12, 12)
-        self.layout.setSpacing(8)
+        self.layout.setContentsMargins(10, 8, 10, 10)
+        self.layout.setSpacing(6)
         self.title = SectionLabel(title)
         self.layout.addWidget(self.title)
 
@@ -329,7 +329,7 @@ class ContextDrawer(WorkspaceCard):
                 widget.deleteLater()
         for label, value in items:
             row = QHBoxLayout()
-            row.setSpacing(8)
+            row.setSpacing(6)
             l = QLabel(label)
             l.setStyleSheet(f"color:{PALETTE.txt2};font-size:10px;background:transparent;")
             v = QLabel(value)
@@ -349,12 +349,12 @@ class KpiStrip(QWidget):
         super().__init__(parent)
         grid = QGridLayout(self)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(8)
+        grid.setSpacing(6)
         self.cards: dict[str, KpiCard] = {}
         for idx, metric in enumerate(metrics):
             label, value, sub = metric
             card = KpiCard(label, value, sub)
-            card.setMinimumHeight(66)
+            card.setMinimumHeight(58)
             self.cards[label] = card
             grid.addWidget(card, 0, idx)
 
@@ -369,8 +369,11 @@ class DenseTable(QTableWidget):
         self.setSortingEnabled(True)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.setShowGrid(False)
+        self.setWordWrap(False)
         self.verticalHeader().setVisible(False)
-        self.verticalHeader().setDefaultSectionSize(26)
+        self.verticalHeader().setDefaultSectionSize(24)
+        self.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         if rows:
             self.set_rows(rows)
@@ -409,15 +412,15 @@ class QuickNavCard(WorkspaceCard):
     def __init__(self, name: str, hint: str, on_click=None, parent=None):
         super().__init__(parent, object_name="nav_quick", fixed_height=58)
         self.setStyleSheet(
-            f"QFrame#nav_quick{{background:{PALETTE.bg2_alt};border:1px solid {PALETTE.bg3};"
-            "border-radius:8px;}}"
-            f"QFrame#nav_quick:hover{{background:{PALETTE.bg2};border-color:{PALETTE.bg5};}}"
+            f"QFrame#nav_quick{{background:{PALETTE.bg2_alt};border:1px solid {PALETTE.border_soft};"
+            "border-radius:4px;}}"
+            f"QFrame#nav_quick:hover{{background:{PALETTE.bg2};border-color:{PALETTE.border_strong};}}"
         )
         self.setCursor(Qt.PointingHandCursor)
         self._on_click = on_click
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 8, 14, 8)
+        lay.setContentsMargins(10, 7, 10, 7)
         lay.setSpacing(1)
 
         title = QLabel(name)

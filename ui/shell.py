@@ -78,17 +78,17 @@ class GlobalNavigation(QWidget):
         root.setSpacing(0)
 
         logo = QWidget()
-        logo.setFixedHeight(64)
+        logo.setFixedHeight(56)
         logo.setStyleSheet(
-            f"background:{PALETTE.bg_sidebar};border-bottom:1px solid {PALETTE.border_default};"
+            f"background:{PALETTE.bg_sidebar};border-bottom:1px solid {PALETTE.border_soft};"
         )
         logo_layout = QVBoxLayout(logo)
-        logo_layout.setContentsMargins(16, 12, 16, 10)
+        logo_layout.setContentsMargins(14, 10, 14, 8)
         logo_layout.setSpacing(2)
 
         title = QLabel("RiskCalc")
         title.setStyleSheet(
-            f"color:{PALETTE.txt0};font-size:16px;font-weight:700;background:transparent;"
+            f"color:{PALETTE.txt0};font-size:15px;font-weight:700;background:transparent;"
         )
         subtitle = QLabel("Market Risk Workstation")
         subtitle.setStyleSheet(
@@ -101,14 +101,14 @@ class GlobalNavigation(QWidget):
         body = QWidget()
         body.setStyleSheet(f"background:{PALETTE.bg_sidebar};")
         nav_layout = QVBoxLayout(body)
-        nav_layout.setContentsMargins(8, 12, 8, 8)
-        nav_layout.setSpacing(2)
+        nav_layout.setContentsMargins(6, 8, 6, 6)
+        nav_layout.setSpacing(1)
 
         for idx, (display, key) in enumerate(NAV_ITEMS, 1):
             button = QPushButton(display)
             button.setCheckable(True)
             button.setObjectName("nav_btn")
-            button.setFixedHeight(38)
+            button.setFixedHeight(32)
             button.setToolTip(f"Ctrl+{idx}")
             button.setStyleSheet(
                 f"""
@@ -116,11 +116,11 @@ class GlobalNavigation(QWidget):
                     background: transparent;
                     color: {PALETTE.txt1};
                     border: none;
-                    border-radius: 5px;
+                    border-radius: 3px;
                     font-size: 12px;
                     font-weight: 600;
                     text-align: left;
-                    padding: 0 12px;
+                    padding: 0 10px;
                 }}
                 QPushButton#nav_btn:hover {{
                     background: {PALETTE.bg_panel_elevated};
@@ -143,8 +143,8 @@ class GlobalNavigation(QWidget):
 
         footer = QLabel("DEMO data · Ctrl+K")
         footer.setStyleSheet(
-            f"color:{PALETTE.txt2};font-size:10px;padding:8px 16px;"
-            f"background:{PALETTE.bg_sidebar};border-top:1px solid {PALETTE.border_default};"
+            f"color:{PALETTE.txt2};font-size:10px;padding:6px 14px;"
+            f"background:{PALETTE.bg_sidebar};border-top:1px solid {PALETTE.border_soft};"
         )
         root.addWidget(footer)
 
@@ -164,19 +164,19 @@ class WorkspaceHeaderBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(54)
+        self.setFixedHeight(48)
         self.setStyleSheet(
-            f"background:{PALETTE.bg_workspace};border-bottom:1px solid {PALETTE.border_default};"
+            f"background:{PALETTE.bg_workspace};border-bottom:1px solid {PALETTE.border_soft};"
         )
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 7, 12, 7)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 5, 10, 5)
+        layout.setSpacing(6)
 
         text_col = QVBoxLayout()
         text_col.setSpacing(1)
         self.title = QLabel("")
         self.title.setStyleSheet(
-            f"color:{PALETTE.txt0};font-size:18px;font-weight:700;background:transparent;"
+            f"color:{PALETTE.txt0};font-size:16px;font-weight:700;background:transparent;"
         )
         self.subtitle = QLabel("")
         self.subtitle.setStyleSheet(
@@ -189,7 +189,7 @@ class WorkspaceHeaderBar(QWidget):
         self.scope = QLabel("Scope: Main Portfolio / Trading / DEMO")
         self.scope.setStyleSheet(
             f"color:{PALETTE.txt1};font-size:11px;background:{PALETTE.bg_panel};"
-            f"border:1px solid {PALETTE.border_default};border-radius:4px;padding:3px 8px;"
+            f"border:1px solid {PALETTE.border_soft};border-radius:3px;padding:2px 7px;"
         )
         layout.addWidget(self.scope)
 
@@ -204,9 +204,9 @@ class ShellStatusBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(24)
+        self.setFixedHeight(22)
         self.setStyleSheet(
-            f"background:{PALETTE.bg_topbar};border-top:1px solid {PALETTE.border_default};"
+            f"background:{PALETTE.bg_topbar};border-top:1px solid {PALETTE.border_soft};"
         )
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 0, 10, 0)
@@ -258,7 +258,7 @@ class WorkspaceShell(QWidget):
 
         divider = QFrame()
         divider.setFrameShape(QFrame.VLine)
-        divider.setStyleSheet(f"color:{PALETTE.border_default};max-width:1px;")
+        divider.setStyleSheet(f"color:{PALETTE.border_soft};max-width:1px;")
         body_layout.addWidget(divider)
 
         workspace_column = QWidget()

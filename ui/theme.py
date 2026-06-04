@@ -71,27 +71,27 @@ def status_style(status_value: str) -> tuple[str, str]:
         "Validated": (
             f"background:{PALETTE.status_valid_bg};color:{PALETTE.green};"
             f"border:1px solid {PALETTE.status_valid_border};",
-            "✓ Validated",
+            "VALIDATED",
         ),
         "Approximation": (
             f"background:{PALETTE.status_approx_bg};color:{PALETTE.amber};"
             f"border:1px solid {PALETTE.status_approx_border};",
-            "~ Approximation",
+            "APPROX",
         ),
         "Prototype": (
             f"background:{PALETTE.status_prototype_bg};color:{PALETTE.status_prototype_text};"
             f"border:1px solid {PALETTE.status_prototype_border};",
-            "⚗ Prototype",
+            "PROTOTYPE",
         ),
         "Placeholder": (
             f"background:{PALETTE.status_placeholder_bg};color:{PALETTE.accent};"
             f"border:1px solid {PALETTE.status_placeholder_border};",
-            "◌ Placeholder",
+            "PLACEHOLDER",
         ),
         "Broken": (
             f"background:{PALETTE.status_broken_bg};color:{PALETTE.red};"
             f"border:1px solid {PALETTE.status_broken_border};",
-            "✕ Broken",
+            "BROKEN",
         ),
     }
     return styles.get(status_value, ("", status_value))
@@ -132,23 +132,23 @@ QFrame#workstation_panel,
 QFrame#workspace_card,
 QFrame#metric_card {{
     background-color: {PALETTE.bg_panel};
-    border: 1px solid {PALETTE.border_default};
-    border-radius: 6px;
+    border: 1px solid {PALETTE.border_soft};
+    border-radius: 4px;
 }}
 QFrame#metric_card_highlight {{
     background-color: {PALETTE.accent_soft};
-    border: 1px solid {PALETTE.accent};
-    border-radius: 6px;
+    border: 1px solid {PALETTE.accent_lo};
+    border-radius: 4px;
 }}
 QLabel#metric_name {{
     color: {PALETTE.txt2};
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 700;
-    letter-spacing: 0.6px;
+    letter-spacing: 0.4px;
 }}
 QLabel#metric_value {{
     color: {PALETTE.txt0};
-    font-size: 20px;
+    font-size: 17px;
     font-weight: 700;
 }}
 QLabel#metric_sub {{
@@ -157,11 +157,11 @@ QLabel#metric_sub {{
 }}
 QPushButton {{
     background-color: {PALETTE.bg_panel_elevated};
-    border: 1px solid {PALETTE.border_default};
-    border-radius: 5px;
+    border: 1px solid {PALETTE.border_soft};
+    border-radius: 4px;
     color: {PALETTE.txt1};
-    min-height: 26px;
-    padding: 3px 10px;
+    min-height: 24px;
+    padding: 2px 9px;
 }}
 QPushButton:hover {{
     border-color: {PALETTE.border_strong};
@@ -175,10 +175,10 @@ QPushButton#primary_action {{
 }}
 QLineEdit, QComboBox {{
     background-color: {PALETTE.bg_panel_elevated};
-    border: 1px solid {PALETTE.border_default};
-    border-radius: 5px;
-    min-height: 26px;
-    padding: 3px 8px;
+    border: 1px solid {PALETTE.border_soft};
+    border-radius: 4px;
+    min-height: 24px;
+    padding: 2px 7px;
     color: {PALETTE.txt0};
 }}
 QLineEdit:focus, QComboBox:focus {{
@@ -187,18 +187,19 @@ QLineEdit:focus, QComboBox:focus {{
 QTableWidget {{
     background-color: {PALETTE.bg_table_row};
     alternate-background-color: {PALETTE.bg_table_row_alt};
-    border: 1px solid {PALETTE.border_default};
-    gridline-color: {PALETTE.border_soft};
+    border: 1px solid {PALETTE.border_soft};
+    gridline-color: {PALETTE.bg_table_row_alt};
     selection-background-color: {PALETTE.bg_selected};
     selection-color: {PALETTE.txt0};
+    font-size: 11px;
 }}
 QHeaderView::section {{
     background-color: {PALETTE.bg_table_header};
     color: {PALETTE.txt2};
     border: none;
     border-right: 1px solid {PALETTE.border_soft};
-    border-bottom: 1px solid {PALETTE.border_default};
-    padding: 5px 6px;
+    border-bottom: 1px solid {PALETTE.border_soft};
+    padding: 3px 6px;
     font-size: 10px;
     font-weight: 700;
 }}
@@ -206,17 +207,17 @@ QTabWidget::pane {{
     border: none;
 }}
 QTabBar::tab {{
-    background: {PALETTE.bg_panel_elevated};
+    background: {PALETTE.bg_workspace};
     color: {PALETTE.txt2};
-    border: 1px solid {PALETTE.border_default};
-    border-radius: 4px;
-    padding: 5px 10px;
-    margin-right: 2px;
-    min-height: 20px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 4px 9px;
+    margin-right: 4px;
+    min-height: 18px;
 }}
 QTabBar::tab:selected {{
-    background: {PALETTE.accent_soft};
+    background: {PALETTE.bg_panel};
     color: {PALETTE.accent};
-    border-color: {PALETTE.accent};
+    border-bottom: 2px solid {PALETTE.accent};
 }}
 """
