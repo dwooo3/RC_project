@@ -1,160 +1,211 @@
-"""Analytics workspace — Model Lab: Trees · MC · Heston/SABR · Short Rate · Real Options."""
+"""Analytics Lab workspace backed by GovernanceService."""
+
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QFrame, QScrollArea, QStackedWidget, QPushButton, QGridLayout
-)
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QLabel, QTabWidget
 
-from app.widgets import ModelStatusBadge
 from services.governance_service import GovernanceService
+from ui.components import DataSourceChip, DenseTable, KpiStrip, StatusChip, WorkstationPanel, make_action
+from ui.layouts import WorkstationWorkspace
+from ui.theme import PALETTE
 
 
-_BG1 = "#1a1a1e"
-_BG2 = "#1e1e22"
-_BOR = "#2e2e33"
-_TXT0 = "#f0f0f2"
-_TXT2 = "#606068"
-_ACC  = "#d97757"
+RESEARCH_SECTIONS = {
+    "Rates Models": [
+        ("short_rate", "Hull-White / Vasicek / CIR", "Research calibration and rate model experiments"),
+        ("frn", "Floating Rate Note", "Prototype reset/projection research"),
+        ("capfloor", "Cap / Floor / Swaption", "Rates option methodology under approximation governance"),
+    ],
+    "Volatility Models": [
+        ("heston_cf", "Heston Characteristic Function", "Stochastic volatility research"),
+        ("sabr", "SABR", "Smile calibration research"),
+        ("garch", "GARCH / EWMA", "Volatility forecasting research"),
+    ],
+    "Monte Carlo": [
+        ("mc_gbm", "Monte Carlo GBM", "Simulation and convergence experiments"),
+        ("mc_lsm", "Longstaff-Schwartz LSM", "American exercise research"),
+        ("mc_heston", "Heston Monte Carlo", "Stochastic-volatility path simulation"),
+        ("multi_asset", "Multi-Asset / Rainbow", "Correlation and basket simulation research"),
+    ],
+    "Research Sandbox": [
+        ("barrier", "Barrier Options", "Prototype exotic option formulas"),
+        ("asian", "Asian Options", "Prototype averaging methodology"),
+        ("structured_autocall", "Autocall / Phoenix", "Structured product research"),
+        ("cln_ftd", "CLN / FTD", "Credit copula research"),
+        ("placeholder", "Unregistered Sandbox", "Blocked placeholder guardrail"),
+    ],
+}
 
 
-ANALYTICS_MODULES = [
-    ("Binomial Trees",    "binomial",    "binomial_crr",   "CRR · LR · Trinomial · American pricing"),
-    ("Monte Carlo Lab",   "montecarlo",  "mc_gbm",         "GBM · LSM · Heston MC · Convergence"),
-    ("Heston / SABR",     "stochvol",    "heston_cf",      "Stochastic vol · Smile calibration"),
-    ("Short Rate Models", "shortrate",   "short_rate",     "Hull-White · Vasicek · CIR"),
-    ("Real Options",      "realoptions", "placeholder",    "Invest / Abandon / Expand decisions"),
-    ("GARCH / EWMA",      "garch_panel", "garch",          "Volatility forecasting · Stationarity"),
-]
+class AnalyticsWorkspace(WorkstationWorkspace):
+    """Research-only model lab separated from production workflows."""
 
-
-_GOVERNANCE = GovernanceService()
-
-
-def _status_from_key(model_key: str) -> str:
-    """Model status string, sourced through the governance service (not the raw registry)."""
-    return _GOVERNANCE.get_model(model_key).status
-
-
-class _ModuleCard(QFrame):
-    def __init__(self, title: str, model_key: str, hint: str, on_click=None, parent=None):
-        super().__init__(parent)
-        self.setObjectName("acard")
-        status = _status_from_key(model_key)
-        self.setStyleSheet(
-            "QFrame#acard{background:#1e1e22;border:1px solid #2e2e33;border-radius:8px;}"
-            "QFrame#acard:hover{background:#242428;border-color:#4a4a52;}"
-        )
-        self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(74)
-        lay = QVBoxLayout(self); lay.setContentsMargins(14, 10, 14, 10); lay.setSpacing(3)
-        row = QHBoxLayout(); row.setSpacing(8)
-        t = QLabel(title)
-        t.setStyleSheet(f"color:{_TXT0};font-size:13px;font-weight:600;background:transparent;")
-        row.addWidget(t); row.addStretch(); row.addWidget(ModelStatusBadge(status))
-        lay.addLayout(row)
-        h = QLabel(hint)
-        h.setStyleSheet(f"color:{_TXT2};font-size:10px;background:transparent;")
-        lay.addWidget(h)
-        self._on_click = on_click
-
-    def mousePressEvent(self, e):
-        if self._on_click:
-            self._on_click()
-
-
-class AnalyticsWorkspace(QWidget):
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self._panels: dict = {}
-        self._build()
+        self.governance = GovernanceService()
+        self.section_models = self._load_sections()
+        super().__init__(
+            "Analytics Lab",
+            "Research models, experiments, and sandbox workflows separated from production",
+            chips=[
+                DataSourceChip("RESEARCH"),
+                StatusChip("Prototype", text="RESEARCH"),
+            ],
+            actions=[make_action("Open Governance"), make_action("Export")],
+            kpi_strip=self._build_kpis(),
+            left=self._build_boundary_panel(),
+            center=self._build_sections(),
+            right=self._build_policy_panel(),
+            bottom=self._build_warning_log(),
+            context_items=[
+                ("Layer", "Analytics Lab"),
+                ("Mode", "RESEARCH"),
+                ("Production", "Use Pricing/Risk workspaces"),
+                ("Governance", "Research models not production allowed"),
+                ("Bypass", "Requires explicit allow_analytics_lab=True in services"),
+            ],
+            parent=parent,
+        )
 
-    def _build(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
-        self._stack = QStackedWidget()
-        self._landing = self._build_landing()
-        self._stack.addWidget(self._landing)
-        root.addWidget(self._stack)
+    def _load_sections(self) -> dict[str, list[dict]]:
+        sections = {}
+        for section, specs in RESEARCH_SECTIONS.items():
+            rows = []
+            for model_id, name, purpose in specs:
+                model = self.governance.get_model(model_id)
+                warnings = self.governance.warnings_for_model(model_id)
+                rows.append(
+                    {
+                        "model": model,
+                        "name": name,
+                        "purpose": purpose,
+                        "warnings": warnings,
+                        "banner": "RESEARCH" if not model.production_allowed else "PRODUCTION",
+                    }
+                )
+            sections[section] = rows
+        return sections
 
-    def _build_landing(self) -> QWidget:
-        w = QWidget(); w.setStyleSheet(f"background:{_BG1};")
-        outer = QVBoxLayout(w); outer.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        body = QWidget(); body.setStyleSheet(f"background:{_BG1};")
-        lay = QVBoxLayout(body); lay.setContentsMargins(28, 24, 28, 28); lay.setSpacing(20)
+    def _build_kpis(self):
+        models = self._all_rows()
+        research = sum(1 for row in models if row["banner"] == "RESEARCH")
+        production = sum(1 for row in models if row["banner"] == "PRODUCTION")
+        blocked = sum(1 for row in models if not row["model"].production_allowed)
+        warnings = sum(len(row["warnings"]) for row in models)
+        return KpiStrip(
+            [
+                ("Models", str(len(models)), "lab inventory"),
+                ("Research", str(research), "lab-only"),
+                ("Production", str(production), "reference only"),
+                ("Blocked", str(blocked), "not production"),
+                ("Warnings", str(warnings), "governance"),
+                ("Runs", "0", "no production execution"),
+            ]
+        )
 
-        hdr = QHBoxLayout()
-        title = QLabel("Analytics")
-        title.setStyleSheet(
-            f"color:{_TXT0};font-size:24px;font-weight:700;"
-            f"letter-spacing:-0.5px;background:transparent;")
-        sub = QLabel("Model Lab — pricing models, simulation engines and analytics tools")
-        sub.setStyleSheet(f"color:{_TXT2};font-size:12px;background:transparent;")
-        col = QVBoxLayout(); col.setSpacing(2); col.addWidget(title); col.addWidget(sub)
-        hdr.addLayout(col); hdr.addStretch(); lay.addLayout(hdr)
+    def _build_boundary_panel(self):
+        panel = WorkstationPanel("Workflow Boundary")
+        panel.layout.addWidget(self._banner("PRODUCTION", "Pricing, Risk, Portfolio, and Market Data workspaces"))
+        panel.layout.addWidget(
+            DenseTable(
+                ["Production Rule", "State"],
+                [
+                    ["Production calculations", "Outside Analytics Lab"],
+                    ["Research model use", "Blocked unless service opt-in is explicit"],
+                    ["Result promotion", "Requires Governance review"],
+                    ["Model warnings", "Always visible"],
+                ],
+            )
+        )
+        panel.layout.addWidget(self._banner("RESEARCH", "Analytics Lab models are experiments and prototypes"))
+        return panel
 
-        sep = QFrame(); sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet(f"color:{_BOR};max-height:1px;"); lay.addWidget(sep)
+    def _build_sections(self):
+        tabs = QTabWidget()
+        tabs.addTab(self._section_tab("Rates Models"), "Rates Models")
+        tabs.addTab(self._section_tab("Volatility Models"), "Volatility Models")
+        tabs.addTab(self._section_tab("Monte Carlo"), "Monte Carlo")
+        tabs.addTab(self._section_tab("Research Sandbox"), "Research Sandbox")
+        return tabs
 
-        sec = QLabel("MODEL LAB")
-        sec.setStyleSheet(
-            f"color:{_TXT2};font-size:10px;font-weight:700;letter-spacing:1px;background:transparent;")
-        lay.addWidget(sec)
+    def _section_tab(self, section: str):
+        panel = WorkstationPanel(section)
+        panel.layout.addWidget(self._banner("RESEARCH", f"{section} are not production workflows"))
+        rows = []
+        for row in self.section_models[section]:
+            model = row["model"]
+            rows.append(
+                [
+                    row["banner"],
+                    model.model_id,
+                    model.version,
+                    model.status,
+                    model.owner,
+                    "Yes" if model.production_allowed else "No",
+                    model.workflow_layer,
+                    row["purpose"],
+                    len(row["warnings"]),
+                ]
+            )
+        panel.layout.addWidget(
+            DenseTable(
+                [
+                    "Boundary",
+                    "Model ID",
+                    "Version",
+                    "Status",
+                    "Owner",
+                    "Prod Allowed",
+                    "Layer",
+                    "Purpose",
+                    "Warnings",
+                ],
+                rows,
+            )
+        )
+        return panel
 
-        grid = QGridLayout(); grid.setSpacing(8)
-        for i, (title_m, key, mkey, hint) in enumerate(ANALYTICS_MODULES):
-            card = _ModuleCard(title_m, mkey, hint,
-                               on_click=lambda k=key: self._open_module(k))
-            grid.addWidget(card, i // 3, i % 3)
-        lay.addLayout(grid)
-        lay.addStretch()
-        scroll.setWidget(body); outer.addWidget(scroll)
-        return w
+    def _build_policy_panel(self):
+        panel = WorkstationPanel("Production Guardrails")
+        panel.layout.addWidget(
+            DenseTable(
+                ["Guardrail", "Implementation"],
+                [
+                    ["Registry owner", "GovernanceService"],
+                    ["Research model default", "Not production allowed"],
+                    ["Production bypass", "No UI bypass in Analytics Lab"],
+                    ["Service bypass", "Explicit allow_analytics_lab=True only"],
+                    ["Placeholder", "Blocked"],
+                    ["Broken", "Blocked"],
+                ],
+            )
+        )
+        return panel
 
-    def _open_module(self, key: str):
-        if key not in self._panels:
-            panel = self._make_panel(key)
-            if panel is None:
-                return
-            container = self._wrap_panel(panel)
-            self._panels[key] = container
-            self._stack.addWidget(container)
-        self._stack.setCurrentWidget(self._panels[key])
+    def _build_warning_log(self):
+        panel = WorkstationPanel("Research Warnings")
+        rows = []
+        for section, items in self.section_models.items():
+            for item in items:
+                model = item["model"]
+                messages = item["warnings"] or ["No warnings recorded"]
+                for message in messages[:2]:
+                    rows.append([section, item["banner"], model.model_id, model.status, message])
+        panel.layout.addWidget(DenseTable(["Section", "Boundary", "Model ID", "Status", "Warning"], rows))
+        return panel
 
-    def _wrap_panel(self, panel: QWidget) -> QWidget:
-        w = QWidget(); w.setStyleSheet(f"background:{_BG1};")
-        lay = QVBoxLayout(w); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(0)
-        bar = QWidget()
-        bar.setStyleSheet(f"background:#141416;border-bottom:1px solid {_BOR};")
-        bar.setFixedHeight(40)
-        bl = QHBoxLayout(bar); bl.setContentsMargins(14, 0, 14, 0)
-        back = QPushButton("← Analytics")
-        back.setStyleSheet(
-            f"background:transparent;color:{_ACC};font-size:12px;"
-            f"font-weight:600;border:none;padding:0;")
-        back.setCursor(Qt.PointingHandCursor)
-        back.clicked.connect(lambda: self._stack.setCurrentWidget(self._landing))
-        bl.addWidget(back); bl.addStretch()
-        lay.addWidget(bar); lay.addWidget(panel, 1)
-        return w
+    def _banner(self, label: str, detail: str) -> QLabel:
+        banner = QLabel(f"{label}  |  {detail}")
+        banner.setWordWrap(True)
+        if label == "PRODUCTION":
+            bg, fg, border = PALETTE.bg_success, PALETTE.green, PALETTE.status_valid_border
+        else:
+            bg, fg, border = PALETTE.status_prototype_bg, PALETTE.status_prototype_text, PALETTE.status_prototype_border
+        banner.setStyleSheet(
+            f"background:{bg};color:{fg};border:1px solid {border};"
+            "border-radius:5px;padding:7px 10px;font-size:11px;font-weight:700;"
+        )
+        return banner
 
-    def _make_panel(self, key: str):
-        try:
-            if key == "binomial":
-                from app.panels.binomial_panel import BinomialPanel; return BinomialPanel()
-            if key == "montecarlo":
-                from app.panels.montecarlo_panel import MonteCarloPanel; return MonteCarloPanel()
-            if key == "stochvol":
-                from app.panels.stochvol_panel import StochVolPanel; return StochVolPanel()
-            if key == "shortrate":
-                from app.panels.shortrate_panel import ShortRatePanel; return ShortRatePanel()
-            if key == "realoptions":
-                from app.panels.realoptions_panel import RealOptionsPanel; return RealOptionsPanel()
-        except Exception:
-            pass
-        return None
+    def _all_rows(self) -> list[dict]:
+        return [row for rows in self.section_models.values() for row in rows]

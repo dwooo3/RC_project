@@ -123,3 +123,24 @@ def test_pricing_workspace_uses_pricing_service_boundary_only():
     assert "from instruments" not in source
     assert "from curves" not in source
     assert "from risk" not in source
+
+
+def test_analytics_lab_workspace_is_research_boundary_only():
+    import inspect
+    import app.panels.analytics_workspace as analytics_workspace
+
+    source = inspect.getsource(analytics_workspace)
+
+    assert "from services.governance_service import GovernanceService" in source
+    assert 'tabs.addTab(self._section_tab("Rates Models"), "Rates Models")' in source
+    assert 'tabs.addTab(self._section_tab("Volatility Models"), "Volatility Models")' in source
+    assert 'tabs.addTab(self._section_tab("Monte Carlo"), "Monte Carlo")' in source
+    assert 'tabs.addTab(self._section_tab("Research Sandbox"), "Research Sandbox")' in source
+    assert '"PRODUCTION"' in source
+    assert '"RESEARCH"' in source
+    assert "allow_analytics_lab=True" in source
+    assert "from app.panels" not in source
+    assert "from models" not in source
+    assert "from instruments" not in source
+    assert "from curves" not in source
+    assert "from risk" not in source
