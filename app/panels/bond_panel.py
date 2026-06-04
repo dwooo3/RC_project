@@ -4,6 +4,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 import numpy as np
 import math
+from datetime import date
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel,
     QSplitter, QTableWidget, QTableWidgetItem, QHeaderView, QFrame
@@ -15,11 +16,16 @@ from app.widgets import (ModelStatus,
     Banner, make_spin, make_pct, make_combo
 )
 from app.chart import ChartWidget
+from domain.market_data import MarketDataSnapshot, MarketDataSource
+from services.market_data_service import MarketDataService
+from services.pricing_service import PricingService
 
 
 class BondPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.market_data = MarketDataService()
+        self.pricing = PricingService(market_data=self.market_data)
         self._build_ui()
 
     def _build_ui(self):
@@ -143,44 +149,64 @@ class BondPanel(QWidget):
         sp.setSizes([360, 900])
         root.addWidget(sp)
 
-    def _build_curve(self):
-        from services.market_data_service import MarketDataService
+    def _curve_selection(self):
         ct = self.curve_type.currentText()
         zs = self.zspread.value() / 10000
-        market_data = MarketDataService()
 
         if "Flat" in ct:
-            curve = market_data.flat_curve(self.rate.value() / 100)
+            curve_id = "manual_flat"
+            curve = self.market_data.flat_curve(self.rate.value() / 100)
         elif "OFZ" in ct:
-            curve = market_data.ofz_curve()
+            curve_id = "ofz_demo"
+            curve = self.market_data.ofz_curve()
         elif "CBR" in ct:
-            curve = market_data.cbr_key_rate_curve()
+            curve_id = "cbr_key_demo"
+            curve = self.market_data.cbr_key_rate_curve()
         elif "Corporate 1st" in ct:
-            curve = market_data.corporate_curve("1st")
+            curve_id = "corp_1t_demo"
+            curve = self.market_data.corporate_curve("1st")
         elif "HY" in ct:
-            curve = market_data.corporate_curve("HY")
+            curve_id = "corp_hy_demo"
+            curve = self.market_data.corporate_curve("HY")
         else:
-            curve = market_data.ruonia_curve()
+            curve_id = "ruonia_demo"
+            curve = self.market_data.ruonia_curve()
 
         if zs != 0:
-            curve = curve.add_spread(market_data.flat_curve(zs, label="zspread"))
-        return curve
+            curve = curve.add_spread(self.market_data.flat_curve(zs, label="zspread"))
+            curve_id = f"{curve_id}_zspread"
+        return curve_id, curve
+
+    def _market_data_snapshot(self):
+        curve_id, curve = self._curve_selection()
+        source = MarketDataSource.MANUAL if "Flat" in self.curve_type.currentText() else MarketDataSource.DEMO
+        snapshot = MarketDataSnapshot(
+            snapshot_id=f"bond-panel-{curve_id}-{date.today().isoformat()}",
+            valuation_date=date.today(),
+            source=source,
+            quality=source.value,
+            curves={curve_id: curve},
+            metadata={"warning": "BondPanel market data is demo/manual and not production valuation."},
+        )
+        return snapshot, curve_id
 
     def calculate(self):
         self.banner.clear()
         try:
-            from instruments.fixed_income import fixed_bond
-            from services.market_data_service import MarketDataService
-
-            curve = self._build_curve()
-            market_data = MarketDataService()
-            res   = fixed_bond(
+            snapshot, curve_id = self._market_data_snapshot()
+            service_res = self.pricing.price_bond(
                 self.face.value(),
                 self.coupon.value() / 100,
                 self.T.value(),
                 int(self.freq.currentText()),
-                curve,
+                snapshot=snapshot,
+                curve_id=curve_id,
             )
+            if service_res["errors"]:
+                raise ValueError("; ".join(service_res["errors"]))
+            if service_res["warnings"]:
+                self.banner.show_error("Warnings: " + " ".join(service_res["warnings"][:3]))
+            res = service_res["raw"] or {}
 
             self.grid.set("Price",        res["price"],        color="#d97757")
             self.grid.set("YTM",          res["ytm"],          sub=f"{res['ytm']*100:.3f}%")
@@ -211,16 +237,17 @@ class BondPanel(QWidget):
             prices_y  = []
             dur_mods  = []
             for y in yields:
-                c2 = market_data.flat_curve(y)
-                r2 = fixed_bond(
+                c2 = self.market_data.flat_curve(y)
+                r2 = self.pricing.price_bond(
                     self.face.value(),
                     self.coupon.value() / 100,
                     self.T.value(),
                     int(self.freq.currentText()),
-                    c2,
+                    curve=c2,
                 )
-                prices_y.append(r2["price"])
-                dur_mods.append(r2["mod_duration"])
+                raw = r2["raw"] or {}
+                prices_y.append(raw["price"])
+                dur_mods.append(raw["mod_duration"])
 
             self.chart.plot_bond_analysis(
                 yields_pct   = yields * 100,

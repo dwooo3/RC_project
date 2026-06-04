@@ -14,11 +14,15 @@ from app.widgets import (ModelStatus,
     Banner, make_spin, make_pct, make_combo
 )
 from app.chart import ChartWidget
+from services.market_data_service import MarketDataService
+from services.risk_service import RiskService
 
 
 class VarPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.market_data = MarketDataService()
+        self.risk_service = RiskService(market_data=self.market_data)
         self._build_ui()
 
     def _build_ui(self):
@@ -164,10 +168,19 @@ class VarPanel(QWidget):
         conf = self.conf.value() / 100
         h    = int(self.horizon.value())
         try:
-            from risk.var import historical_var, parametric_var, montecarlo_var, evt_var
+            from risk.var import montecarlo_var, evt_var
             kw = dict(position_value=pos, confidence=conf, horizon=h)
-            h_res = historical_var(returns, **kw)
-            p_res = parametric_var(returns, **kw)
+            snapshot = self.market_data.demo_snapshot()
+            h_service = self.risk_service.historical_var(returns, snapshot=snapshot, **kw)
+            p_service = self.risk_service.parametric_var(returns, snapshot=snapshot, **kw)
+            if h_service["errors"] or p_service["errors"]:
+                errors = h_service["errors"] + p_service["errors"]
+                raise ValueError("; ".join(errors))
+            warnings = h_service["warnings"] + p_service["warnings"]
+            if warnings:
+                self.banner.show_error("Warnings: " + " ".join(warnings[:3]))
+            h_res = h_service["raw"] or {}
+            p_res = p_service["raw"] or {}
             m_res = montecarlo_var(returns, **kw, n_sims=200_000)
             e_res = evt_var(returns, pos, conf)
 
@@ -189,13 +202,19 @@ class VarPanel(QWidget):
     def calc_stress(self):
         self.banner.clear()
         try:
-            from risk.stress import stress_option
-            results = stress_option(
+            snapshot = self.market_data.demo_snapshot()
+            service_res = self.risk_service.stress_option(
                 self.spot.value(), self.strike.value(),
                 self.expiry.value(), self.rate.value() / 100,
                 self.sigma.value() / 100, 0.0,
                 self.opt.currentText().lower(),
+                snapshot=snapshot,
             )
+            if service_res["errors"]:
+                raise ValueError("; ".join(service_res["errors"]))
+            if service_res["warnings"]:
+                self.banner.show_error("Warnings: " + " ".join(service_res["warnings"][:3]))
+            results = service_res["raw"] or []
             self.table.setRowCount(len(results))
             scenarios = []; pnls = []
             for i, r in enumerate(results):
