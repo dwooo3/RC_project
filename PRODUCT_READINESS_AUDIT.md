@@ -90,6 +90,7 @@ Current state:
 
 - `PricingService` wraps vanilla options, fixed bonds, IRS, FX forwards, and FX options.
 - Service results expose governance metadata, warnings, errors, and market-data metadata.
+- PricingService enforces model governance before calculation and blocks Placeholder/Broken models.
 - `price_bond()` uses `BondPricingRequest` / `BondPricingResult` and clearly marks the calculation as approximation/demo.
 
 Risks:
@@ -155,6 +156,7 @@ Current state:
 - VaR/ES loss convention is consolidated: positive losses, positive VaR, ES >= VaR.
 - Historical, weighted historical, parametric, Monte Carlo, EVT, P&L-based historical, age-weighted, stress, and reverse stress are available through RiskService.
 - Risk results expose governance and market-data metadata.
+- RiskService enforces model governance before calculation and blocks Placeholder/Broken models.
 
 Risks:
 
@@ -180,37 +182,39 @@ Next actions:
 
 ## 6. Governance
 
-Score: 6/10.
+Score: 7/10.
 
 Current state:
 
 - `ModelRegistryEntry` exists with model ID, version, owner, status, validation date, limitations, and documentation link.
 - Statuses include Validated, Approximation, Prototype, Placeholder, and Broken.
 - PricingService and RiskService consume GovernanceService.
+- PricingService and RiskService now enforce GovernanceService before running calculations.
 - Service results expose model metadata and production flags.
 - Prototype/research models generate warnings.
 - Analytics Lab separation adds `workflow_layer`, `analytics_lab_only`, and `production_allowed`.
+- Analytics Lab models are blocked in production service paths unless `allow_analytics_lab=True` is explicitly set.
 
 Risks:
 
-- Governance is advisory, not a hard production gate.
 - Owners, versions, documentation links, and validation dates are sparse.
 - Direct raw engine calls can bypass governance outside service-migrated workflows.
 - Approximation models may still be production-allowed for demo workflow continuity.
+- Governance enforcement is currently strongest in PricingService and RiskService; raw engine modules remain callable by legacy code.
 
 Missing functionality:
 
-- Runtime production mode that blocks non-production models.
 - Validation evidence repository.
 - Model approval workflow.
 - Audit trail of model usage per calculation.
+- Global dependency enforcement proving all production UI paths route through governed services.
 
 Next actions:
 
-- Add strict production mode to GovernanceService.
 - Require owner/version/documentation for production models.
 - Add model usage audit records to pricing/risk/portfolio results.
 - Add tests proving raw UI-to-engine paths cannot enter production workflows.
+- Extend governance enforcement to remaining service surfaces and UI migration smoke tests.
 
 ## 7. Analytics
 
@@ -222,11 +226,12 @@ Current state:
 - Research models include Heston, SABR, GARCH, short-rate models, and experimental Monte Carlo.
 - Governance flags mark research models as Analytics Lab only and not production allowed.
 - Research models can remain callable in lab panels without silently entering production service paths.
+- Service-layer Analytics Lab execution requires explicit opt-in through `allow_analytics_lab=True`.
 
 Risks:
 
 - Analytics Lab still shares physical folders with production engines.
-- Research panels can still call raw models directly.
+- Research panels can still call raw models directly if not migrated to lab-specific services.
 - No notebook or experiment registry exists.
 - Promotion path is documented but not automated.
 
@@ -352,13 +357,12 @@ Next actions:
 | Pricing | 5 |
 | Portfolio | 6 |
 | Risk | 5 |
-| Governance | 6 |
+| Governance | 7 |
 | Analytics | 6 |
 | UI | 4 |
 | Testing | 6 |
 | Production Readiness | 4 |
 
-Average score: 5.4/10.
+Average score: 5.5/10.
 
 Readiness classification: strong architectural prototype, not production-ready.
-

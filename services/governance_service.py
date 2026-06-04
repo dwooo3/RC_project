@@ -45,6 +45,24 @@ class GovernanceService:
     def is_production_allowed(self, model_id: str) -> bool:
         return self.get_model(model_id).production_allowed
 
+    def enforce_model(
+        self,
+        model_id: str,
+        *,
+        allow_analytics_lab: bool = False,
+    ) -> ModelRegistryEntry:
+        """Validate whether a model may be used for a service calculation."""
+        model = self.get_model(model_id)
+        if model.status == "Broken":
+            raise ValueError(f"Model {model_id} is Broken and cannot be used.")
+        if model.status == "Placeholder":
+            raise ValueError(f"Model {model_id} is Placeholder and is blocked.")
+        if model.is_research_only and not allow_analytics_lab:
+            raise ValueError(
+                f"Model {model_id} belongs to Analytics Lab and requires explicit allow_analytics_lab=True."
+            )
+        return model
+
     def warnings_for_model(self, model_id: str) -> list[str]:
         """Return service-level warnings implied by model governance status."""
         model = self.get_model(model_id)

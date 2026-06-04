@@ -8,6 +8,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from domain.model_governance import ModelDefinition, ModelRegistryEntry
+from models import registry
 from services.governance_service import GovernanceService
 from services.pricing_service import PricingService
 from services.risk_service import RiskService
@@ -67,15 +68,80 @@ def test_pricing_service_exposes_model_metadata():
     assert isinstance(result["model_production_allowed"], bool)
 
 
-def test_pricing_service_warns_when_research_model_is_requested():
+def test_pricing_service_blocks_research_model_by_default():
     result = PricingService().price_vanilla_option(100, 100, 1, 0.05, 0.20, model="mc")
 
     assert result["model_id"] == "mc_gbm"
     assert result["model_workflow_layer"] == "Research"
     assert result["model_analytics_lab_only"] is True
     assert result["model_production_allowed"] is False
+    assert result["value"] is None
+    assert result["raw"] is None
+    assert result["errors"]
+    assert any("requires explicit allow_analytics_lab=True" in error for error in result["errors"])
     assert any("Analytics Lab" in warning for warning in result["warnings"])
     assert any("not production allowed" in warning for warning in result["warnings"])
+
+
+def test_pricing_service_allows_research_model_only_when_explicitly_enabled():
+    result = PricingService(allow_analytics_lab=True).price_vanilla_option(
+        100, 100, 1, 0.05, 0.20, model="mc"
+    )
+
+    assert result["model_id"] == "mc_gbm"
+    assert result["errors"] == []
+    assert result["value"] is not None
+    assert any("Analytics Lab" in warning for warning in result["warnings"])
+
+
+def test_governance_blocks_placeholder_models():
+    result = PricingService().price_vanilla_option(100, 100, 1, 0.05, 0.20, model="unknown")
+
+    assert result["model_id"] == "unknown"
+    assert result["value"] is None
+    assert result["raw"] is None
+    assert any("Placeholder" in error for error in result["errors"])
+
+
+def test_governance_blocks_broken_models(monkeypatch):
+    monkeypatch.setitem(
+        registry.MODEL_REGISTRY,
+        "broken_test_model",
+        {
+            "name": "Broken Test Model",
+            "status": registry.ModelStatus.BROKEN,
+            "domain": "Risk",
+            "tests": [],
+            "notes": "Injected broken model for enforcement test.",
+        },
+    )
+
+    try:
+        GovernanceService().enforce_model("broken_test_model")
+    except ValueError as exc:
+        assert "Broken" in str(exc)
+    else:
+        raise AssertionError("Broken model was not blocked")
+
+
+def test_risk_service_checks_governance_before_calculation(monkeypatch):
+    original = dict(registry.MODEL_REGISTRY["var_historical"])
+    monkeypatch.setitem(
+        registry.MODEL_REGISTRY,
+        "var_historical",
+        {
+            **original,
+            "status": registry.ModelStatus.BROKEN,
+            "notes": "Temporarily broken for enforcement test.",
+        },
+    )
+
+    returns = np.array([0.01, -0.02, 0.005, -0.015, 0.02])
+    result = RiskService().historical_var(returns, 1_000_000, 0.95, 1)
+
+    assert result["value"] is None
+    assert result["raw"] is None
+    assert any("Broken" in error for error in result["errors"])
 
 
 def test_risk_service_exposes_model_metadata():

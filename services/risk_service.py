@@ -15,9 +15,11 @@ class RiskService:
         self,
         market_data: MarketDataService | None = None,
         governance: GovernanceService | None = None,
+        allow_analytics_lab: bool = False,
     ):
         self.market_data = market_data or MarketDataService()
         self.governance = governance or GovernanceService()
+        self.allow_analytics_lab = allow_analytics_lab
 
     def _market_data_warnings(self, snapshot: MarketDataSnapshot | None) -> list[str]:
         if snapshot is None:
@@ -87,6 +89,12 @@ class RiskService:
             errors=[str(error)],
         )
 
+    def _enforce_model(self, model_id: str):
+        return self.governance.enforce_model(
+            model_id,
+            allow_analytics_lab=self.allow_analytics_lab,
+        )
+
     def historical_var(
         self,
         returns: np.ndarray,
@@ -100,6 +108,7 @@ class RiskService:
         from risk.var import historical_var
 
         try:
+            self._enforce_model("var_historical")
             raw = historical_var(returns, position_value, confidence, horizon, weights)
             return self._result(value=raw.get("VaR"), model_id="var_historical", raw=raw, snapshot=snapshot)
         except Exception as exc:
@@ -118,6 +127,7 @@ class RiskService:
         from risk.var import parametric_var
 
         try:
+            self._enforce_model("var_parametric")
             raw = parametric_var(returns, position_value, confidence, horizon, distribution)
             return self._result(value=raw.get("VaR"), model_id="var_parametric", raw=raw, snapshot=snapshot)
         except Exception as exc:
@@ -137,6 +147,7 @@ class RiskService:
         from risk.var import montecarlo_var
 
         try:
+            self._enforce_model("var_mc")
             raw = montecarlo_var(returns, position_value, confidence, horizon, n_sims, seed)
             return self._result(value=raw.get("VaR"), model_id="var_mc", raw=raw, snapshot=snapshot)
         except Exception as exc:
@@ -155,6 +166,7 @@ class RiskService:
         from risk.var import evt_var
 
         try:
+            self._enforce_model("evt_var")
             raw = evt_var(returns, position_value, confidence, threshold_pct, horizon)
             errors = [raw["error"]] if isinstance(raw, dict) and "error" in raw else []
             return self._result(
@@ -178,6 +190,7 @@ class RiskService:
         from risk.historical_var import hs_var
 
         try:
+            self._enforce_model("var_historical")
             raw = hs_var(pnl, confidence, horizon)
             return self._result(value=raw.get("VaR"), model_id="var_historical", raw=raw, snapshot=snapshot)
         except Exception as exc:
@@ -195,6 +208,7 @@ class RiskService:
         from risk.historical_var import hs_age_weighted
 
         try:
+            self._enforce_model("var_historical")
             raw = hs_age_weighted(pnl, confidence, decay, horizon)
             return self._result(value=raw.get("VaR"), model_id="var_historical", raw=raw, snapshot=snapshot)
         except Exception as exc:
@@ -235,6 +249,7 @@ class RiskService:
         from risk.stress import stress_option
 
         try:
+            self._enforce_model("var_parametric")
             raw = stress_option(S, K, T, r, sigma, q, opt, scenarios, position)
             worst = min((row["pnl"] for row in raw), default=0.0)
             return self._result(value=worst, model_id="var_parametric", raw=raw, snapshot=snapshot)
@@ -258,6 +273,7 @@ class RiskService:
         from risk.stress import reverse_stress
 
         try:
+            self._enforce_model("var_parametric")
             raw = reverse_stress(S, K, T, r, sigma, q, opt, target_loss, target_loss_pct)
             return self._result(value=raw.get("actual_loss"), model_id="var_parametric", raw=raw, snapshot=snapshot)
         except Exception as exc:
@@ -271,6 +287,7 @@ class RiskService:
     ) -> dict:
         """Run a unified portfolio scenario through the portfolio service."""
         try:
+            self._enforce_model("var_parametric")
             scenario_result = portfolio_service.run_scenario(scenario)
             result = self._result(
                 value=scenario_result.pnl,

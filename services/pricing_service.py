@@ -25,9 +25,11 @@ class PricingService:
         self,
         market_data: MarketDataService | None = None,
         governance: GovernanceService | None = None,
+        allow_analytics_lab: bool = False,
     ):
         self.market_data = market_data or MarketDataService()
         self.governance = governance or GovernanceService()
+        self.allow_analytics_lab = allow_analytics_lab
 
     def _market_data_warnings(self, snapshot: MarketDataSnapshot | None) -> list[str]:
         if snapshot is None:
@@ -97,6 +99,12 @@ class PricingService:
             errors=[str(error)],
         )
 
+    def _enforce_model(self, model_id: str):
+        return self.governance.enforce_model(
+            model_id,
+            allow_analytics_lab=self.allow_analytics_lab,
+        )
+
     def price_vanilla_option(
         self,
         S: float,
@@ -123,6 +131,7 @@ class PricingService:
             "mc": "mc_gbm",
         }.get(model, model)
         try:
+            self._enforce_model(model_id)
             raw = european(S, K, T, r, sigma, q, opt, model)
             return self._result(value=raw.get("price"), model_id=model_id, raw=raw, snapshot=snapshot)
         except Exception as exc:
@@ -143,6 +152,7 @@ class PricingService:
 
         resolved_snapshot = snapshot
         try:
+            self._enforce_model("fixed_bond")
             request = self._bond_request(face, coupon, T, freq, curve_id)
             warnings = list(_BOND_APPROXIMATION_WARNINGS)
             if curve is None:
@@ -254,6 +264,7 @@ class PricingService:
         from instruments.fixed_income import irs
 
         try:
+            self._enforce_model("irs")
             if curve is None:
                 snapshot = snapshot or self.market_data.demo_snapshot()
                 curve = self.market_data.get_curve(curve_id, snapshot)
@@ -276,6 +287,7 @@ class PricingService:
         from instruments.fx import fx_forward
 
         try:
+            self._enforce_model("fx_forward")
             raw = fx_forward(S, r_d, r_f, T, notional, forward_agreed)
             value = raw.get("npv") if forward_agreed is not None else raw.get("forward")
             return self._result(value=value, model_id="fx_forward", raw=raw, snapshot=snapshot)
@@ -299,6 +311,7 @@ class PricingService:
         from instruments.fx import fx_option
 
         try:
+            self._enforce_model("garman_kohlhagen")
             raw = fx_option(S, K, T, r_d, r_f, sigma, notional, opt, quote)
             return self._result(value=raw.get("price"), model_id="garman_kohlhagen", raw=raw, snapshot=snapshot)
         except Exception as exc:
