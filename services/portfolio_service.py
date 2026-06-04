@@ -6,6 +6,7 @@ from domain.portfolio import Portfolio, PortfolioRiskResult, PortfolioValuationR
 from domain.risk_factors import RiskFactor, RiskFactorExposure, RiskFactorBucket, RiskFactorGroup
 from domain.results import PnLExplainResult
 from domain.scenario import Scenario, ScenarioResult, ScenarioShock, ScenarioShockType, ScenarioType
+from services.audit_service import AuditService
 from services.market_data_service import MarketDataService
 from services.pricing_service import PricingService
 
@@ -98,6 +99,7 @@ class PortfolioService:
         portfolio: Portfolio | str | None = None,
         market_data: MarketDataService | None = None,
         pricing: PricingService | None = None,
+        audit: AuditService | None = None,
     ):
         if isinstance(portfolio, Portfolio):
             self.portfolio = portfolio
@@ -106,7 +108,8 @@ class PortfolioService:
         else:
             self.portfolio = Portfolio()
         self.market_data = market_data or MarketDataService()
-        self.pricing = pricing or PricingService(market_data=self.market_data)
+        self.audit = audit or getattr(pricing, "audit", None) or AuditService()
+        self.pricing = pricing or PricingService(market_data=self.market_data, audit=self.audit)
 
     @property
     def positions(self) -> list[Position]:
@@ -133,6 +136,16 @@ class PortfolioService:
                 pos.exposures = []
                 pos.errors = [f"Pricing failed for {pos.id}: {exc}"]
                 errors.extend(pos.errors)
+        record = self.audit.record_calculation(
+            user_action="Value portfolio",
+            calculation_type="portfolio_valuation",
+            model_id="portfolio_service",
+            model_version="1.0",
+            market_data_snapshot_id=self.portfolio.market_data_snapshot_id,
+            inputs=self._portfolio_inputs(),
+            result_id=f"portfolio_valuation:{self.portfolio.portfolio_id}",
+            details={"positions": len(self.positions), "errors": errors},
+        )
         return PortfolioValuationResult(
             portfolio_id=self.portfolio.portfolio_id,
             valuation_date=self.portfolio.valuation_date,
@@ -142,6 +155,9 @@ class PortfolioService:
             positions=list(self.positions),
             warnings=warnings,
             errors=errors,
+            calculation_record=record,
+            calculation_id=record.record_id,
+            inputs_hash=record.inputs_hash,
         )
 
     def value(self) -> PortfolioValuationResult:
@@ -349,6 +365,16 @@ class PortfolioService:
         """Canonical portfolio risk aggregation entry point."""
         valuation = self.value()
         scenario = self._scenario_pnl_from_exposures(dS=0, dVol=0, dr=0, dSpread=0)
+        record = self.audit.record_calculation(
+            user_action="Aggregate portfolio risk",
+            calculation_type="portfolio_risk",
+            model_id="portfolio_service",
+            model_version="1.0",
+            market_data_snapshot_id=self.portfolio.market_data_snapshot_id,
+            inputs=self._portfolio_inputs(),
+            result_id=f"portfolio_risk:{self.portfolio.portfolio_id}",
+            details={"valuation_calculation_id": valuation.calculation_id},
+        )
         return PortfolioRiskResult(
             portfolio_id=self.portfolio.portfolio_id,
             base_currency=self.portfolio.base_currency,
@@ -361,6 +387,9 @@ class PortfolioService:
             scenario_pnl=scenario,
             warnings=valuation.warnings,
             errors=valuation.errors,
+            calculation_record=record,
+            calculation_id=record.record_id,
+            inputs_hash=record.inputs_hash,
         )
 
     def _sum_unit(self, unit: str) -> float:
@@ -430,6 +459,16 @@ class PortfolioService:
         valuation = self.value()
         raw, warnings = self._scenario_pnl_from_scenario(scenario)
         pnl = raw["pnl"]
+        record = self.audit.record_calculation(
+            user_action="Run portfolio scenario",
+            calculation_type="portfolio_scenario",
+            model_id="portfolio_service",
+            model_version="1.0",
+            market_data_snapshot_id=self.portfolio.market_data_snapshot_id,
+            inputs={"portfolio": self._portfolio_inputs(), "scenario": scenario},
+            result_id=f"portfolio_scenario:{self.portfolio.portfolio_id}:{scenario.scenario_id}",
+            details={"valuation_calculation_id": valuation.calculation_id},
+        )
         return ScenarioResult(
             scenario=scenario,
             base_value=valuation.total_market_value,
@@ -441,6 +480,9 @@ class PortfolioService:
             warnings=warnings + valuation.warnings,
             errors=valuation.errors,
             raw=raw,
+            calculation_record=record,
+            calculation_id=record.record_id,
+            inputs_hash=record.inputs_hash,
         )
 
     def _coerce_scenario(self, scenario: Scenario | dict) -> Scenario:
@@ -609,6 +651,25 @@ class PortfolioService:
         reported_total = estimated_total if total_pnl is None else float(total_pnl)
         explained = sum(components.values())
         residual = reported_total - explained
+        record = self.audit.record_calculation(
+            user_action="Explain portfolio PnL",
+            calculation_type="pnl_explain",
+            model_id="portfolio_service",
+            model_version="1.0",
+            market_data_snapshot_id=self.portfolio.market_data_snapshot_id,
+            inputs={
+                "portfolio": self._portfolio_inputs(),
+                "total_pnl": total_pnl,
+                "dS": dS,
+                "dVol": dVol,
+                "dr": dr,
+                "dSpread": dSpread,
+                "theta_days": theta_days,
+                "scenario": scenario,
+            },
+            result_id=f"pnl_explain:{self.portfolio.portfolio_id}",
+            details={"reported_total": reported_total, "explained": explained, "residual": residual},
+        )
         return PnLExplainResult(
             portfolio_id=self.portfolio.portfolio_id,
             total_pnl=reported_total,
@@ -625,7 +686,31 @@ class PortfolioService:
             position_pnl=position_pnl,
             warnings=warnings,
             errors=errors,
+            calculation_record=record,
+            calculation_id=record.record_id,
+            inputs_hash=record.inputs_hash,
         )
+
+    def _portfolio_inputs(self) -> dict:
+        return {
+            "portfolio_id": self.portfolio.portfolio_id,
+            "base_currency": self.portfolio.base_currency,
+            "valuation_date": self.portfolio.valuation_date,
+            "market_data_snapshot_id": self.portfolio.market_data_snapshot_id,
+            "positions": [
+                {
+                    "id": position.id,
+                    "instrument": position.instrument,
+                    "description": position.description,
+                    "quantity": position.quantity,
+                    "params": position.params,
+                    "currency": position.currency,
+                    "book": position.book,
+                    "ccy_pair": position.ccy_pair,
+                }
+                for position in self.positions
+            ],
+        }
 
     def _legacy_totals(self) -> dict:
         return {

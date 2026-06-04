@@ -9,6 +9,7 @@ from typing import Any
 from domain.market_data import MarketDataSnapshot
 from domain.results import BondPricingRequest, BondPricingResult
 from domain.scenario import ScenarioShock, ScenarioShockType
+from services.audit_service import AuditService
 from services.governance_service import GovernanceService
 from services.market_data_service import MarketDataService
 
@@ -25,10 +26,12 @@ class PricingService:
         self,
         market_data: MarketDataService | None = None,
         governance: GovernanceService | None = None,
+        audit: AuditService | None = None,
         allow_analytics_lab: bool = False,
     ):
         self.market_data = market_data or MarketDataService()
         self.governance = governance or GovernanceService()
+        self.audit = audit or AuditService()
         self.allow_analytics_lab = allow_analytics_lab
 
     def _market_data_warnings(self, snapshot: MarketDataSnapshot | None) -> list[str]:
@@ -57,12 +60,26 @@ class PricingService:
         snapshot: MarketDataSnapshot | None = None,
         warnings: list[str] | None = None,
         errors: list[str] | None = None,
+        calculation_type: str = "pricing",
+        inputs: Any = None,
+        user_action: str = "PricingService calculation",
     ) -> dict:
         model = self.governance.get_model(model_id)
         all_warnings = self.governance.warnings_for_model(model_id)
         all_warnings.extend(self._market_data_warnings(snapshot))
         all_warnings.extend(warnings or [])
         model_metadata = self.governance.metadata_for_model(model_id)
+        snapshot_id = snapshot.snapshot_id if snapshot else ""
+        audit_record = self.audit.record_calculation(
+            user_action=user_action,
+            calculation_type=calculation_type,
+            model_id=model_id,
+            model_version=model.version,
+            market_data_snapshot_id=snapshot_id,
+            inputs=inputs,
+            result_id=f"{calculation_type}:{model_id}",
+            details={"model_status": model.status, "errors": errors or []},
+        )
         return {
             "value": value,
             "model_id": model_id,
@@ -78,9 +95,13 @@ class PricingService:
             "model_analytics_lab_only": model.analytics_lab_only,
             "warnings": all_warnings,
             "errors": errors or [],
-            "market_data_snapshot_id": snapshot.snapshot_id if snapshot else "",
+            "market_data_snapshot_id": snapshot_id,
             "market_data_source": self._market_data_source(snapshot),
             "market_data_quality": snapshot.quality if snapshot else "",
+            "calculation_id": audit_record.record_id,
+            "inputs_hash": audit_record.inputs_hash,
+            "audit_record": audit_record,
+            "calculation_record": audit_record,
             "raw": raw,
         }
 
@@ -90,6 +111,8 @@ class PricingService:
         model_id: str,
         error: Exception,
         snapshot: MarketDataSnapshot | None = None,
+        calculation_type: str = "pricing",
+        inputs: Any = None,
     ) -> dict:
         return self._result(
             value=None,
@@ -97,6 +120,8 @@ class PricingService:
             raw=None,
             snapshot=snapshot,
             errors=[str(error)],
+            calculation_type=calculation_type,
+            inputs=inputs,
         )
 
     def workflow_status(
@@ -115,9 +140,18 @@ class PricingService:
                 raw={"workflow_available": False, "reason": reason},
                 snapshot=snapshot,
                 warnings=[reason],
+                calculation_type="pricing_workflow_status",
+                inputs={"model_id": model_id, "reason": reason},
+                user_action="Pricing workflow status",
             )
         except Exception as exc:
-            return self._error_result(model_id=model_id, error=exc, snapshot=snapshot)
+            return self._error_result(
+                model_id=model_id,
+                error=exc,
+                snapshot=snapshot,
+                calculation_type="pricing_workflow_status",
+                inputs={"model_id": model_id, "reason": reason},
+            )
 
     def _enforce_model(self, model_id: str):
         return self.governance.enforce_model(
@@ -153,9 +187,24 @@ class PricingService:
         try:
             self._enforce_model(model_id)
             raw = european(S, K, T, r, sigma, q, opt, model)
-            return self._result(value=raw.get("price"), model_id=model_id, raw=raw, snapshot=snapshot)
+            inputs = {"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q, "opt": opt, "model": model}
+            return self._result(
+                value=raw.get("price"),
+                model_id=model_id,
+                raw=raw,
+                snapshot=snapshot,
+                calculation_type="vanilla_option_pricing",
+                inputs=inputs,
+                user_action="Price vanilla option",
+            )
         except Exception as exc:
-            return self._error_result(model_id=model_id, error=exc, snapshot=snapshot)
+            return self._error_result(
+                model_id=model_id,
+                error=exc,
+                snapshot=snapshot,
+                calculation_type="vanilla_option_pricing",
+                inputs={"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q, "opt": opt, "model": model},
+            )
 
     def price_bond(
         self,
@@ -202,6 +251,9 @@ class PricingService:
                 raw=raw,
                 snapshot=resolved_snapshot,
                 warnings=warnings,
+                calculation_type="bond_pricing",
+                inputs={"request": request, "curve_id": request.curve_id, "direct_curve": curve is not None and snapshot is None},
+                user_action="Price fixed-rate bond",
             )
             result.update(
                 {
@@ -242,7 +294,13 @@ class PricingService:
             )
             return result
         except Exception as exc:
-            return self._error_result(model_id="fixed_bond", error=exc, snapshot=resolved_snapshot)
+            return self._error_result(
+                model_id="fixed_bond",
+                error=exc,
+                snapshot=resolved_snapshot,
+                calculation_type="bond_pricing",
+                inputs={"face": face, "coupon": coupon, "T": T, "freq": freq, "curve_id": curve_id},
+            )
 
     def _bond_request(
         self,
@@ -289,9 +347,30 @@ class PricingService:
                 snapshot = snapshot or self.market_data.demo_snapshot()
                 curve = self.market_data.get_curve(curve_id, snapshot)
             raw = irs(notional, fixed_rate, T, freq, curve, pay_fixed)
-            return self._result(value=raw.get("npv"), model_id="irs", raw=raw, snapshot=snapshot)
+            return self._result(
+                value=raw.get("npv"),
+                model_id="irs",
+                raw=raw,
+                snapshot=snapshot,
+                calculation_type="irs_pricing",
+                inputs={
+                    "notional": notional,
+                    "fixed_rate": fixed_rate,
+                    "T": T,
+                    "freq": freq,
+                    "pay_fixed": pay_fixed,
+                    "curve_id": curve_id,
+                },
+                user_action="Price IRS",
+            )
         except Exception as exc:
-            return self._error_result(model_id="irs", error=exc, snapshot=snapshot)
+            return self._error_result(
+                model_id="irs",
+                error=exc,
+                snapshot=snapshot,
+                calculation_type="irs_pricing",
+                inputs={"notional": notional, "fixed_rate": fixed_rate, "T": T, "freq": freq, "pay_fixed": pay_fixed, "curve_id": curve_id},
+            )
 
     def price_fx_forward(
         self,
@@ -310,9 +389,23 @@ class PricingService:
             self._enforce_model("fx_forward")
             raw = fx_forward(S, r_d, r_f, T, notional, forward_agreed)
             value = raw.get("npv") if forward_agreed is not None else raw.get("forward")
-            return self._result(value=value, model_id="fx_forward", raw=raw, snapshot=snapshot)
+            return self._result(
+                value=value,
+                model_id="fx_forward",
+                raw=raw,
+                snapshot=snapshot,
+                calculation_type="fx_forward_pricing",
+                inputs={"S": S, "r_d": r_d, "r_f": r_f, "T": T, "notional": notional, "forward_agreed": forward_agreed},
+                user_action="Price FX forward",
+            )
         except Exception as exc:
-            return self._error_result(model_id="fx_forward", error=exc, snapshot=snapshot)
+            return self._error_result(
+                model_id="fx_forward",
+                error=exc,
+                snapshot=snapshot,
+                calculation_type="fx_forward_pricing",
+                inputs={"S": S, "r_d": r_d, "r_f": r_f, "T": T, "notional": notional, "forward_agreed": forward_agreed},
+            )
 
     def price_fx_option(
         self,
@@ -333,9 +426,23 @@ class PricingService:
         try:
             self._enforce_model("garman_kohlhagen")
             raw = fx_option(S, K, T, r_d, r_f, sigma, notional, opt, quote)
-            return self._result(value=raw.get("price"), model_id="garman_kohlhagen", raw=raw, snapshot=snapshot)
+            return self._result(
+                value=raw.get("price"),
+                model_id="garman_kohlhagen",
+                raw=raw,
+                snapshot=snapshot,
+                calculation_type="fx_option_pricing",
+                inputs={"S": S, "K": K, "T": T, "r_d": r_d, "r_f": r_f, "sigma": sigma, "notional": notional, "opt": opt, "quote": quote},
+                user_action="Price FX option",
+            )
         except Exception as exc:
-            return self._error_result(model_id="garman_kohlhagen", error=exc, snapshot=snapshot)
+            return self._error_result(
+                model_id="garman_kohlhagen",
+                error=exc,
+                snapshot=snapshot,
+                calculation_type="fx_option_pricing",
+                inputs={"S": S, "K": K, "T": T, "r_d": r_d, "r_f": r_f, "sigma": sigma, "notional": notional, "opt": opt, "quote": quote},
+            )
 
     def shock_curve(self, curve, shock: ScenarioShock):
         """Apply supported scenario curve shocks to a yield curve."""

@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
+from domain.audit import CalculationRecord
+
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
@@ -75,6 +77,9 @@ class ScenarioResult:
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
+    calculation_record: CalculationRecord | None = None
+    calculation_id: str = ""
+    inputs_hash: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -90,4 +95,7 @@ class ScenarioResult:
             "warnings": self.warnings,
             "errors": self.errors,
             "raw": self.raw,
+            "calculation_id": self.calculation_id,
+            "inputs_hash": self.inputs_hash,
+            "audit_record": self.calculation_record.as_dict() if self.calculation_record else None,
         }

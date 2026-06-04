@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from domain.audit import CalculationRecord
 from domain.risk_factors import RiskFactorExposure
 
 
@@ -85,6 +86,9 @@ class PnLExplainResult:
     position_pnl: dict[str, float] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    calculation_record: CalculationRecord | None = None
+    calculation_id: str = ""
+    inputs_hash: str = ""
 
     @property
     def reconciles(self) -> bool:
@@ -108,4 +112,7 @@ class PnLExplainResult:
             "warnings": self.warnings,
             "errors": self.errors,
             "reconciles": self.reconciles,
+            "calculation_id": self.calculation_id,
+            "inputs_hash": self.inputs_hash,
+            "audit_record": self.calculation_record.as_dict() if self.calculation_record else None,
         }

@@ -25,6 +25,9 @@ def _assert_contract(result, model_id):
     assert isinstance(result["warnings"], list)
     assert isinstance(result["errors"], list)
     assert "market_data_snapshot_id" in result
+    assert result["calculation_id"]
+    assert result["inputs_hash"]
+    assert result["audit_record"].model_id == model_id
 
 
 def test_pricing_service_matches_direct_vanilla_option():

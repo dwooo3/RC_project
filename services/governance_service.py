@@ -2,6 +2,7 @@
 
 from domain.model_governance import ModelRegistryEntry
 from models import registry
+from services.audit_service import AuditService
 
 
 _PRODUCTION_ALLOWED = {
@@ -12,6 +13,9 @@ _PRODUCTION_ALLOWED = {
 
 class GovernanceService:
     """Normalize model registry entries for application services."""
+
+    def __init__(self, audit: AuditService | None = None):
+        self.audit = audit
 
     def list_models(self) -> list[ModelRegistryEntry]:
         """Return all registered models as normalized governance entries."""
@@ -158,9 +162,12 @@ class GovernanceService:
     def audit_trail(self) -> list[dict]:
         """Return calculation audit records.
 
-        Persistence is not implemented yet, so this deliberately returns an
-        explicit placeholder record instead of fabricating calculation history.
+        Durable persistence is not implemented yet. When an AuditService is
+        provided, return in-memory calculation records; otherwise return an
+        explicit placeholder instead of fabricating calculation history.
         """
+        if self.audit and self.audit.records:
+            return self.audit.audit_trail()
         return [
             {
                 "timestamp": "",

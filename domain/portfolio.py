@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 from enum import Enum
 from typing import Any
 
+from domain.audit import CalculationRecord
 from domain.risk_factors import RiskFactorExposure, RiskFactorGroup
 
 
@@ -131,6 +132,9 @@ class PortfolioValuationResult:
     positions: list[Position]
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    calculation_record: CalculationRecord | None = None
+    calculation_id: str = ""
+    inputs_hash: str = ""
 
 
 @dataclass(frozen=True)
@@ -148,3 +152,6 @@ class PortfolioRiskResult:
     scenario_pnl: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    calculation_record: CalculationRecord | None = None
+    calculation_id: str = ""
+    inputs_hash: str = ""

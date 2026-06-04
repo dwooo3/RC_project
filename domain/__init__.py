@@ -1,5 +1,6 @@
 """Domain contracts for RiskCalc architecture migration."""
 
+from domain.audit import AuditRecord, CalculationRecord
 from domain.market_data import MarketDataSnapshot, MarketDataSource, MarketDataStore
 from domain.model_governance import ModelDefinition
 from domain.portfolio import (
@@ -15,6 +16,8 @@ from domain.scenario import Scenario, ScenarioResult, ScenarioShock, ScenarioSho
 
 __all__ = [
     "MarketDataSnapshot",
+    "AuditRecord",
+    "CalculationRecord",
     "MarketDataSource",
     "MarketDataStore",
     "ModelDefinition",
