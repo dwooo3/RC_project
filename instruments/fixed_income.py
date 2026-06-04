@@ -384,8 +384,13 @@ def caplet(notional: float, K: float, T1: float, T2: float,
     """Single caplet/floorlet via Black-76."""
     tau = T2 - T1
     F   = fwd_rate
-    r_eff = -np.log(disc) / T2 if disc > 0 and T2 > 0 else 0
-    g   = black76(F, K, T1, r_eff, sigma, "call" if opt=="cap" else "put")
+    # Black-76 with r=0 returns the *undiscounted* forward value of the caplet
+    # under the T2-forward measure; the single payment at T2 is then discounted
+    # exactly once by disc = P(0, T2). Previously r_eff = -ln(disc)/T2 made
+    # black76 apply an internal exp(-r_eff*T1) = disc^(T1/T2) factor on top of
+    # the external disc, double-discounting the caplet by disc^(1 + T1/T2)
+    # (~4% error for T1=1, T2=1.25, disc=0.95). See Brigo & Mercurio (2006) §1.6.
+    g   = black76(F, K, T1, 0.0, sigma, "call" if opt=="cap" else "put")
     price = notional * tau * disc * g.price
     delta = notional * tau * disc * g.delta
     return dict(price=price, delta=delta, vega=g.vega*notional*tau*disc, T1=T1, T2=T2)

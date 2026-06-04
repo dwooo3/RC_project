@@ -47,6 +47,35 @@ def _loss_quantile_index(n: int, confidence: float) -> int:
     return min(max(int(np.ceil(confidence * n)) - 1, 0), n - 1)
 
 
+# Minimum number of multi-day windows required before non-parametric horizon
+# aggregation is used instead of the parametric sqrt-time fallback.
+_MIN_HORIZON_WINDOWS = 50
+
+
+def _horizon_returns(returns: np.ndarray, horizon: float) -> np.ndarray:
+    """
+    Return the return series to use for a given risk horizon.
+
+    Historical simulation is non-parametric, so multi-day risk should come from
+    actual multi-day P&L windows, NOT from scaling 1-day returns by sqrt(h)
+    (which silently assumes i.i.d. normal returns and can misstate fat-tailed
+    multi-day VaR by double digits). For an integer horizon > 1 with enough
+    data we aggregate *overlapping* h-day returns (Basel FRTB style). When the
+    horizon is non-integer or there are too few observations to form a stable
+    set of windows, we fall back to the legacy sqrt-time scaling.
+
+    Reference: McNeil, Frey & Embrechts, "Quantitative Risk Management" (2015),
+    §2.2.3; Basel FRTB overlapping-window convention.
+    """
+    h = int(round(horizon))
+    is_integer = abs(horizon - h) < 1e-9
+    n_windows = len(returns) - h + 1
+    if not is_integer or h <= 1 or n_windows < _MIN_HORIZON_WINDOWS:
+        return returns * np.sqrt(horizon)
+    c = np.concatenate(([0.0], np.cumsum(returns)))
+    return c[h:] - c[:-h]   # overlapping h-day sums, length n - h + 1
+
+
 def _loss_var_es(losses: np.ndarray, confidence: float,
                  weights: np.ndarray | None = None) -> tuple[float, float]:
     """VaR/ES for positive losses using one discrete convention."""
@@ -93,7 +122,11 @@ def historical_var(returns: np.ndarray, position_value: float,
     horizon = _validate_horizon(horizon)
     returns = _as_finite_1d(returns, "returns")
     position_value = float(position_value)
-    losses_pct = -returns * np.sqrt(horizon)
+    horizon_returns = _horizon_returns(returns, horizon)
+    losses_pct = -horizon_returns
+    # Align decay weights when overlapping windows shortened the series.
+    if weights is not None and len(horizon_returns) != len(returns):
+        weights = np.asarray(weights, dtype=float)[-len(horizon_returns):]
     var_pct, cvar_pct = _loss_var_es(losses_pct, confidence, weights)
 
     return dict(VaR=var_pct*position_value,

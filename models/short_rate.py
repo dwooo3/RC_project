@@ -151,30 +151,51 @@ class HullWhite:
     def _B(self, T: float) -> float:
         return (1 - np.exp(-self.kappa*T)) / self.kappa
 
+    def _inst_forward(self, t: float, dt: float = 1e-5) -> float:
+        """
+        Instantaneous forward rate f(0,t) = -d/dT ln P(0,T) | T=t,
+        via a central finite difference. Hull-White's exact fit to the initial
+        term structure requires the *instantaneous* forward, not the average
+        forward (-ln P(0,t))/t that curve.forward_rate(0,t) returns.
+        """
+        t  = max(float(t), 0.0)
+        lo = max(t - dt, 0.0)
+        hi = t + dt
+        return -(np.log(self.curve.discount(hi))
+                 - np.log(self.curve.discount(lo))) / (hi - lo)
+
+    @property
+    def _r0(self) -> float:
+        """Short-rate state r(0) = instantaneous forward f(0,0)."""
+        return self._inst_forward(0.0)
+
     def _A(self, T: float) -> float:
-        """From Hull-White: A(T) fitted to market curve."""
+        """Legacy/unused helper — the live curve reconstitution lives in bond_price()."""
         k, sig = self.kappa, self.sigma
-        f0 = self.curve.forward_rate(0, T)  # market forward rate
+        f0 = self._inst_forward(T)  # instantaneous forward (was average forward)
         B  = self._B(T)
         return (np.log(self.curve.discount(T))
                 + B * f0
                 - sig**2 * B**2 * (1 - np.exp(-2*k*T)) / (4*k))
 
     def bond_price(self, r: float, t: float, T: float) -> float:
-        """P(t,T) given r(t)."""
+        """P(t,T) given r(t), reconstituted from the initial curve (Hull-White)."""
         k, sig = self.kappa, self.sigma
         dt = T - t
         B  = (1 - np.exp(-k*dt)) / k
-        # fit to initial curve
+        # Affine reconstitution fitted to the initial curve:
+        #   A(t,T) = P(0,T)/P(0,t) * exp(B f(0,t) - sigma^2/(4k)(1-e^{-2kt}) B^2)
+        # f(0,t) MUST be the instantaneous forward at t. Using the average
+        # forward over [t,T] broke the exact fit (P_HW(0,T) drifted up to ~9%
+        # from the market curve at 10y). See Hull & White (1990).
         P0T = self.curve.discount(T)
         P0t = self.curve.discount(t) if t > 1e-8 else 1.0
-        f0t = self.curve.forward_rate(t, T)
+        f0t = self._inst_forward(t)
         A   = (P0T/P0t) * np.exp(B*f0t - sig**2*B**2*(1-np.exp(-2*k*t))/(4*k))
         return A * np.exp(-B*r)
 
     def zero_rate(self, T: float) -> float:
-        r0 = self.curve.rate(0.001)
-        P  = self.bond_price(r0, 0, T)
+        P  = self.bond_price(self._r0, 0, T)
         return -np.log(P) / T
 
     def bond_option(self, T_opt: float, T_bond: float, K: float,
@@ -183,8 +204,8 @@ class HullWhite:
         k, sig = self.kappa, self.sigma
         B_opt   = self._B(T_opt)
         B_bond  = self._B(T_bond)
-        P_T     = self.bond_price(self.curve.rate(0.001), 0, T_opt)
-        P_Tb    = self.bond_price(self.curve.rate(0.001), 0, T_bond)
+        P_T     = self.bond_price(self._r0, 0, T_opt)
+        P_Tb    = self.bond_price(self._r0, 0, T_bond)
         sigma_p = sig * np.sqrt((1-np.exp(-2*k*T_opt))/(2*k)) * self._B(T_bond-T_opt)
         if sigma_p < 1e-10:
             return max(P_Tb - K*P_T, 0) if opt=="call" else max(K*P_T - P_Tb, 0)
