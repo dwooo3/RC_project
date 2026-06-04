@@ -34,6 +34,27 @@ class MarketDataService:
             metadata={"warning": "Demo/manual market data. Not production valuation."},
         )
 
+    def snapshot_from_curves(
+        self,
+        curves: dict[str, YieldCurve],
+        snapshot_id: str,
+        source: MarketDataSource | str = MarketDataSource.MANUAL,
+        valuation_date: date | None = None,
+        quality: str | None = None,
+        metadata: dict | None = None,
+    ) -> MarketDataSnapshot:
+        """Create a governed snapshot from service-owned curve objects."""
+        valuation_date = valuation_date or date.today()
+        source_value = source.value if isinstance(source, MarketDataSource) else str(source).upper()
+        return MarketDataSnapshot(
+            snapshot_id=snapshot_id,
+            valuation_date=valuation_date,
+            source=source,
+            quality=quality or source_value,
+            curves=curves,
+            metadata=metadata or {},
+        )
+
     def flat_curve(
         self,
         rate: float,

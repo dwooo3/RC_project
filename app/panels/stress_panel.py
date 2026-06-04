@@ -3,12 +3,16 @@ import sys,os; sys.path.insert(0,os.path.join(os.path.dirname(__file__),"../..")
 import numpy as np
 from PySide6.QtWidgets import QWidget,QHBoxLayout,QVBoxLayout,QPushButton,QLabel,QSplitter,QTableWidget,QTableWidgetItem,QHeaderView
 from PySide6.QtCore import Qt
-from app.widgets import ParamForm,FieldRow,ResultsGrid,SectionHeader,Banner,make_spin,make_pct,make_combo
+from app.widgets import ParamForm,FieldRow,ResultsGrid,SectionHeader,Banner,ModelStatus,make_spin,make_pct,make_combo
 from app.chart import ChartWidget
+from services.market_data_service import MarketDataService
+from services.risk_service import RiskService
 
 class StressPanel(QWidget):
     def __init__(self,parent=None):
         super().__init__(parent)
+        self.market_data=MarketDataService()
+        self.risk_service=RiskService(market_data=self.market_data)
         root=QHBoxLayout(self); root.setContentsMargins(0,0,0,0); root.setSpacing(0)
         sp=QSplitter(Qt.Horizontal); sp.setHandleWidth(1); sp.setStyleSheet("QSplitter::handle{background:#2e2e33;}")
         left=QWidget(); left.setObjectName("center_panel"); left.setMinimumWidth(330); left.setMaximumWidth(400)
@@ -53,11 +57,16 @@ class StressPanel(QWidget):
     def calculate(self):
         self.banner.clear()
         try:
-            from risk.stress import stress_option,reverse_stress
             S=self.spot.value(); K=self.strike.value(); T=self.T.value()
             r=self.rate.value()/100; sig=self.sigma.value()/100; q=self.div.value()/100
             opt=self.opt.currentText().lower(); pos=int(self.position.value())
-            results=stress_option(S,K,T,r,sig,q,opt,position=pos)
+            snapshot=self.market_data.demo_snapshot()
+            service_res=self.risk_service.stress_option(S,K,T,r,sig,q,opt,position=pos,snapshot=snapshot)
+            if service_res["errors"]:
+                raise ValueError("; ".join(service_res["errors"]))
+            if service_res["warnings"]:
+                self.banner.show_error("Warnings: " + " ".join(service_res["warnings"][:3]))
+            results=service_res["raw"] or []
             self.table.setRowCount(len(results))
             scenarios=[]; pnls=[]
             for i,res in enumerate(results):
@@ -76,7 +85,10 @@ class StressPanel(QWidget):
             self.grid.set("Max Loss Scenario",results[worst_idx]["scenario"][:14])
             # Reverse stress
             tl=base*(self.target_loss.value()/100)
-            rv=reverse_stress(S,K,T,r,sig,q,opt,target_loss=tl)
+            rv_res=self.risk_service.reverse_stress_option(S,K,T,r,sig,q,opt,target_loss=tl,snapshot=snapshot)
+            if rv_res["errors"]:
+                raise ValueError("; ".join(rv_res["errors"]))
+            rv=rv_res["raw"] or {}
             self.grid.set("Reverse Spot Δ",rv["spot_shock"],sub=f"{rv['spot_shock']*100:+.1f}%")
             self.grid.set("Reverse Vol Δ",rv["vol_shock"],sub=f"{rv['vol_shock']*100:+.1f}%")
             self.chart.plot_stress(scenarios,pnls)

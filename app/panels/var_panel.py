@@ -168,21 +168,23 @@ class VarPanel(QWidget):
         conf = self.conf.value() / 100
         h    = int(self.horizon.value())
         try:
-            from risk.var import montecarlo_var, evt_var
             kw = dict(position_value=pos, confidence=conf, horizon=h)
             snapshot = self.market_data.demo_snapshot()
             h_service = self.risk_service.historical_var(returns, snapshot=snapshot, **kw)
             p_service = self.risk_service.parametric_var(returns, snapshot=snapshot, **kw)
-            if h_service["errors"] or p_service["errors"]:
-                errors = h_service["errors"] + p_service["errors"]
+            m_service = self.risk_service.monte_carlo_var(returns, snapshot=snapshot, n_sims=200_000, **kw)
+            e_service = self.risk_service.evt_var(returns, pos, conf, snapshot=snapshot)
+            service_results = [h_service, p_service, m_service, e_service]
+            errors = [error for result in service_results for error in result["errors"]]
+            if errors:
                 raise ValueError("; ".join(errors))
-            warnings = h_service["warnings"] + p_service["warnings"]
+            warnings = [warning for result in service_results for warning in result["warnings"]]
             if warnings:
                 self.banner.show_error("Warnings: " + " ".join(warnings[:3]))
             h_res = h_service["raw"] or {}
             p_res = p_service["raw"] or {}
-            m_res = montecarlo_var(returns, **kw, n_sims=200_000)
-            e_res = evt_var(returns, pos, conf)
+            m_res = m_service["raw"] or {}
+            e_res = e_service["raw"] or {}
 
             self.grid.set("VaR (Historical)",  h_res["VaR"],  color="#ff453a")
             self.grid.set("CVaR (Historical)", h_res["CVaR"], color="#ff453a")

@@ -16,7 +16,6 @@ from app.widgets import (ModelStatus,
     Banner, make_spin, make_pct, make_combo
 )
 from app.chart import ChartWidget
-from domain.market_data import MarketDataSnapshot, MarketDataSource
 from services.market_data_service import MarketDataService
 from services.pricing_service import PricingService
 
@@ -179,13 +178,12 @@ class BondPanel(QWidget):
 
     def _market_data_snapshot(self):
         curve_id, curve = self._curve_selection()
-        source = MarketDataSource.MANUAL if "Flat" in self.curve_type.currentText() else MarketDataSource.DEMO
-        snapshot = MarketDataSnapshot(
+        source = "MANUAL" if "Flat" in self.curve_type.currentText() else "DEMO"
+        snapshot = self.market_data.snapshot_from_curves(
+            {curve_id: curve},
             snapshot_id=f"bond-panel-{curve_id}-{date.today().isoformat()}",
-            valuation_date=date.today(),
             source=source,
-            quality=source.value,
-            curves={curve_id: curve},
+            valuation_date=date.today(),
             metadata={"warning": "BondPanel market data is demo/manual and not production valuation."},
         )
         return snapshot, curve_id

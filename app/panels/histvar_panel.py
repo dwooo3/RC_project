@@ -11,6 +11,8 @@ from PySide6.QtCore import Qt
 from app.widgets import (ModelStatus, ParamForm, FieldRow, ResultsGrid, SectionHeader,
                          Banner, make_spin, make_pct, make_combo)
 from app.chart import ChartWidget
+from services.market_data_service import MarketDataService
+from services.risk_service import RiskService
 
 
 def _gen_sample_pnl(n=500, seed=42):
@@ -26,6 +28,8 @@ class HistVarPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._pnl = None
+        self.market_data = MarketDataService()
+        self.risk_service = RiskService(market_data=self.market_data)
         self._build_ui()
 
     def _build_ui(self):
@@ -115,13 +119,13 @@ class HistVarPanel(QWidget):
     def calculate(self):
         self.banner.clear()
         try:
-            from risk.historical_var import hs_var, hs_age_weighted
             V      = self.port_val.value()
             n_hist = int(self.n_hist.value())
             horizon = int(self.horizon.value())
             conf   = self.conf.value() / 100
             method = self.method.currentText()
             sigma_ann = self.vol_seed.value() / 100
+            snapshot = self.market_data.demo_snapshot()
 
             # Generate synthetic P&L series scaled to portfolio
             daily_vol = sigma_ann / np.sqrt(252)
@@ -132,13 +136,17 @@ class HistVarPanel(QWidget):
             self._pnl = pnl
 
             if method == "Historical Simulation":
-                result = hs_var(pnl, conf, 1)
+                service_result = self.risk_service.historical_pnl_var(pnl, conf, 1, snapshot=snapshot)
+                result = self._service_raw_or_raise(service_result)
             elif method == "Age-weighted (BRW)":
-                result = hs_age_weighted(pnl, conf, self.decay.value(), 1)
+                service_result = self.risk_service.age_weighted_pnl_var(
+                    pnl, conf, self.decay.value(), 1, snapshot=snapshot
+                )
+                result = self._service_raw_or_raise(service_result)
             elif "Filtered" in method:
                 result = self._filtered_hs(pnl, conf)
             elif "GARCH" in method:
-                result = self._garch_var(pnl, conf)
+                result = self._garch_var(pnl, conf, snapshot)
             elif "t-dist" in method:
                 result = self._tvar(pnl, conf)
             else:
@@ -157,7 +165,9 @@ class HistVarPanel(QWidget):
             # Quick backtest: count exceptions in last 250 days
             n_bt = min(250, len(pnl))
             bt_pnl = pnl[-n_bt:]
-            var_bt = hs_var(bt_pnl, conf, 1)["VaR"]
+            var_bt = self._service_raw_or_raise(
+                self.risk_service.historical_pnl_var(bt_pnl, conf, 1, snapshot=snapshot)
+            )["VaR"]
             exceptions = int((bt_pnl < -var_bt).sum())
             # Kupiec test p-value
             p_exc = 1 - conf
@@ -203,9 +213,9 @@ class HistVarPanel(QWidget):
             if self._pnl is None:
                 self.calculate()
                 return
-            from risk.historical_var import hs_var
             pnl = self._pnl
             conf = self.conf.value() / 100
+            snapshot = self.market_data.demo_snapshot()
             n_bt = min(int(self.backtest_n.value()), len(pnl) - 50)
             window = 50
 
@@ -213,7 +223,9 @@ class HistVarPanel(QWidget):
             pnl_actual = []
             for i in range(window, n_bt):
                 hist = pnl[i-window:i]
-                v = hs_var(hist, conf, 1)["VaR"]
+                v = self._service_raw_or_raise(
+                    self.risk_service.historical_pnl_var(hist, conf, 1, snapshot=snapshot)
+                )["VaR"]
                 var_series.append(v)
                 pnl_actual.append(pnl[i])
 
@@ -251,9 +263,17 @@ class HistVarPanel(QWidget):
         idx = int(np.ceil(conf * n)) - 1
         return dict(VaR=losses[idx], CVaR=losses[idx:].mean())
 
-    def _garch_var(self, pnl, conf):
-        from risk.historical_var import hs_var
-        return hs_var(pnl, conf, 1)
+    def _service_raw_or_raise(self, service_result):
+        if service_result["errors"]:
+            raise ValueError("; ".join(service_result["errors"]))
+        if service_result["warnings"]:
+            self.banner.show_error("Warnings: " + " ".join(service_result["warnings"][:3]))
+        return service_result["raw"] or {}
+
+    def _garch_var(self, pnl, conf, snapshot):
+        return self._service_raw_or_raise(
+            self.risk_service.historical_pnl_var(pnl, conf, 1, snapshot=snapshot)
+        )
 
     def _tvar(self, pnl, conf):
         from scipy.stats import t as t_dist

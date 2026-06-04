@@ -29,6 +29,12 @@ class RiskService:
             warnings.append(str(warning))
         return warnings
 
+    def _market_data_source(self, snapshot: MarketDataSnapshot | None) -> str:
+        if snapshot is None:
+            return ""
+        source = snapshot.source
+        return source.value if hasattr(source, "value") else str(source)
+
     def _result(
         self,
         *,
@@ -50,6 +56,8 @@ class RiskService:
             "warnings": all_warnings,
             "errors": errors or [],
             "market_data_snapshot_id": snapshot.snapshot_id if snapshot else "",
+            "market_data_source": self._market_data_source(snapshot),
+            "market_data_quality": snapshot.quality if snapshot else "",
             "raw": raw,
         }
 
@@ -104,6 +112,83 @@ class RiskService:
         except Exception as exc:
             return self._error_result(model_id="var_parametric", error=exc, snapshot=snapshot)
 
+    def monte_carlo_var(
+        self,
+        returns: np.ndarray,
+        position_value: float,
+        confidence: float = 0.95,
+        horizon: int = 1,
+        n_sims: int = 100_000,
+        seed: int = 42,
+        snapshot: MarketDataSnapshot | None = None,
+    ) -> dict:
+        """Calculate Monte Carlo VaR through the existing return-based engine."""
+        from risk.var import montecarlo_var
+
+        try:
+            raw = montecarlo_var(returns, position_value, confidence, horizon, n_sims, seed)
+            return self._result(value=raw.get("VaR"), model_id="var_mc", raw=raw, snapshot=snapshot)
+        except Exception as exc:
+            return self._error_result(model_id="var_mc", error=exc, snapshot=snapshot)
+
+    def evt_var(
+        self,
+        returns: np.ndarray,
+        position_value: float,
+        confidence: float = 0.99,
+        threshold_pct: float = 0.10,
+        horizon: int = 1,
+        snapshot: MarketDataSnapshot | None = None,
+    ) -> dict:
+        """Calculate EVT VaR through the existing POT/GPD engine."""
+        from risk.var import evt_var
+
+        try:
+            raw = evt_var(returns, position_value, confidence, threshold_pct, horizon)
+            errors = [raw["error"]] if isinstance(raw, dict) and "error" in raw else []
+            return self._result(
+                value=raw.get("VaR") if isinstance(raw, dict) else None,
+                model_id="evt_var",
+                raw=raw,
+                snapshot=snapshot,
+                errors=errors,
+            )
+        except Exception as exc:
+            return self._error_result(model_id="evt_var", error=exc, snapshot=snapshot)
+
+    def historical_pnl_var(
+        self,
+        pnl: np.ndarray,
+        confidence: float = 0.95,
+        horizon: int = 1,
+        snapshot: MarketDataSnapshot | None = None,
+    ) -> dict:
+        """Calculate historical VaR from a P&L series."""
+        from risk.historical_var import hs_var
+
+        try:
+            raw = hs_var(pnl, confidence, horizon)
+            return self._result(value=raw.get("VaR"), model_id="var_historical", raw=raw, snapshot=snapshot)
+        except Exception as exc:
+            return self._error_result(model_id="var_historical", error=exc, snapshot=snapshot)
+
+    def age_weighted_pnl_var(
+        self,
+        pnl: np.ndarray,
+        confidence: float = 0.95,
+        decay: float = 0.98,
+        horizon: int = 1,
+        snapshot: MarketDataSnapshot | None = None,
+    ) -> dict:
+        """Calculate age-weighted historical VaR from a P&L series."""
+        from risk.historical_var import hs_age_weighted
+
+        try:
+            raw = hs_age_weighted(pnl, confidence, decay, horizon)
+            return self._result(value=raw.get("VaR"), model_id="var_historical", raw=raw, snapshot=snapshot)
+        except Exception as exc:
+            return self._error_result(model_id="var_historical", error=exc, snapshot=snapshot)
+
     def expected_shortfall(
         self,
         returns: np.ndarray,
@@ -142,5 +227,27 @@ class RiskService:
             raw = stress_option(S, K, T, r, sigma, q, opt, scenarios, position)
             worst = min((row["pnl"] for row in raw), default=0.0)
             return self._result(value=worst, model_id="var_parametric", raw=raw, snapshot=snapshot)
+        except Exception as exc:
+            return self._error_result(model_id="var_parametric", error=exc, snapshot=snapshot)
+
+    def reverse_stress_option(
+        self,
+        S: float,
+        K: float,
+        T: float,
+        r: float,
+        sigma: float,
+        q: float = 0.0,
+        opt: str = "call",
+        target_loss: float | None = None,
+        target_loss_pct: float | None = None,
+        snapshot: MarketDataSnapshot | None = None,
+    ) -> dict:
+        """Run option reverse stress through the existing stress engine."""
+        from risk.stress import reverse_stress
+
+        try:
+            raw = reverse_stress(S, K, T, r, sigma, q, opt, target_loss, target_loss_pct)
+            return self._result(value=raw.get("actual_loss"), model_id="var_parametric", raw=raw, snapshot=snapshot)
         except Exception as exc:
             return self._error_result(model_id="var_parametric", error=exc, snapshot=snapshot)
