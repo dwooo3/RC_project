@@ -156,6 +156,15 @@ def test_csv_snapshot_records_source_details_without_file_loading():
 def test_external_provider_interfaces_are_prepared_not_implemented():
     service = MarketDataService()
 
-    for source in (MarketDataSource.MOEX, MarketDataSource.BLOOMBERG, MarketDataSource.REUTERS):
+    # Bloomberg/Reuters remain prepared-but-not-integrated interfaces.
+    for source in (MarketDataSource.BLOOMBERG, MarketDataSource.REUTERS):
         with pytest.raises(NotImplementedError, match="prepared but not implemented"):
             service.load_provider_snapshot(source, valuation_date=date(2026, 6, 3))
+
+
+def test_moex_provider_implemented_but_requires_local_db():
+    # MOEX is now implemented against the local market-data DB; without a DB it
+    # signals that requirement (and MarketDataService.moex_snapshot falls back to DEMO).
+    service = MarketDataService()
+    with pytest.raises(NotImplementedError, match="requires a local market-data DB"):
+        service.load_provider_snapshot(MarketDataSource.MOEX, valuation_date=date(2026, 6, 3))

@@ -6,6 +6,9 @@ from typing import Any, Protocol
 from curves import russia
 from curves.yield_curve import YieldCurve
 from domain.market_data import MarketDataSnapshot, MarketDataSource, MarketDataStore
+from infra.moex_iss.validation import (
+    QUALITY_REJECTED, assess_quality, validate_curve_points, validate_fx,
+)
 
 
 class MarketDataProvider(Protocol):
@@ -27,7 +30,101 @@ class ProviderInterface:
 
 
 class MoexProvider(ProviderInterface):
+    """Assemble a governed MOEX snapshot from the local market-data DB.
+
+    Reads curve points + FX written by the ingestion ETL, validates them,
+    derives a quality verdict, persists snapshot lineage metadata, and returns a
+    MarketDataSnapshot(source=MOEX). REJECTED data raises so the service falls
+    back to DEMO (it must not feed production valuations). Without a DB the
+    provider stays a no-op (NotImplementedError -> DEMO fallback)."""
+
     source = MarketDataSource.MOEX
+
+    def __init__(self, db=None):
+        self.db = db
+
+    def load_snapshot(self, valuation_date: date | None = None, *, db=None, **kwargs) -> MarketDataSnapshot:
+        from datetime import datetime, date as _date
+
+        db = db or self.db
+        if db is None:
+            raise NotImplementedError("MOEX provider requires a local market-data DB")
+        valuation_date = valuation_date or _date.today()
+        snapshot_id = f"moex-{valuation_date.isoformat()}"
+
+        curve_ids = db.list_curve_ids(snapshot_id)
+        if not curve_ids:
+            raise KeyError(f"No MOEX market data ingested for {snapshot_id}")
+
+        curves: dict[str, YieldCurve] = {}
+        curve_errors: list[str] = []
+        as_of: _date | None = None
+        for curve_id in curve_ids:
+            points = db.get_curve_points(snapshot_id, curve_id)
+            triples = [(p["tenor"], p["zero_rate"], p["discount_factor"]) for p in points]
+            errs = validate_curve_points(triples)
+            curve_errors.extend(f"{curve_id}: {e}" for e in errs)
+            if not errs:
+                curves[curve_id] = YieldCurve(
+                    [p["tenor"] for p in points],
+                    [p["zero_rate"] for p in points],
+                    label=curve_id,
+                    interp="cubic" if len(points) >= 3 else "linear",
+                    source=MarketDataSource.MOEX,
+                    valuation_date=valuation_date,
+                    rate_type="zero",
+                    metadata={"source": "MOEX"},
+                )
+            meta = db.get_curve(snapshot_id, curve_id)
+            if meta and meta.get("as_of") and as_of is None:
+                try:
+                    as_of = _date.fromisoformat(str(meta["as_of"])[:10])
+                except ValueError:
+                    as_of = None
+
+        fx_rates = db.get_fx_rates(snapshot_id)
+        fx_errors = validate_fx(fx_rates)
+
+        present = set()
+        if "GCURVE_RUB" in curves:
+            present.add("GCURVE_RUB")
+        if fx_rates:
+            present.add("FX")
+        quality, warnings = assess_quality(
+            valuation_date=valuation_date,
+            as_of=as_of,
+            curve_errors=curve_errors,
+            fx_errors=fx_errors,
+            expected_components={"GCURVE_RUB", "FX"},
+            present_components=present,
+        )
+        if quality == QUALITY_REJECTED:
+            raise ValueError(f"MOEX snapshot rejected: {'; '.join(warnings)}")
+
+        meta_row = db.get_snapshot_meta(snapshot_id) or {}
+        iss_urls = []
+        metadata = {
+            "quality_warnings": warnings,
+            "iss_request_urls": iss_urls,
+            "trade_date": as_of.isoformat() if as_of else "",
+        }
+        if warnings:
+            metadata["warning"] = "; ".join(warnings)
+        db.save_snapshot_meta(
+            snapshot_id=snapshot_id, valuation_date=valuation_date,
+            source=MarketDataSource.MOEX.value, quality=quality,
+            fetch_ts=datetime.now(), iss_request_urls=iss_urls, metadata=metadata,
+        )
+        return MarketDataSnapshot(
+            snapshot_id=snapshot_id,
+            valuation_date=valuation_date,
+            source=MarketDataSource.MOEX,
+            quality=quality,
+            curves=curves,
+            fx_rates=fx_rates,
+            source_details={"provider": "MOEX ISS", "trade_date": metadata["trade_date"]},
+            metadata=metadata,
+        )
 
 
 class BloombergProvider(ProviderInterface):
@@ -45,10 +142,12 @@ class MarketDataService:
         self,
         store: MarketDataStore | None = None,
         providers: dict[MarketDataSource, MarketDataProvider] | None = None,
+        market_db=None,
     ):
         self.store = store or MarketDataStore()
+        self.market_db = market_db
         self.providers: dict[MarketDataSource, MarketDataProvider] = {
-            MarketDataSource.MOEX: MoexProvider(),
+            MarketDataSource.MOEX: MoexProvider(db=market_db),
             MarketDataSource.BLOOMBERG: BloombergProvider(),
             MarketDataSource.REUTERS: ReutersProvider(),
         }
@@ -208,6 +307,24 @@ class MarketDataService:
         provider = self.providers[source_enum]
         snapshot = provider.load_snapshot(valuation_date=valuation_date, **kwargs)
         return self.store.save(snapshot)
+
+    def moex_snapshot(
+        self,
+        valuation_date: date | None = None,
+        *,
+        fallback_to_demo: bool = True,
+    ) -> MarketDataSnapshot:
+        """
+        Return a production MOEX snapshot from the local DB, or fall back to the
+        DEMO snapshot (with its 'Not production valuation' warning) when MOEX
+        data is unavailable / rejected. Never raises under fallback.
+        """
+        try:
+            return self.load_provider_snapshot(MarketDataSource.MOEX, valuation_date)
+        except Exception:
+            if not fallback_to_demo:
+                raise
+            return self.demo_snapshot(valuation_date)
 
     def flat_curve(
         self,
