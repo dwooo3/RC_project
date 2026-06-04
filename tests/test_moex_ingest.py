@@ -116,10 +116,12 @@ def test_ingest_bonds_writes_instrument_and_quote(setup):
 def test_ingest_all_logs_each_endpoint(setup):
     ing, db = setup
     counts = ing.ingest_all(date(2026, 6, 4))
-    assert counts == {"gcurve": 5, "fx": 3, "bonds": 1}
+    # Phase B adds corporate-curve calibration; the single OFZ here is tier T1
+    # with < min_bonds, so 0 corporate curves are produced (still logged ok).
+    assert counts == {"gcurve": 5, "fx": 3, "bonds": 1, "corporate": 0}
     logs = db.conn.execute("SELECT endpoint, status FROM ingest_log").fetchall()
     assert {r["status"] for r in logs} == {"ok"}
-    assert len(logs) == 3
+    assert len(logs) == 4
 
 
 def test_ingest_logs_error_on_failure():

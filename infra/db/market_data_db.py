@@ -259,6 +259,18 @@ class MarketDataDB:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_calibration_bonds(self, snapshot_id: str) -> list[dict]:
+        """Bonds with a usable YTM + maturity, for corporate-curve calibration."""
+        rows = self.conn.execute(
+            """SELECT b.secid AS secid, b.ytm AS ytm, b.volume AS volume,
+                      i.mat_date AS mat_date, i.list_level AS list_level,
+                      i.coupon_percent AS coupon_percent, i.issuer AS issuer
+               FROM bond_quotes b JOIN instruments i ON b.secid = i.secid
+               WHERE b.snapshot_id = ? AND b.ytm IS NOT NULL AND i.mat_date IS NOT NULL""",
+            (snapshot_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_time_series(self, factor_id: str, kind: str | None = None) -> list[dict]:
         if kind:
             rows = self.conn.execute(
