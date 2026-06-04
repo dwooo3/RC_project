@@ -92,35 +92,8 @@ def fit_gcurve_svensson(market_tenors: list, market_yields: list) -> SvenssonCur
 # ─────────────────────────────────────────────────────────
 # Russian OFZ bond pricing
 # ─────────────────────────────────────────────────────────
-
-def price_ofz(face: float, coupon_rate: float, maturity: float,
-              freq: int, curve: YieldCurve,
-              accrued_days: int = 0, day_count: int = 365) -> dict:
-    """
-    Price OFZ bond.
-    Russian OFZ use 30/360 for coupon calculation.
-    Returns dirty price, clean price, accrued interest, YTM, duration.
-    """
-    from instruments.fixed_income import fixed_bond
-    res = fixed_bond(face, coupon_rate, maturity, freq, curve)
-
-    dt       = 1.0 / freq
-    coupon   = face * coupon_rate / freq
-    accrued  = coupon * accrued_days / (day_count / freq)
-    clean    = res["price"] - accrued
-
-    return dict(
-        dirty_price  = res["price"],
-        clean_price  = clean,
-        accrued      = accrued,
-        ytm          = res["ytm"],
-        ytm_pct      = res["ytm"] * 100,
-        mac_duration = res["mac_duration"],
-        mod_duration = res["mod_duration"],
-        convexity    = res["convexity"],
-        dv01         = res["dv01"],
-        zspread      = res.get("zspread", 0),
-    )
+# OFZ bond pricing lives in the pricing layer to keep market-data (curves/) free
+# of any dependency on instruments/. Use instruments.fixed_income.price_ofz.
 
 
 # ─────────────────────────────────────────────────────────

@@ -95,6 +95,45 @@ class RiskService:
             allow_analytics_lab=self.allow_analytics_lab,
         )
 
+    def var(
+        self,
+        returns: np.ndarray,
+        position_value: float,
+        confidence: float = 0.95,
+        horizon: int = 1,
+        method: str = "historical",
+        snapshot: MarketDataSnapshot | None = None,
+        **kwargs,
+    ) -> dict:
+        """
+        Unified VaR entry point with method as a parameter.
+
+        Historical VaR is one method among several here, not a separate
+        top-level workflow. Pure dispatch over the existing per-method engines;
+        no quantitative behaviour changes.
+        """
+        m = method.lower().replace("-", "_").replace(" ", "_")
+        if m in ("historical", "hist", "historical_simulation", "hs"):
+            return self.historical_var(returns, position_value, confidence, horizon,
+                                       weights=kwargs.get("weights"), snapshot=snapshot)
+        if m in ("parametric", "normal", "delta_normal", "t", "student_t"):
+            distribution = kwargs.get("distribution", "t" if m in ("t", "student_t") else "normal")
+            return self.parametric_var(returns, position_value, confidence, horizon,
+                                       distribution=distribution, snapshot=snapshot)
+        if m in ("monte_carlo", "mc", "montecarlo"):
+            return self.monte_carlo_var(returns, position_value, confidence, horizon,
+                                        n_sims=kwargs.get("n_sims", 100_000),
+                                        seed=kwargs.get("seed", 42), snapshot=snapshot)
+        if m in ("evt", "pot", "evt_pot"):
+            return self.evt_var(returns, position_value, confidence,
+                                threshold_pct=kwargs.get("threshold_pct", 0.10),
+                                horizon=horizon, snapshot=snapshot)
+        return self._error_result(
+            model_id="var_historical",
+            error=ValueError(f"Unknown VaR method: {method!r}"),
+            snapshot=snapshot,
+        )
+
     def historical_var(
         self,
         returns: np.ndarray,

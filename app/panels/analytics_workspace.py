@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from app.widgets import ModelStatusBadge
-from models.registry import MODEL_REGISTRY, ModelStatus
+from services.governance_service import GovernanceService
 
 
 _BG1 = "#1a1a1e"
@@ -30,8 +30,12 @@ ANALYTICS_MODULES = [
 ]
 
 
-def _status_from_key(model_key: str) -> ModelStatus:
-    return MODEL_REGISTRY.get(model_key, {}).get("status", ModelStatus.PLACEHOLDER)
+_GOVERNANCE = GovernanceService()
+
+
+def _status_from_key(model_key: str) -> str:
+    """Model status string, sourced through the governance service (not the raw registry)."""
+    return _GOVERNANCE.get_model(model_key).status
 
 
 class _ModuleCard(QFrame):

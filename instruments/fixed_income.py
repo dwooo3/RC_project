@@ -298,6 +298,37 @@ def fixed_bond(face: float, coupon: float, T: float, freq: int,
                 cashflow_schedule=schedule)
 
 
+def price_ofz(face: float, coupon_rate: float, maturity: float,
+              freq: int, curve: YieldCurve,
+              accrued_days: int = 0, day_count: int = 365) -> dict:
+    """
+    Price an OFZ (Russian government) bond.
+    Russian OFZ use 30/360 for coupon calculation.
+    Returns dirty price, clean price, accrued interest, YTM, duration.
+
+    Pricing wrapper over fixed_bond(); lives in the pricing layer (moved here from
+    curves/russia.py to remove the Market -> Pricing reverse dependency).
+    """
+    res = fixed_bond(face, coupon_rate, maturity, freq, curve)
+
+    coupon  = face * coupon_rate / freq
+    accrued = coupon * accrued_days / (day_count / freq)
+    clean   = res["price"] - accrued
+
+    return dict(
+        dirty_price  = res["price"],
+        clean_price  = clean,
+        accrued      = accrued,
+        ytm          = res["ytm"],
+        ytm_pct      = res["ytm"] * 100,
+        mac_duration = res["mac_duration"],
+        mod_duration = res["mod_duration"],
+        convexity    = res["convexity"],
+        dv01         = res["dv01"],
+        zspread      = res.get("zspread", 0),
+    )
+
+
 # ─────────────────────────────────────────────────────────
 # Floating-rate note
 # ─────────────────────────────────────────────────────────
