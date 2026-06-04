@@ -7,8 +7,17 @@ market-data metadata, warnings, and structured errors.
 from typing import Any
 
 from domain.market_data import MarketDataSnapshot
+from domain.results import BondPricingRequest, BondPricingResult
 from services.governance_service import GovernanceService
 from services.market_data_service import MarketDataService
+
+
+_BOND_APPROXIMATION_WARNINGS = [
+    "Fixed bond pricing is an approximation/demo path: no settlement date, coupon date schedule, day-count accrual, or accrued interest calculation.",
+    "Clean price equals dirty price and accrued interest is reported as 0.0 until the fixed-income schedule/day-count refactor is implemented.",
+    "Coupon schedule is generated from maturity * frequency rounded year fractions; stubs, holidays, business-day conventions, and ex-coupon logic are not modeled.",
+    "Duration, convexity, DV01, YTM, and z-spread are simplified analytics from the legacy fixed_bond engine.",
+]
 
 
 class PricingService:
@@ -31,6 +40,12 @@ class PricingService:
             warnings.append(str(warning))
         return warnings
 
+    def _market_data_source(self, snapshot: MarketDataSnapshot | None) -> str:
+        if snapshot is None:
+            return ""
+        source = snapshot.source
+        return source.value if hasattr(source, "value") else str(source)
+
     def _result(
         self,
         *,
@@ -52,6 +67,8 @@ class PricingService:
             "warnings": all_warnings,
             "errors": errors or [],
             "market_data_snapshot_id": snapshot.snapshot_id if snapshot else "",
+            "market_data_source": self._market_data_source(snapshot),
+            "market_data_quality": snapshot.quality if snapshot else "",
             "raw": raw,
         }
 
@@ -103,10 +120,10 @@ class PricingService:
 
     def price_bond(
         self,
-        face: float,
-        coupon: float,
-        T: float,
-        freq: int,
+        face: float | BondPricingRequest,
+        coupon: float | None = None,
+        T: float | None = None,
+        freq: int | None = None,
         curve=None,
         snapshot: MarketDataSnapshot | None = None,
         curve_id: str = "flat_rub",
@@ -114,14 +131,82 @@ class PricingService:
         """Price a fixed-rate bond through the existing fixed income engine."""
         from instruments.fixed_income import fixed_bond
 
+        resolved_snapshot = snapshot
         try:
+            request = self._bond_request(face, coupon, T, freq, curve_id)
+            warnings = list(_BOND_APPROXIMATION_WARNINGS)
             if curve is None:
-                snapshot = snapshot or self.market_data.demo_snapshot()
-                curve = self.market_data.get_curve(curve_id, snapshot)
-            raw = fixed_bond(face, coupon, T, freq, curve)
-            return self._result(value=raw.get("price"), model_id="fixed_bond", raw=raw, snapshot=snapshot)
+                resolved_snapshot = resolved_snapshot or self.market_data.demo_snapshot()
+                curve = self.market_data.get_curve(request.curve_id, resolved_snapshot)
+            else:
+                warnings.append(
+                    "External curve supplied directly for backward compatibility; prefer MarketDataService snapshot curve ownership."
+                )
+            raw = fixed_bond(
+                request.face,
+                request.coupon,
+                request.maturity,
+                request.frequency,
+                curve,
+            )
+            result = self._result(
+                value=raw.get("price"),
+                model_id="fixed_bond",
+                raw=raw,
+                snapshot=resolved_snapshot,
+                warnings=warnings,
+            )
+            result.update(
+                {
+                    "request": request,
+                    "dirty_price": raw.get("price"),
+                    "clean_price": raw.get("price"),
+                    "accrued_interest": 0.0,
+                    "bond_result": BondPricingResult(
+                        value=raw.get("price"),
+                        dirty_price=raw.get("price"),
+                        clean_price=raw.get("price"),
+                        accrued_interest=0.0,
+                        currency=request.currency,
+                        model_id=result["model_id"],
+                        model_status=result["model_status"],
+                        market_data_snapshot_id=result["market_data_snapshot_id"],
+                        market_data_source=result["market_data_source"],
+                        market_data_quality=result["market_data_quality"],
+                        warnings=result["warnings"],
+                        errors=result["errors"],
+                        raw=raw,
+                    ),
+                }
+            )
+            return result
         except Exception as exc:
-            return self._error_result(model_id="fixed_bond", error=exc, snapshot=snapshot)
+            return self._error_result(model_id="fixed_bond", error=exc, snapshot=resolved_snapshot)
+
+    def _bond_request(
+        self,
+        face: float | BondPricingRequest,
+        coupon: float | None,
+        T: float | None,
+        freq: int | None,
+        curve_id: str,
+    ) -> BondPricingRequest:
+        if isinstance(face, BondPricingRequest):
+            return face
+        missing = [
+            name
+            for name, value in {"coupon": coupon, "T": T, "freq": freq}.items()
+            if value is None
+        ]
+        if missing:
+            raise ValueError(f"Missing bond pricing inputs: {', '.join(missing)}")
+        return BondPricingRequest(
+            face=float(face),
+            coupon=float(coupon),
+            maturity=float(T),
+            frequency=int(freq),
+            curve_id=curve_id,
+        )
 
     def price_irs(
         self,
