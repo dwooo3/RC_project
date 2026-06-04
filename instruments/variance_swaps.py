@@ -39,7 +39,12 @@ def variance_swap_fair_strike(r: float, q: float, T: float,
                 dK = K - options[-2][0]
             else:
                 dK = (options[i+1][0] - options[i-1][0]) / 2
-            total += 2/T * (1 - np.log(K/F_)) * P * dK / K**2
+            # Log-contract replication uses a pure 1/K^2 weight per strike strip.
+            # The previous (1 - log(K/F)) factor double-counted the log-contract
+            # correction (already carried by the leading term below) and produced
+            # a systematic ~1% overestimate of the fair variance strike that did
+            # not vanish under grid refinement. See Demeterfi et al. (1999).
+            total += 2/T * P * dK / K**2
         return total
 
     var_strike = (2/T * (np.log(F/S0) - (F/S0 - 1))
