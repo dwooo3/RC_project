@@ -28,6 +28,22 @@ def test_governance_returns_model_registry_entry_fields():
     assert entry.validation_date is None
 
 
+def test_governance_service_exposes_workspace_sections():
+    governance = GovernanceService()
+
+    models = governance.list_models()
+    counts = governance.status_counts()
+    validation = governance.validation_status()
+    audit = governance.audit_trail()
+    limitations = governance.limitations_report()
+
+    assert any(model.model_id == "fixed_bond" for model in models)
+    assert counts["Approximation"] > 0
+    assert any(row["model_id"] == "fixed_bond" for row in validation)
+    assert audit and audit[0]["status"] == "Pending"
+    assert any(row["model_id"] == "fixed_bond" for row in limitations)
+
+
 def test_prototype_model_generates_governance_warning():
     warnings = GovernanceService().warnings_for_model("mc_lsm")
 

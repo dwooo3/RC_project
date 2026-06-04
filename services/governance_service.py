@@ -13,6 +13,17 @@ _PRODUCTION_ALLOWED = {
 class GovernanceService:
     """Normalize model registry entries for application services."""
 
+    def list_models(self) -> list[ModelRegistryEntry]:
+        """Return all registered models as normalized governance entries."""
+        return [self.get_model(model_id) for model_id in sorted(registry.MODEL_REGISTRY)]
+
+    def status_counts(self) -> dict[str, int]:
+        """Return model counts by governance status."""
+        counts = {status.value: 0 for status in registry.ModelStatus}
+        for model in self.list_models():
+            counts[model.status] = counts.get(model.status, 0) + 1
+        return counts
+
     def get_model(self, model_id: str) -> ModelRegistryEntry:
         entry = registry.get(model_id)
         status = entry["status"]
@@ -109,4 +120,54 @@ class GovernanceService:
             model_id
             for model_id in registry.MODEL_REGISTRY
             if self.get_model(model_id).is_research_only
+        ]
+
+    def validation_status(self) -> list[dict]:
+        """Return validation coverage rows for governance workspaces."""
+        rows = []
+        for model in self.list_models():
+            rows.append(
+                {
+                    "model_id": model.model_id,
+                    "status": model.status,
+                    "validation_date": model.validation_date,
+                    "tests": list(model.tests),
+                    "evidence_count": len(model.tests) + len(model.references),
+                    "production_allowed": model.production_allowed,
+                    "workflow_layer": model.workflow_layer,
+                }
+            )
+        return rows
+
+    def limitations_report(self) -> list[dict]:
+        """Return user-facing model limitations."""
+        rows = []
+        for model in self.list_models():
+            limitations = list(model.limitations) or ["No limitations recorded."]
+            for limitation in limitations:
+                rows.append(
+                    {
+                        "model_id": model.model_id,
+                        "status": model.status,
+                        "production_allowed": model.production_allowed,
+                        "limitation": limitation,
+                    }
+                )
+        return rows
+
+    def audit_trail(self) -> list[dict]:
+        """Return calculation audit records.
+
+        Persistence is not implemented yet, so this deliberately returns an
+        explicit placeholder record instead of fabricating calculation history.
+        """
+        return [
+            {
+                "timestamp": "",
+                "event": "Audit persistence not implemented",
+                "model_id": "",
+                "version": "",
+                "status": "Pending",
+                "details": "PricingService and RiskService expose metadata, but durable audit storage is not available yet.",
+            }
         ]
