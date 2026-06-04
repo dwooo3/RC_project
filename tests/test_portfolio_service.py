@@ -9,12 +9,17 @@ from domain import (
     Portfolio,
     PortfolioRiskResult,
     PortfolioValuationResult,
+    PnLExplainResult,
     Position,
     PositionType,
     RiskFactor,
     RiskFactorExposure,
     RiskFactorGroup,
     RiskFactorHierarchy,
+    Scenario,
+    ScenarioShock,
+    ScenarioShockType,
+    ScenarioType,
 )
 from risk.portfolio import Portfolio as LegacyPortfolio
 from services.portfolio_service import PortfolioService
@@ -208,6 +213,77 @@ def test_portfolio_service_contribution_analysis_by_factor():
     assert scenario["bucket_pnl"]["Equity"] == pytest.approx(20.0)
     assert scenario["bucket_pnl"]["FX"] == pytest.approx(10.0)
     assert scenario["pnl"] == pytest.approx(30.0)
+
+
+def test_portfolio_service_explain_pnl_reconciles_and_reports_residual():
+    service = PortfolioService("Explain")
+    service.add(Position("eq1", "equity", "Equity spot", 10, {"S": 100.0}))
+
+    result = service.explain_pnl(total_pnl=25.0, dS=2.0)
+
+    assert isinstance(result, PnLExplainResult)
+    assert result.delta_pnl == pytest.approx(20.0)
+    assert result.gamma_pnl == pytest.approx(0.0)
+    assert result.vega_pnl == pytest.approx(0.0)
+    assert result.theta_pnl == pytest.approx(0.0)
+    assert result.rate_pnl == pytest.approx(0.0)
+    assert result.fx_pnl == pytest.approx(0.0)
+    assert result.explained_pnl == pytest.approx(20.0)
+    assert result.residual == pytest.approx(5.0)
+    assert result.reconciles
+    assert result.as_dict()["reconciles"] is True
+
+
+def test_portfolio_service_explain_pnl_components_from_scenario():
+    service = PortfolioService("Scenario Explain")
+    service.add(Position("eq1", "equity", "Equity spot", 10, {"S": 100.0}))
+    service.add(
+        Position(
+            "fx1",
+            "fx_forward",
+            "FX forward",
+            5,
+            {"S": 90.0, "r_d": 0.10, "r_f": 0.04, "T": 0.5, "ccy_pair": "USD/RUB"},
+        )
+    )
+    scenario = Scenario(
+        "custom-pnl",
+        "Desk PnL Explain",
+        ScenarioType.CUSTOM,
+        shocks=[
+            ScenarioShock(ScenarioShockType.EQUITY_SHOCK, 2.0, "absolute", bucket="Equity"),
+            ScenarioShock(ScenarioShockType.FX_SHOCK, 3.0, "absolute", bucket="FX"),
+        ],
+    )
+
+    result = service.explain_pnl(scenario=scenario)
+
+    assert result.total_pnl == pytest.approx(35.0)
+    assert result.delta_pnl == pytest.approx(20.0)
+    assert result.fx_pnl == pytest.approx(15.0)
+    assert result.explained_pnl == pytest.approx(35.0)
+    assert result.residual == pytest.approx(0.0)
+    assert result.factor_pnl["equity.spot"] == pytest.approx(20.0)
+    assert result.factor_pnl["fx.usd/rub"] == pytest.approx(15.0)
+
+
+def test_portfolio_service_explain_pnl_includes_rate_component():
+    service = PortfolioService("Rate Explain")
+    service.add(
+        Position(
+            "bond1",
+            "bond",
+            "Fixed bond",
+            100.0,
+            {"face": 100.0, "coupon": 0.05, "T": 2.0, "freq": 2, "r": 0.05},
+        )
+    )
+
+    result = service.explain_pnl(dr=0.01)
+
+    assert result.rate_pnl < 0.0
+    assert result.explained_pnl == pytest.approx(result.total_pnl)
+    assert result.residual == pytest.approx(0.0)
 
 
 def test_legacy_risk_portfolio_import_path_still_works():

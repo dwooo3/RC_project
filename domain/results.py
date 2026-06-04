@@ -64,3 +64,48 @@ class BondPricingResult:
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PnLExplainResult:
+    """Portfolio P&L attribution result."""
+
+    portfolio_id: str
+    total_pnl: float
+    explained_pnl: float
+    residual: float
+    delta_pnl: float = 0.0
+    gamma_pnl: float = 0.0
+    vega_pnl: float = 0.0
+    theta_pnl: float = 0.0
+    rate_pnl: float = 0.0
+    fx_pnl: float = 0.0
+    components: dict[str, float] = field(default_factory=dict)
+    factor_pnl: dict[str, float] = field(default_factory=dict)
+    position_pnl: dict[str, float] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def reconciles(self) -> bool:
+        return abs(self.total_pnl - self.explained_pnl - self.residual) < 1e-9
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "portfolio_id": self.portfolio_id,
+            "total_pnl": self.total_pnl,
+            "explained_pnl": self.explained_pnl,
+            "residual": self.residual,
+            "delta_pnl": self.delta_pnl,
+            "gamma_pnl": self.gamma_pnl,
+            "vega_pnl": self.vega_pnl,
+            "theta_pnl": self.theta_pnl,
+            "rate_pnl": self.rate_pnl,
+            "fx_pnl": self.fx_pnl,
+            "components": self.components,
+            "factor_pnl": self.factor_pnl,
+            "position_pnl": self.position_pnl,
+            "warnings": self.warnings,
+            "errors": self.errors,
+            "reconciles": self.reconciles,
+        }

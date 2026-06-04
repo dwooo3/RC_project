@@ -9,7 +9,7 @@ from domain.portfolio import (
     Position,
     PositionType,
 )
-from domain.results import PricingResult
+from domain.results import PnLExplainResult, PricingResult
 from domain.risk_factors import RiskFactor, RiskFactorBucket, RiskFactorExposure, RiskFactorGroup, RiskFactorHierarchy
 from domain.scenario import Scenario, ScenarioResult, ScenarioShock, ScenarioShockType, ScenarioType
 
@@ -24,6 +24,7 @@ __all__ = [
     "Position",
     "PositionType",
     "PricingResult",
+    "PnLExplainResult",
     "RiskFactorBucket",
     "RiskFactor",
     "RiskFactorExposure",

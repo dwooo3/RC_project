@@ -4,6 +4,7 @@ from collections import defaultdict
 
 from domain.portfolio import Portfolio, PortfolioRiskResult, PortfolioValuationResult, Position
 from domain.risk_factors import RiskFactor, RiskFactorExposure, RiskFactorBucket, RiskFactorGroup
+from domain.results import PnLExplainResult
 from domain.scenario import Scenario, ScenarioResult, ScenarioShock, ScenarioShockType, ScenarioType
 from services.market_data_service import MarketDataService
 from services.pricing_service import PricingService
@@ -575,6 +576,57 @@ class PortfolioService:
         self.value()
         return self._scenario_pnl_from_exposures(dS, dVol, dr, dSpread)
 
+    def explain_pnl(
+        self,
+        total_pnl: float | None = None,
+        *,
+        dS: float = 0,
+        dVol: float = 0,
+        dr: float = 0,
+        dSpread: float = 0,
+        theta_days: float = 0,
+        scenario: Scenario | dict | None = None,
+    ) -> PnLExplainResult:
+        """Explain portfolio P&L using risk-factor exposures."""
+        self.value()
+        if scenario is not None:
+            scenario_result = self.run_scenario(scenario)
+            components = self._pnl_components_from_scenario(scenario_result.raw, theta_days=theta_days)
+            factor_pnl = scenario_result.factor_pnl
+            position_pnl = scenario_result.position_pnl
+            estimated_total = scenario_result.pnl + components["theta_pnl"]
+            warnings = list(scenario_result.warnings)
+            errors = list(scenario_result.errors)
+        else:
+            raw = self._scenario_pnl_from_exposures(dS, dVol, dr, dSpread, theta_days=theta_days)
+            components = self._pnl_components_from_legacy(raw)
+            factor_pnl = raw.get("factor_pnl", {})
+            position_pnl = raw.get("position_pnl", {})
+            estimated_total = raw["pnl"]
+            warnings = []
+            errors = []
+
+        reported_total = estimated_total if total_pnl is None else float(total_pnl)
+        explained = sum(components.values())
+        residual = reported_total - explained
+        return PnLExplainResult(
+            portfolio_id=self.portfolio.portfolio_id,
+            total_pnl=reported_total,
+            explained_pnl=explained,
+            residual=residual,
+            delta_pnl=components["delta_pnl"],
+            gamma_pnl=components["gamma_pnl"],
+            vega_pnl=components["vega_pnl"],
+            theta_pnl=components["theta_pnl"],
+            rate_pnl=components["rate_pnl"],
+            fx_pnl=components["fx_pnl"],
+            components=components,
+            factor_pnl=factor_pnl,
+            position_pnl=position_pnl,
+            warnings=warnings,
+            errors=errors,
+        )
+
     def _legacy_totals(self) -> dict:
         return {
             "delta": self._sum_unit("Delta"),
@@ -631,6 +683,7 @@ class PortfolioService:
         dVol: float = 0,
         dr: float = 0,
         dSpread: float = 0,
+        theta_days: float = 0,
     ) -> dict:
         bucket_pnl: defaultdict[str, float] = defaultdict(float)
         factor_pnl: defaultdict[str, float] = defaultdict(float)
@@ -644,6 +697,11 @@ class PortfolioService:
             factor_pnl[factor_id] += contribution
             position_pnl[exp.position_id] += contribution
             legacy_components[self._legacy_component_name(exp)] += contribution
+
+        theta_pnl = sum(p.theta for p in self.positions) * theta_days
+        if theta_pnl:
+            bucket_pnl["Theta"] += theta_pnl
+            legacy_components["theta"] += theta_pnl
 
         pnl = sum(bucket_pnl.values())
         return dict(
@@ -692,6 +750,29 @@ class PortfolioService:
             "CS01": "cs_01",
             "FX Delta": "fx",
         }.get(exp.unit, exp.unit.lower().replace(" ", "_"))
+
+    def _pnl_components_from_legacy(self, raw: dict) -> dict[str, float]:
+        raw_components = raw.get("components", {})
+        return {
+            "delta_pnl": raw_components.get("delta", 0.0),
+            "gamma_pnl": raw_components.get("gamma", 0.0),
+            "vega_pnl": raw_components.get("vega", 0.0),
+            "theta_pnl": raw_components.get("theta", 0.0),
+            "rate_pnl": raw_components.get("rho", 0.0) + raw_components.get("ir_01", 0.0),
+            "fx_pnl": raw_components.get("fx", 0.0),
+        }
+
+    def _pnl_components_from_scenario(self, raw: dict, theta_days: float = 0) -> dict[str, float]:
+        factor_pnl = raw.get("factor_pnl", {})
+        theta_pnl = sum(p.theta for p in self.positions) * theta_days
+        return {
+            "delta_pnl": factor_pnl.get("equity.spot", 0.0),
+            "gamma_pnl": factor_pnl.get("equity.spot_gamma", 0.0),
+            "vega_pnl": factor_pnl.get("vol.implied", 0.0),
+            "theta_pnl": theta_pnl,
+            "rate_pnl": sum(value for factor, value in factor_pnl.items() if factor.startswith("rates.")),
+            "fx_pnl": sum(value for factor, value in factor_pnl.items() if factor.startswith("fx.")),
+        }
 
     def __len__(self):
         return len(self.portfolio)
