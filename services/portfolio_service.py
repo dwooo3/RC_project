@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 
-from domain.portfolio import Portfolio, Position
+from domain.portfolio import Portfolio, PortfolioRiskResult, PortfolioValuationResult, Position
 from domain.risk_factors import RiskFactorExposure, RiskFactorBucket
 from services.market_data_service import MarketDataService
 from services.pricing_service import PricingService
@@ -47,13 +47,33 @@ class PortfolioService:
 
     def price_all(self):
         """Reprice all positions using their params."""
+        errors = []
+        warnings = []
         for pos in self.positions:
             try:
                 self._price_position(pos)
-            except Exception:
+                warnings.extend(pos.warnings)
+                errors.extend(pos.errors)
+            except Exception as exc:
                 pos.price = float("nan")
                 pos.market_value = float("nan")
                 pos.exposures = []
+                pos.errors = [f"Pricing failed for {pos.id}: {exc}"]
+                errors.extend(pos.errors)
+        return PortfolioValuationResult(
+            portfolio_id=self.portfolio.portfolio_id,
+            valuation_date=self.portfolio.valuation_date,
+            base_currency=self.portfolio.base_currency,
+            market_data_snapshot_id=self.portfolio.market_data_snapshot_id,
+            total_market_value=sum(p.market_value for p in self.positions),
+            positions=list(self.positions),
+            warnings=warnings,
+            errors=errors,
+        )
+
+    def value(self) -> PortfolioValuationResult:
+        """Canonical portfolio valuation entry point."""
+        return self.price_all()
 
     def _reset_position_risk(self, pos: Position):
         pos.delta = 0.0
@@ -65,6 +85,8 @@ class PortfolioService:
         pos.cs01 = 0.0
         pos.fx_delta = 0.0
         pos.exposures = []
+        pos.warnings = []
+        pos.errors = []
 
     def _add_exposure(
         self,
@@ -103,6 +125,7 @@ class PortfolioService:
             if res["errors"]:
                 raise ValueError("; ".join(res["errors"]))
             raw = res["raw"] or {}
+            self._attach_service_metadata(pos, res)
             pos.price = res["value"]
             pos.market_value = pos.price * qt
             pos.delta = raw.get("delta", 0.0) * qt
@@ -121,6 +144,7 @@ class PortfolioService:
             if res["errors"]:
                 raise ValueError("; ".join(res["errors"]))
             raw = res["raw"] or {}
+            self._attach_service_metadata(pos, res)
             pos.price = res["value"]
             pos.market_value = pos.price * qt / p["face"]
             pos.dv01 = raw.get("dv01", 0.0) * qt / p["face"]
@@ -140,6 +164,8 @@ class PortfolioService:
             pos.price = res["npv"]
             pos.market_value = res["npv"] * qt
             pos.cs01 = res["dv01"] * qt
+            pos.model_id = "cds"
+            pos.model_status = "Approximation"
             self._add_exposure(pos, "Credit", "credit_spread", pos.cs01, "CS01", 0.0001)
 
         elif inst in ("irs", "swap"):
@@ -150,6 +176,7 @@ class PortfolioService:
             if res["errors"]:
                 raise ValueError("; ".join(res["errors"]))
             raw = res["raw"] or {}
+            self._attach_service_metadata(pos, res)
             pos.price = res["value"]
             pos.market_value = pos.price * qt
             pos.dv01 = raw.get("dv01", 0.0) * qt
@@ -160,6 +187,8 @@ class PortfolioService:
             pos.price = S
             pos.market_value = S * qt
             pos.delta = qt
+            pos.model_id = "equity_spot"
+            pos.model_status = "Manual"
             self._add_exposure(pos, "Equity", "spot", pos.delta, "Delta", 1.0)
 
         elif inst == "fx_forward":
@@ -167,6 +196,7 @@ class PortfolioService:
             if res["errors"]:
                 raise ValueError("; ".join(res["errors"]))
             raw = res["raw"] or {}
+            self._attach_service_metadata(pos, res)
             pos.price = raw.get("forward", res["value"])
             pos.market_value = (pos.price - p.get("K", pos.price)) * qt
             pos.fx_delta = qt
@@ -178,12 +208,19 @@ class PortfolioService:
             pos.price = F
             pos.market_value = F * qt * multiplier
             pos.delta = qt * multiplier
+            pos.model_id = "future_mark"
+            pos.model_status = "Manual"
             self._add_exposure(pos, "Equity", "future_underlying", pos.delta, "Delta", 1.0)
 
+    def _attach_service_metadata(self, pos: Position, result: dict):
+        pos.model_id = result.get("model_id", "")
+        pos.model_status = result.get("model_status", "")
+        pos.market_data_snapshot_id = result.get("market_data_snapshot_id", "")
+        pos.warnings = list(result.get("warnings", []))
+        pos.errors = list(result.get("errors", []))
+
     def aggregate(self) -> dict:
-        self.price_all()
-        exposure_buckets = self.exposure_buckets()
-        total_mv = sum(p.market_value for p in self.positions)
+        risk = self.risk()
 
         totals = {
             "delta": self._sum_unit("Delta"),
@@ -198,10 +235,32 @@ class PortfolioService:
 
         return dict(
             n_positions=len(self.positions),
-            market_value=total_mv,
-            exposure_buckets=exposure_buckets,
-            risk_factor_exposures=self.risk_factor_exposures(),
+            market_value=risk.market_value,
+            exposure_buckets=risk.exposure_buckets,
+            risk_factor_exposures=risk.risk_factor_exposures,
             **totals,
+        )
+
+    def risk(self) -> PortfolioRiskResult:
+        """Canonical portfolio risk aggregation entry point."""
+        valuation = self.value()
+        scenario = self._scenario_pnl_from_aggregate(
+            self._legacy_totals(),
+            dS=0,
+            dVol=0,
+            dr=0,
+            dSpread=0,
+        )
+        return PortfolioRiskResult(
+            portfolio_id=self.portfolio.portfolio_id,
+            base_currency=self.portfolio.base_currency,
+            market_data_snapshot_id=self.portfolio.market_data_snapshot_id,
+            market_value=valuation.total_market_value,
+            exposure_buckets=self.exposure_buckets(),
+            risk_factor_exposures=self.risk_factor_exposures(),
+            scenario_pnl=scenario,
+            warnings=valuation.warnings,
+            errors=valuation.errors,
         )
 
     def _sum_unit(self, unit: str) -> float:
@@ -222,7 +281,7 @@ class PortfolioService:
         return buckets
 
     def positions_table(self) -> list[dict]:
-        self.price_all()
+        self.value()
         return [
             dict(
                 id=p.id,
@@ -245,7 +304,30 @@ class PortfolioService:
 
     def scenario_pnl(self, dS: float = 0, dVol: float = 0, dr: float = 0, dSpread: float = 0) -> dict:
         """First-order scenario P&L by risk-factor bucket."""
-        agg = self.aggregate()
+        self.value()
+        agg = self._legacy_totals()
+        return self._scenario_pnl_from_aggregate(agg, dS, dVol, dr, dSpread)
+
+    def _legacy_totals(self) -> dict:
+        return {
+            "delta": self._sum_unit("Delta"),
+            "gamma": self._sum_unit("Gamma"),
+            "vega": self._sum_unit("Vega"),
+            "rho": self._sum_unit("Rho"),
+            "dv01": self._sum_unit("DV01"),
+            "cs01": self._sum_unit("CS01"),
+            "fx_delta": self._sum_unit("FX Delta"),
+            "theta": sum(p.theta for p in self.positions),
+        }
+
+    def _scenario_pnl_from_aggregate(
+        self,
+        agg: dict,
+        dS: float = 0,
+        dVol: float = 0,
+        dr: float = 0,
+        dSpread: float = 0,
+    ) -> dict:
         components = {
             "Equity": agg["delta"] * dS + agg["gamma"] * dS**2 / 2,
             "Volatility": agg["vega"] * dVol * 100,

@@ -5,13 +5,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-from domain import Portfolio, Position, RiskFactorExposure
+from domain import (
+    Portfolio,
+    PortfolioRiskResult,
+    PortfolioValuationResult,
+    Position,
+    PositionType,
+    RiskFactorExposure,
+)
 from risk.portfolio import Portfolio as LegacyPortfolio
 from services.portfolio_service import PortfolioService
 
 
 def test_domain_portfolio_owns_positions():
-    portfolio = Portfolio("Test")
+    portfolio = Portfolio("Test", base_currency="USD")
     pos = Position(
         id="eq1",
         instrument="equity",
@@ -24,6 +31,21 @@ def test_domain_portfolio_owns_positions():
 
     assert len(portfolio) == 1
     assert portfolio.positions[0].id == "eq1"
+    assert portfolio.portfolio_id == "test"
+    assert portfolio.base_currency == "USD"
+    assert portfolio.by_type(PositionType.EQUITY) == [pos]
+
+
+def test_position_type_is_inferred_for_legacy_positions():
+    option = Position(
+        id="opt1",
+        instrument="call",
+        description="Call option",
+        quantity=1,
+        params={},
+    )
+
+    assert option.type == PositionType.OPTION
 
 
 def test_risk_factor_exposure_supports_bucket_backward_compatibility():
@@ -58,6 +80,47 @@ def test_portfolio_service_buckets_equity_and_vol_exposures():
     assert agg["exposure_buckets"]["Volatility"]["Vega"] > 0
     assert agg["delta"] != 0
     assert agg["vega"] > 0
+
+
+def test_portfolio_service_returns_valuation_result():
+    service = PortfolioService("Valuation")
+    service.add(
+        Position(
+            id="eq1",
+            instrument="equity",
+            description="Equity spot",
+            quantity=4,
+            params={"S": 25.0},
+        )
+    )
+
+    result = service.value()
+
+    assert isinstance(result, PortfolioValuationResult)
+    assert result.portfolio_id == "valuation"
+    assert result.total_market_value == pytest.approx(100.0)
+    assert result.positions[0].model_id == "equity_spot"
+
+
+def test_portfolio_service_returns_risk_result():
+    service = PortfolioService("Risk")
+    service.add(
+        Position(
+            id="eq1",
+            instrument="equity",
+            description="Equity spot",
+            quantity=4,
+            params={"S": 25.0},
+        )
+    )
+
+    result = service.risk()
+
+    assert isinstance(result, PortfolioRiskResult)
+    assert result.portfolio_id == "risk"
+    assert result.market_value == pytest.approx(100.0)
+    assert result.exposure_buckets["Equity"]["Delta"] == pytest.approx(4.0)
+    assert result.scenario_pnl["bucket_pnl"]["Equity"] == pytest.approx(0.0)
 
 
 def test_portfolio_service_scenario_pnl_returns_bucket_components():
