@@ -8,6 +8,7 @@ from typing import Any
 
 from domain.market_data import MarketDataSnapshot
 from domain.results import BondPricingRequest, BondPricingResult
+from domain.scenario import ScenarioShock, ScenarioShockType
 from services.governance_service import GovernanceService
 from services.market_data_service import MarketDataService
 
@@ -302,3 +303,38 @@ class PricingService:
             return self._result(value=raw.get("price"), model_id="garman_kohlhagen", raw=raw, snapshot=snapshot)
         except Exception as exc:
             return self._error_result(model_id="garman_kohlhagen", error=exc, snapshot=snapshot)
+
+    def shock_curve(self, curve, shock: ScenarioShock):
+        """Apply supported scenario curve shocks to a yield curve."""
+        from curves.yield_curve import YieldCurve
+
+        shock_type = shock.type_value
+        if shock_type == ScenarioShockType.PARALLEL_CURVE_SHIFT.value:
+            return curve.parallel_shift(self._shock_bps(shock))
+
+        if shock_type not in {ScenarioShockType.STEEPENER.value, ScenarioShockType.FLATTENER.value}:
+            raise ValueError(f"Unsupported curve shock type: {shock_type}")
+
+        bps = self._shock_bps(shock)
+        if shock_type == ScenarioShockType.FLATTENER.value:
+            bps = -bps
+        tenors = curve.tenors
+        pivot = 5.0
+        max_distance = max(abs(float(t) - pivot) for t in tenors) or 1.0
+        slope = (tenors - pivot) / max_distance
+        shocked_rates = curve.zero_rates + (bps / 10000) * slope
+        return YieldCurve(
+            tenors,
+            shocked_rates,
+            label=f"{curve.label}:{shock_type}",
+            interp=curve._interp,
+            source=curve.source,
+            valuation_date=curve.valuation_date,
+            rate_type=curve.rate_type,
+            compounding=curve.compounding,
+            day_count=curve.day_count,
+            metadata={**curve.metadata, "scenario_shock": shock_type},
+        )
+
+    def _shock_bps(self, shock: ScenarioShock) -> float:
+        return shock.value if shock.unit.lower() in {"bp", "bps", "basis_points"} else shock.value * 10000

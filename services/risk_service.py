@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 
 from domain.market_data import MarketDataSnapshot
+from domain.scenario import Scenario
 from services.governance_service import GovernanceService
 from services.market_data_service import MarketDataService
 
@@ -259,5 +260,27 @@ class RiskService:
         try:
             raw = reverse_stress(S, K, T, r, sigma, q, opt, target_loss, target_loss_pct)
             return self._result(value=raw.get("actual_loss"), model_id="var_parametric", raw=raw, snapshot=snapshot)
+        except Exception as exc:
+            return self._error_result(model_id="var_parametric", error=exc, snapshot=snapshot)
+
+    def run_portfolio_scenario(
+        self,
+        portfolio_service,
+        scenario: Scenario | dict,
+        snapshot: MarketDataSnapshot | None = None,
+    ) -> dict:
+        """Run a unified portfolio scenario through the portfolio service."""
+        try:
+            scenario_result = portfolio_service.run_scenario(scenario)
+            result = self._result(
+                value=scenario_result.pnl,
+                model_id="var_parametric",
+                raw=scenario_result.as_dict(),
+                snapshot=snapshot,
+                warnings=scenario_result.warnings,
+                errors=scenario_result.errors,
+            )
+            result["scenario_result"] = scenario_result
+            return result
         except Exception as exc:
             return self._error_result(model_id="var_parametric", error=exc, snapshot=snapshot)

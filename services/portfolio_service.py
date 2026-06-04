@@ -4,6 +4,7 @@ from collections import defaultdict
 
 from domain.portfolio import Portfolio, PortfolioRiskResult, PortfolioValuationResult, Position
 from domain.risk_factors import RiskFactor, RiskFactorExposure, RiskFactorBucket, RiskFactorGroup
+from domain.scenario import Scenario, ScenarioResult, ScenarioShock, ScenarioShockType, ScenarioType
 from services.market_data_service import MarketDataService
 from services.pricing_service import PricingService
 
@@ -421,6 +422,131 @@ class PortfolioService:
             factor_id = exp.factor_id or self._factor_id(exp.bucket, exp.factor_name)
             contributions[factor_id] += self._exposure_pnl(exp, dS, dVol, dr, dSpread)
         return dict(contributions)
+
+    def run_scenario(self, scenario: Scenario | dict) -> ScenarioResult:
+        """Run a unified scenario against current portfolio factor exposures."""
+        scenario = self._coerce_scenario(scenario)
+        valuation = self.value()
+        raw, warnings = self._scenario_pnl_from_scenario(scenario)
+        pnl = raw["pnl"]
+        return ScenarioResult(
+            scenario=scenario,
+            base_value=valuation.total_market_value,
+            stressed_value=valuation.total_market_value + pnl,
+            pnl=pnl,
+            bucket_pnl=raw.get("bucket_pnl", {}),
+            factor_pnl=raw.get("factor_pnl", {}),
+            position_pnl=raw.get("position_pnl", {}),
+            warnings=warnings + valuation.warnings,
+            errors=valuation.errors,
+            raw=raw,
+        )
+
+    def _coerce_scenario(self, scenario: Scenario | dict) -> Scenario:
+        if isinstance(scenario, Scenario):
+            return scenario
+        shocks = [
+            shock if isinstance(shock, ScenarioShock) else ScenarioShock(**shock)
+            for shock in scenario.get("shocks", [])
+        ]
+        return Scenario(
+            scenario_id=scenario.get("scenario_id", scenario.get("name", "custom").lower().replace(" ", "-")),
+            name=scenario.get("name", "Custom Scenario"),
+            scenario_type=scenario.get("scenario_type", ScenarioType.CUSTOM),
+            shocks=shocks,
+            source=scenario.get("source", ""),
+            description=scenario.get("description", ""),
+            metadata=scenario.get("metadata", {}),
+        )
+
+    def _bps_to_rate(self, shock: ScenarioShock) -> float:
+        return shock.value / 10000 if shock.unit.lower() in {"bp", "bps", "basis_points"} else shock.value
+
+    def _scenario_pnl_from_scenario(self, scenario: Scenario) -> tuple[dict, list[str]]:
+        bucket_pnl: defaultdict[str, float] = defaultdict(float)
+        factor_pnl: defaultdict[str, float] = defaultdict(float)
+        position_pnl: defaultdict[str, float] = defaultdict(float)
+        warnings: list[str] = []
+
+        for exp in self.risk_factor_exposures():
+            factor_id = exp.factor_id or self._factor_id(exp.bucket, exp.factor_name)
+            for shock in scenario.shocks:
+                contribution, warning = self._shock_exposure_pnl(exp, shock)
+                if warning and warning not in warnings:
+                    warnings.append(warning)
+                if contribution == 0.0:
+                    continue
+                bucket_pnl[exp.bucket] += contribution
+                factor_pnl[factor_id] += contribution
+                position_pnl[exp.position_id] += contribution
+
+        pnl = sum(bucket_pnl.values())
+        return (
+            dict(
+                pnl=pnl,
+                scenario_id=scenario.scenario_id,
+                scenario_name=scenario.name,
+                scenario_type=scenario.type_value,
+                bucket_pnl={bucket: bucket_pnl.get(bucket, 0.0) for bucket in EXPOSURE_BUCKETS},
+                factor_pnl=dict(factor_pnl),
+                position_pnl=dict(position_pnl),
+            ),
+            warnings,
+        )
+
+    def _shock_exposure_pnl(self, exp: RiskFactorExposure, shock: ScenarioShock) -> tuple[float, str]:
+        shock_type = shock.type_value
+        if shock.factor_id and exp.factor_id and shock.factor_id != exp.factor_id:
+            return 0.0, ""
+        if shock.bucket and shock.bucket != exp.bucket:
+            return 0.0, ""
+
+        if shock_type == ScenarioShockType.EQUITY_SHOCK.value:
+            if exp.bucket != "Equity":
+                return 0.0, ""
+            if exp.unit == "Delta":
+                return exp.sensitivity * shock.value, ""
+            if exp.unit == "Gamma":
+                return exp.sensitivity * shock.value**2 / 2, ""
+            return 0.0, ""
+
+        if shock_type == ScenarioShockType.FX_SHOCK.value:
+            if exp.bucket != "FX" or exp.unit != "FX Delta":
+                return 0.0, ""
+            return exp.sensitivity * shock.value, ""
+
+        if shock_type == ScenarioShockType.VOLATILITY_SHOCK.value:
+            if exp.bucket != "Volatility" or exp.unit != "Vega":
+                return 0.0, ""
+            return exp.sensitivity * shock.value * 100, ""
+
+        if shock_type == ScenarioShockType.PARALLEL_CURVE_SHIFT.value:
+            if exp.bucket != "Rates":
+                return 0.0, ""
+            return self._rate_exposure_pnl(exp, self._bps_to_rate(shock)), ""
+
+        if shock_type == ScenarioShockType.STEEPENER.value:
+            if exp.bucket != "Rates":
+                return 0.0, ""
+            warning = "Steepener scenario is approximated through aggregate rate DV01 until tenor-level exposures are available."
+            return self._rate_exposure_pnl(exp, self._bps_to_rate(shock)), warning
+
+        if shock_type == ScenarioShockType.FLATTENER.value:
+            if exp.bucket != "Rates":
+                return 0.0, ""
+            warning = "Flattener scenario is approximated through aggregate rate DV01 until tenor-level exposures are available."
+            return self._rate_exposure_pnl(exp, -self._bps_to_rate(shock)), warning
+
+        if exp.bucket == "Credit" and exp.unit == "CS01":
+            return -exp.sensitivity * self._bps_to_rate(shock) * 10000, ""
+        return 0.0, ""
+
+    def _rate_exposure_pnl(self, exp: RiskFactorExposure, dr: float) -> float:
+        if exp.unit == "DV01":
+            return -exp.sensitivity * dr * 10000
+        if exp.unit == "Rho":
+            return exp.sensitivity * dr * 100
+        return 0.0
 
     def positions_table(self) -> list[dict]:
         self.value()

@@ -11,6 +11,7 @@ from domain.portfolio import (
 )
 from domain.results import PricingResult
 from domain.risk_factors import RiskFactor, RiskFactorBucket, RiskFactorExposure, RiskFactorGroup, RiskFactorHierarchy
+from domain.scenario import Scenario, ScenarioResult, ScenarioShock, ScenarioShockType, ScenarioType
 
 __all__ = [
     "MarketDataSnapshot",
@@ -28,4 +29,9 @@ __all__ = [
     "RiskFactorExposure",
     "RiskFactorGroup",
     "RiskFactorHierarchy",
+    "Scenario",
+    "ScenarioResult",
+    "ScenarioShock",
+    "ScenarioShockType",
+    "ScenarioType",
 ]
