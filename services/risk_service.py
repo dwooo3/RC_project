@@ -49,10 +49,18 @@ class RiskService:
         all_warnings = self.governance.warnings_for_model(model_id)
         all_warnings.extend(self._market_data_warnings(snapshot))
         all_warnings.extend(warnings or [])
+        model_metadata = self.governance.metadata_for_model(model_id)
         return {
             "value": value,
             "model_id": model_id,
             "model_status": model.status,
+            "model_metadata": model_metadata,
+            "model_version": model.version,
+            "model_owner": model.owner,
+            "model_validation_date": model_metadata["model_validation_date"],
+            "model_limitations": model_metadata["model_limitations"],
+            "model_documentation_link": model.documentation_link,
+            "model_production_allowed": model.production_allowed,
             "warnings": all_warnings,
             "errors": errors or [],
             "market_data_snapshot_id": snapshot.snapshot_id if snapshot else "",
