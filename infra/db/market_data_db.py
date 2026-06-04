@@ -242,6 +242,24 @@ class MarketDataDB:
         )
         self.conn.commit()
 
+    def save_vol_point(self, snapshot_id: str, underlying: str, expiry: str,
+                       strike: float, iv: float | None) -> None:
+        self.conn.execute(
+            """INSERT OR REPLACE INTO vol_points
+               (snapshot_id, underlying, expiry, strike, iv) VALUES (?,?,?,?,?)""",
+            (snapshot_id, underlying, str(expiry), float(strike),
+             (float(iv) if iv is not None else None)),
+        )
+        self.conn.commit()
+
+    def get_vol_points(self, snapshot_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT underlying, expiry, strike, iv FROM vol_points WHERE snapshot_id=? "
+            "ORDER BY underlying, expiry, strike",
+            (snapshot_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def log_ingest(self, endpoint: str, status: str, rows: int,
                    started_at: datetime, finished_at: datetime, error: str = "") -> None:
         self.conn.execute(

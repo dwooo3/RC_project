@@ -87,6 +87,9 @@ class MoexProvider(ProviderInterface):
         fx_rates = db.get_fx_rates(snapshot_id)
         fx_errors = validate_fx(fx_rates)
 
+        from infra.moex_iss.vol_surface import build_vol_surfaces
+        vol_surfaces = build_vol_surfaces(db.get_vol_points(snapshot_id))
+
         present = set()
         if "GCURVE_RUB" in curves:
             present.add("GCURVE_RUB")
@@ -124,6 +127,7 @@ class MoexProvider(ProviderInterface):
             quality=quality,
             curves=curves,
             fx_rates=fx_rates,
+            vol_surfaces=vol_surfaces,
             source_details={"provider": "MOEX ISS", "trade_date": metadata["trade_date"]},
             metadata=metadata,
         )

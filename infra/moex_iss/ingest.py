@@ -371,6 +371,39 @@ class MoexIngestor:
             self.db.log_ingest(endpoint, "error", 0, started, datetime.now(), str(exc))
             raise
 
+    # -- FORTS option vol surface -> vol_points ----------------------------
+    def ingest_option_vol_surface(self, snapshot_id: str, valuation_date: date) -> int:
+        """
+        Ingest FORTS option implied vols into vol_points (spec §2 equity vol).
+
+        ISS: /engines/futures/markets/options/securities. IVs stored as decimals;
+        grouped into snapshot vol_surfaces by the provider.
+        """
+        from infra.moex_iss.vol_surface import normalise_option_rows
+
+        started = datetime.now()
+        endpoint = "engines/futures/markets/options/securities"
+        try:
+            blocks = self.client.get_blocks(endpoint, {"iss.only": "securities,marketdata"})
+            # join securities (static: strike, expiry, underlying) with marketdata (IV)
+            merged: list[dict] = []
+            md = {r.get("SECID"): r for r in blocks.get("marketdata", [])}
+            for sec in blocks.get("securities", []):
+                row = dict(sec)
+                row.update(md.get(sec.get("SECID"), {}))
+                merged.append(row)
+            if not merged:  # some layouts carry everything in one block
+                merged = blocks.get("marketdata", []) or blocks.get("securities", [])
+            points = normalise_option_rows(merged)
+            for p in points:
+                self.db.save_vol_point(snapshot_id, p["underlying"], p["expiry"],
+                                       p["strike"], p["iv"])
+            self.db.log_ingest(endpoint, "ok", len(points), started, datetime.now())
+            return len(points)
+        except Exception as exc:
+            self.db.log_ingest(endpoint, "error", 0, started, datetime.now(), str(exc))
+            raise
+
     def ingest_all(self, valuation_date: date, *, board: str = "TQOB") -> dict[str, int]:
         sid = self.snapshot_id_for(valuation_date)
         result = {
