@@ -74,3 +74,22 @@ def test_risk_workspace_uses_unified_risk_service_boundary_only():
     assert "from app.panels.histvar_panel" not in source
     assert "from app.panels.stress_panel" not in source
     assert "from risk" not in source
+
+
+def test_market_data_workspace_uses_market_data_service_boundary_only():
+    import inspect
+    import app.panels.market_workspace as market_workspace
+
+    source = inspect.getsource(market_workspace)
+
+    assert "from services.market_data_service import MarketDataService" in source
+    assert 'tabs.addTab(self._yield_curves_tab(), "Yield Curves")' in source
+    assert 'tabs.addTab(self._fx_tab(), "FX")' in source
+    assert 'tabs.addTab(self._vol_surface_tab(), "Vol Surface")' in source
+    assert 'tabs.addTab(self._credit_curves_tab(), "Credit Curves")' in source
+    assert "from app.panels.yield_curve_panel" not in source
+    assert "from app.panels.volsurface_panel" not in source
+    assert "from curves" not in source
+    assert "YieldCurve" not in source
+    assert "MarketDataSnapshot" not in source
+    assert "MarketDataSource" not in source
