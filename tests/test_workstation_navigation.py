@@ -57,3 +57,20 @@ def test_portfolio_workspace_uses_portfolio_service_boundary_only():
     assert "from instruments" not in source
     assert "from risk" not in source
     assert "from curves" not in source
+
+
+def test_risk_workspace_uses_unified_risk_service_boundary_only():
+    import inspect
+    import app.panels.risk_workspace as risk_workspace
+
+    source = inspect.getsource(risk_workspace)
+
+    assert "from services.risk_service import RiskService" in source
+    assert 'tabs.addTab(self._var_tab(), "VaR")' in source
+    assert 'tabs.addTab(self._stress_tab(), "Stress")' in source
+    assert 'tabs.addTab(self._backtesting_tab(), "Backtesting")' in source
+    assert 'tabs.addTab(self._capital_tab(), "Capital")' in source
+    assert "from app.panels.var_panel" not in source
+    assert "from app.panels.histvar_panel" not in source
+    assert "from app.panels.stress_panel" not in source
+    assert "from risk" not in source

@@ -1,164 +1,316 @@
-"""Risk workstation: portfolio VaR, ES, stress, backtesting, limits, and XVA."""
+"""Risk Workspace v1 backed by RiskService."""
 
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
-from PySide6.QtWidgets import QGridLayout, QPushButton, QStackedWidget, QVBoxLayout, QWidget
+from datetime import UTC, datetime
 
+import numpy as np
+from PySide6.QtWidgets import QTabWidget
+
+from services.market_data_service import MarketDataService
+from services.risk_service import RiskService
 from ui.components import DataSourceChip, DenseTable, KpiStrip, StatusChip, WorkstationPanel, make_action
 from ui.layouts import WorkstationWorkspace
 
 
-RISK_MODULES = [
-    ("VaR / ES", "var", "Historical, parametric, Monte Carlo, EVT"),
-    ("Stress Testing", "stress", "Historical, hypothetical, regulatory shocks"),
-    ("Backtesting", "histvar", "Exceptions and traffic-light review"),
-    ("P&L Attribution", "pnl", "Factor attribution and residual"),
-    ("Counterparty Risk / XVA", "xva", "CVA, DVA, FVA, exposure profile"),
-    ("Greeks Ladder", "greeks", "Sensitivity drilldown"),
-]
-
-
-class RiskWorkspace(QWidget):
-    """Risk workspace grouped around portfolio-level risk controls."""
+class RiskWorkspace(WorkstationWorkspace):
+    """Unified risk workstation for VaR, stress, backtesting, and capital."""
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self._stack = QStackedWidget()
-        self._panels: dict[str, QWidget] = {}
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._stack)
-        self._landing = self._build_landing()
-        self._stack.addWidget(self._landing)
+        self.calculation_timestamp = datetime.now(UTC).replace(microsecond=0)
+        self.market_data = MarketDataService()
+        self.snapshot = self.market_data.demo_snapshot()
+        self.risk_service = RiskService(market_data=self.market_data)
+        self.returns = self._demo_returns()
+        self.position_value = 1_000_000.0
+        self.confidence = 0.99
+        self.horizon = 10
+        self.var_results = self._calculate_var_results()
+        self.stress_result = self._calculate_stress()
 
-    def _build_landing(self):
-        return WorkstationWorkspace(
+        super().__init__(
             "Risk",
-            "Portfolio VaR, ES, stress, backtesting, limits, and contribution analysis",
-            chips=[DataSourceChip("DEMO"), StatusChip("Approximation", text="Synthetic return warning")],
-            actions=[make_action("Run VaR", True), make_action("Run Stress"), make_action("Backtest"), make_action("Export")],
-            kpi_strip=KpiStrip(
-                [
-                    ("VaR 95%", "2.4m", "Demo"),
-                    ("VaR 99%", "3.8m", "Demo"),
-                    ("ES 99%", "5.1m", "Demo"),
-                    ("Worst Stress", "-9.6m", "2020 shock"),
-                    ("Exceptions", "2", "Backtest"),
-                    ("Limit Util", "74%", "No breach"),
-                ]
-            ),
-            left=self._build_controls(),
-            center=self._build_modules(),
-            right=self._build_context(),
-            bottom=self._build_runs(),
-            context_items=[
-                ("Layer", "Risk"),
-                ("Input", "Active Portfolio"),
-                ("Market Data", "DEMO:snap_20260604:v3"),
-                ("Loss Convention", "Positive losses"),
-                ("Warnings", "Demo returns are not production P&L history"),
+            "Unified risk workstation for VaR, stress, backtesting, and capital",
+            chips=self._chips(),
+            actions=[
+                make_action("Run VaR", primary=True),
+                make_action("Run Stress"),
+                make_action("Backtest"),
+                make_action("Export"),
             ],
+            kpi_strip=self._summary_kpis(),
+            left=self._risk_controls_panel(),
+            center=self._risk_tabs(),
+            right=self._metadata_panel(),
+            bottom=self._calculation_log_panel(),
+            context_items=self._context_items(),
+            parent=parent,
         )
 
-    def _build_controls(self):
+    def _demo_returns(self):
+        rng = np.random.default_rng(42)
+        return rng.normal(0.0001, 0.0125, 1000)
+
+    def _calculate_var_results(self):
+        kwargs = dict(
+            returns=self.returns,
+            position_value=self.position_value,
+            confidence=self.confidence,
+            horizon=self.horizon,
+            snapshot=self.snapshot,
+        )
+        return {
+            "Historical": self.risk_service.historical_var(**kwargs),
+            "Parametric": self.risk_service.parametric_var(**kwargs),
+            "Monte Carlo": self.risk_service.monte_carlo_var(**kwargs, n_sims=20_000),
+        }
+
+    def _calculate_stress(self):
+        return self.risk_service.stress_option(
+            100.0,
+            100.0,
+            1.0,
+            0.05,
+            0.20,
+            opt="call",
+            position=1000.0,
+            snapshot=self.snapshot,
+        )
+
+    def _chips(self):
+        worst_status = self._worst_model_status()
+        return [
+            DataSourceChip(self.snapshot.source.value),
+            StatusChip(worst_status, text=f"Model: {worst_status}"),
+        ]
+
+    def _worst_model_status(self):
+        order = ["Validated", "Approximation", "Prototype", "Placeholder", "Broken"]
+        statuses = [result.get("model_status", "Validated") for result in self.var_results.values()]
+        statuses.append(self.stress_result.get("model_status", "Validated"))
+        return max(statuses, key=lambda status: order.index(status) if status in order else 0)
+
+    def _summary_kpis(self):
+        historical = self.var_results["Historical"].get("raw") or {}
+        parametric = self.var_results["Parametric"].get("raw") or {}
+        monte_carlo = self.var_results["Monte Carlo"].get("raw") or {}
+        stress_value = self.stress_result.get("value") or 0.0
+        exceptions = self._backtest_exceptions(historical.get("VaR_pct", 0.0))
+        return KpiStrip(
+            [
+                ("Historical VaR", self._money(historical.get("VaR", 0.0)), "99% / 10d"),
+                ("Parametric VaR", self._money(parametric.get("VaR", 0.0)), "normal"),
+                ("Monte Carlo VaR", self._money(monte_carlo.get("VaR", 0.0)), "20k sims"),
+                ("Historical ES", self._money(historical.get("CVaR", 0.0)), "tail loss"),
+                ("Worst Stress", self._money(stress_value), "option stress"),
+                ("Exceptions", str(exceptions), "demo backtest"),
+            ]
+        )
+
+    def _risk_controls_panel(self):
         panel = WorkstationPanel("Risk Controls")
         panel.layout.addWidget(
             DenseTable(
                 ["Control", "Value"],
                 [
-                    ["Scope", "Main Portfolio"],
-                    ["Book", "Trading"],
-                    ["Method", "Historical"],
-                    ["Confidence", "99%"],
-                    ["Horizon", "10d"],
-                    ["Returns", "Demo P&L"],
+                    ["Scope", "Main Portfolio proxy"],
+                    ["Position Value", self._money(self.position_value)],
+                    ["Confidence", f"{self.confidence:.2%}"],
+                    ["Horizon", f"{self.horizon}d"],
+                    ["Observations", str(len(self.returns))],
+                    ["Returns Source", "DEMO generated returns"],
+                    ["Calculation Time", self._timestamp()],
                 ],
             )
         )
         return panel
 
-    def _build_modules(self):
-        panel = WorkstationPanel("Risk Workflows")
-        grid = QGridLayout()
-        grid.setSpacing(8)
-        for idx, (name, key, hint) in enumerate(RISK_MODULES):
-            button = QPushButton(f"{name}\n{hint}")
-            button.setMinimumHeight(58)
-            button.clicked.connect(lambda checked=False, k=key: self._open_module(k))
-            grid.addWidget(button, idx // 2, idx % 2)
-        panel.layout.addLayout(grid)
+    def _risk_tabs(self):
+        tabs = QTabWidget()
+        tabs.addTab(self._var_tab(), "VaR")
+        tabs.addTab(self._stress_tab(), "Stress")
+        tabs.addTab(self._backtesting_tab(), "Backtesting")
+        tabs.addTab(self._capital_tab(), "Capital")
+        return tabs
+
+    def _var_tab(self):
+        panel = WorkstationPanel("VaR")
+        rows = []
+        for method, result in self.var_results.items():
+            raw = result.get("raw") or {}
+            rows.append(
+                [
+                    method,
+                    self._money(raw.get("VaR", 0.0)),
+                    self._money(raw.get("CVaR", raw.get("ES", 0.0))),
+                    result.get("model_id", ""),
+                    result.get("model_status", ""),
+                    result.get("market_data_source", ""),
+                    self._timestamp(),
+                    len(result.get("warnings", [])),
+                    "; ".join(result.get("errors", [])),
+                ]
+            )
         panel.layout.addWidget(
             DenseTable(
-                ["Scenario", "P&L", "Worst Book", "Limit", "Status"],
                 [
-                    ["2020 Liquidity Shock", "-9.6m", "Rates", "12.0m", "OK"],
-                    ["Parallel +100bp", "-4.1m", "Rates", "6.0m", "OK"],
-                    ["RUB -12%", "-2.7m", "FX", "5.0m", "OK"],
+                    "Method",
+                    "VaR",
+                    "ES",
+                    "Model ID",
+                    "Model Status",
+                    "Market Source",
+                    "Timestamp",
+                    "Warnings",
+                    "Errors",
                 ],
+                rows,
             )
         )
-        return panel
-
-    def _build_context(self):
-        panel = WorkstationPanel("Risk Context")
         panel.layout.addWidget(
             DenseTable(
-                ["Field", "Value"],
+                ["Convention", "Value"],
                 [
-                    ["Model status", "Approximation"],
-                    ["Snapshot", "DEMO:v3"],
-                    ["Observation count", "1000"],
-                    ["Backtest zone", "Green"],
-                    ["Data warning", "Synthetic/demo returns"],
+                    ["Loss sign", "Positive losses"],
+                    ["Confidence interpretation", "Positive loss quantile"],
+                    ["Horizon scaling", f"{self.horizon} day"],
+                    ["ES consistency", "ES >= VaR enforced in engines"],
                 ],
             )
         )
         return panel
 
-    def _build_runs(self):
-        panel = WorkstationPanel("Risk Runs")
+    def _stress_tab(self):
+        panel = WorkstationPanel("Stress")
+        raw = self.stress_result.get("raw") or []
+        rows = []
+        for scenario in raw[:20]:
+            rows.append(
+                [
+                    scenario.get("scenario", ""),
+                    scenario.get("dS", scenario.get("spot_shift", "")),
+                    scenario.get("dVol", scenario.get("vol_shift", "")),
+                    self._money(scenario.get("price", 0.0)),
+                    self._money(scenario.get("pnl", 0.0)),
+                ]
+            )
+        panel.layout.addWidget(DenseTable(["Scenario", "Spot Shock", "Vol Shock", "Price", "P&L"], rows))
         panel.layout.addWidget(
             DenseTable(
-                ["Run ID", "Time", "Method", "VaR", "ES", "Warnings"],
+                ["Metadata", "Value"],
                 [
-                    ["var_84219", "10:42:18", "Historical", "3.8m", "5.1m", "Demo returns"],
-                    ["stress_731", "10:45:02", "Historical", "-", "-", "Demo scenario"],
+                    ["Model ID", self.stress_result.get("model_id", "")],
+                    ["Model Status", self.stress_result.get("model_status", "")],
+                    ["Market Source", self.stress_result.get("market_data_source", "")],
+                    ["Timestamp", self._timestamp()],
+                    ["Warnings", str(len(self.stress_result.get("warnings", [])))],
                 ],
             )
         )
         return panel
 
-    def _open_module(self, key: str):
-        if key not in self._panels:
-            panel = self._make_panel(key)
-            if panel is None:
-                return
-            container = QWidget()
-            layout = QVBoxLayout(container)
-            layout.setContentsMargins(0, 0, 0, 0)
-            back = QPushButton("< Risk")
-            back.clicked.connect(lambda: self._stack.setCurrentWidget(self._landing))
-            layout.addWidget(back)
-            layout.addWidget(panel, 1)
-            self._panels[key] = container
-            self._stack.addWidget(container)
-        self._stack.setCurrentWidget(self._panels[key])
+    def _backtesting_tab(self):
+        panel = WorkstationPanel("Backtesting")
+        hist_raw = self.var_results["Historical"].get("raw") or {}
+        var_pct = hist_raw.get("VaR_pct", 0.0)
+        exceptions = self._backtest_exceptions(var_pct)
+        expected = max((1 - self.confidence) * len(self.returns), 0.0)
+        zone = "Green" if exceptions <= max(expected * 2, 1) else "Amber"
+        panel.layout.addWidget(
+            DenseTable(
+                ["Metric", "Value"],
+                [
+                    ["VaR Run", "Historical"],
+                    ["Observed Exceptions", str(exceptions)],
+                    ["Expected Exceptions", f"{expected:.2f}"],
+                    ["Traffic Light", zone],
+                    ["Observation Count", str(len(self.returns))],
+                    ["Timestamp", self._timestamp()],
+                ],
+            )
+        )
+        exception_rows = []
+        losses = np.maximum(-self.returns, 0.0)
+        for idx, loss_pct in enumerate(losses):
+            if loss_pct > var_pct:
+                exception_rows.append([idx, f"{loss_pct:.4%}", f"{var_pct:.4%}", "Breach"])
+        panel.layout.addWidget(
+            DenseTable(["Observation", "Loss", "VaR Threshold", "Status"], exception_rows[:25] or [["-", "-", "-", "No breaches"]])
+        )
+        return panel
 
-    def _make_panel(self, key: str):
+    def _capital_tab(self):
+        panel = WorkstationPanel("Capital")
+        panel.layout.addWidget(
+            DenseTable(
+                ["Capital Area", "Status", "Next Action"],
+                [
+                    ["Market risk capital", "Not implemented", "Define methodology"],
+                    ["Expected shortfall capital", "Design-ready", "Route through RiskService"],
+                    ["Limit utilization", "Prototype", "Connect limits store"],
+                    ["Regulatory scenarios", "Prepared", "Use Scenario framework"],
+                ],
+            )
+        )
+        return panel
+
+    def _metadata_panel(self):
+        panel = WorkstationPanel("Calculation Metadata")
+        rows = []
+        for method, result in self.var_results.items():
+            rows.append([method, result.get("model_status", ""), result.get("market_data_source", ""), self._timestamp()])
+        rows.append(["Stress", self.stress_result.get("model_status", ""), self.stress_result.get("market_data_source", ""), self._timestamp()])
+        panel.layout.addWidget(DenseTable(["Calculation", "Model Status", "Market Source", "Timestamp"], rows))
+        return panel
+
+    def _calculation_log_panel(self):
+        panel = WorkstationPanel("Calculation Log")
+        rows = []
+        for method, result in self.var_results.items():
+            rows.append(
+                [
+                    self._timestamp(),
+                    f"{method} VaR",
+                    result.get("model_id", ""),
+                    result.get("model_status", ""),
+                    result.get("market_data_snapshot_id", ""),
+                    len(result.get("warnings", [])),
+                ]
+            )
+        rows.append(
+            [
+                self._timestamp(),
+                "Stress",
+                self.stress_result.get("model_id", ""),
+                self.stress_result.get("model_status", ""),
+                self.stress_result.get("market_data_snapshot_id", ""),
+                len(self.stress_result.get("warnings", [])),
+            ]
+        )
+        panel.layout.addWidget(DenseTable(["Timestamp", "Calculation", "Model", "Status", "Snapshot", "Warnings"], rows))
+        return panel
+
+    def _context_items(self):
+        return [
+            ("Layer", "Risk"),
+            ("Service", "RiskService"),
+            ("Snapshot", self.snapshot.snapshot_id),
+            ("Market Source", self.snapshot.source.value),
+            ("Timestamp", self._timestamp()),
+            ("VaR Methods", "Historical / Parametric / Monte Carlo"),
+            ("Duplicate Panels", "Removed from workspace"),
+        ]
+
+    def _backtest_exceptions(self, var_pct: float) -> int:
+        losses = np.maximum(-self.returns, 0.0)
+        return int(np.sum(losses > var_pct))
+
+    def _timestamp(self) -> str:
+        return self.calculation_timestamp.isoformat().replace("+00:00", "Z")
+
+    def _money(self, value) -> str:
         try:
-            if key == "var":
-                from app.panels.var_panel import VarPanel; return VarPanel()
-            if key == "histvar":
-                from app.panels.histvar_panel import HistVarPanel; return HistVarPanel()
-            if key == "stress":
-                from app.panels.stress_panel import StressPanel; return StressPanel()
-            if key == "pnl":
-                from app.panels.pnl_panel import PnLPanel; return PnLPanel()
-            if key == "xva":
-                from app.panels.xva_panel import XVAPanel; return XVAPanel()
-            if key == "greeks":
-                from app.panels.greeks_panel import GreeksPanel; return GreeksPanel()
-        except Exception:
-            return None
-        return None
+            return f"{float(value):,.2f}"
+        except (TypeError, ValueError):
+            return "0.00"
