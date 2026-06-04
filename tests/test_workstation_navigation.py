@@ -62,6 +62,15 @@ def test_portfolio_workspace_uses_portfolio_service_boundary_only():
 
     assert "from services.portfolio_service import PortfolioService" in source
     assert "from domain.portfolio import Position" in source
+    assert 'tabs.addTab(self._portfolio_overview_section(), "Portfolio Overview")' in source
+    assert 'tabs.addTab(self._positions_grid_section(), "Positions Grid")' in source
+    assert 'tabs.addTab(self._exposure_dashboard_section(), "Exposure Dashboard")' in source
+    assert 'tabs.addTab(self._scenario_dashboard_section(), "Scenario Dashboard")' in source
+    assert 'tabs.addTab(self._pnl_explain_dashboard_section(), "PnL Explain Dashboard")' in source
+    assert "PortfolioService.run_scenario()" in source
+    assert "RiskFactorExposure" in source
+    assert "PnL Explain" in source
+    assert "Scenario Analysis" not in source
     assert "from models" not in source
     assert "from instruments" not in source
     assert "from risk" not in source
