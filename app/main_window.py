@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QFont, QColor, QKeySequence, QShortcut
 
-from app.styles import APP_STYLE, LIGHT_STYLE
+from ui.theme import APP_STYLE, LIGHT_STYLE
 
 
 # ── Top-level navigation ──────────────────────────────────
