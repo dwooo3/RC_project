@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 from enum import Enum
 from typing import Any
 
-from domain.risk_factors import RiskFactorExposure
+from domain.risk_factors import RiskFactorExposure, RiskFactorGroup
 
 
 def _utc_now() -> datetime:
@@ -143,6 +143,8 @@ class PortfolioRiskResult:
     market_value: float
     exposure_buckets: dict[str, dict[str, float]]
     risk_factor_exposures: list[RiskFactorExposure]
+    risk_factor_groups: list[RiskFactorGroup] = field(default_factory=list)
+    factor_contributions: dict[str, float] = field(default_factory=dict)
     scenario_pnl: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)

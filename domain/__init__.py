@@ -10,7 +10,7 @@ from domain.portfolio import (
     PositionType,
 )
 from domain.results import PricingResult
-from domain.risk_factors import RiskFactorBucket, RiskFactorExposure
+from domain.risk_factors import RiskFactor, RiskFactorBucket, RiskFactorExposure, RiskFactorGroup, RiskFactorHierarchy
 
 __all__ = [
     "MarketDataSnapshot",
@@ -24,5 +24,8 @@ __all__ = [
     "PositionType",
     "PricingResult",
     "RiskFactorBucket",
+    "RiskFactor",
     "RiskFactorExposure",
+    "RiskFactorGroup",
+    "RiskFactorHierarchy",
 ]

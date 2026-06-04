@@ -3,7 +3,7 @@
 from collections import defaultdict
 
 from domain.portfolio import Portfolio, PortfolioRiskResult, PortfolioValuationResult, Position
-from domain.risk_factors import RiskFactorExposure, RiskFactorBucket
+from domain.risk_factors import RiskFactor, RiskFactorExposure, RiskFactorBucket, RiskFactorGroup
 from services.market_data_service import MarketDataService
 from services.pricing_service import PricingService
 
@@ -15,6 +15,77 @@ EXPOSURE_BUCKETS: tuple[RiskFactorBucket, ...] = (
     "Credit",
     "Volatility",
 )
+
+
+CANONICAL_RISK_FACTORS: dict[str, RiskFactor] = {
+    "rates.yield_curve": RiskFactor(
+        factor_id="rates.yield_curve",
+        name="Yield Curve",
+        bucket="Rates",
+        factor_type="yield_curve",
+        currency="RUB",
+        unit="DV01",
+        bump_size=0.0001,
+    ),
+    "rates.swap_curve": RiskFactor(
+        factor_id="rates.swap_curve",
+        name="Swap Curve",
+        bucket="Rates",
+        factor_type="swap_curve",
+        currency="RUB",
+        unit="DV01",
+        bump_size=0.0001,
+    ),
+    "rates.risk_free_rate": RiskFactor(
+        factor_id="rates.risk_free_rate",
+        name="Risk-Free Rate",
+        bucket="Rates",
+        factor_type="rate",
+        currency="RUB",
+        unit="Rho",
+        bump_size=0.01,
+    ),
+    "fx.spot": RiskFactor(
+        factor_id="fx.spot",
+        name="FX Spot",
+        bucket="FX",
+        factor_type="fx_spot",
+        unit="FX Delta",
+        bump_size=1.0,
+    ),
+    "equity.spot": RiskFactor(
+        factor_id="equity.spot",
+        name="Equity Spot",
+        bucket="Equity",
+        factor_type="spot",
+        unit="Delta",
+        bump_size=1.0,
+    ),
+    "equity.spot_gamma": RiskFactor(
+        factor_id="equity.spot_gamma",
+        name="Equity Spot Gamma",
+        bucket="Equity",
+        factor_type="spot_gamma",
+        unit="Gamma",
+        bump_size=1.0,
+    ),
+    "credit.spread": RiskFactor(
+        factor_id="credit.spread",
+        name="Credit Spread",
+        bucket="Credit",
+        factor_type="credit_spread",
+        unit="CS01",
+        bump_size=0.0001,
+    ),
+    "vol.implied": RiskFactor(
+        factor_id="vol.implied",
+        name="Implied Volatility",
+        bucket="Volatility",
+        factor_type="implied_vol",
+        unit="Vega",
+        bump_size=0.01,
+    ),
+}
 
 
 class PortfolioService:
@@ -97,9 +168,11 @@ class PortfolioService:
         unit: str,
         bump_size: float,
         factor_type: str | None = None,
+        factor_id: str | None = None,
     ):
         if sensitivity == 0:
             return
+        resolved_factor_id = factor_id or self._factor_id(bucket, factor_name)
         pos.exposures.append(
             RiskFactorExposure(
                 factor_name=factor_name,
@@ -109,8 +182,26 @@ class PortfolioService:
                 sensitivity=sensitivity,
                 unit=unit,
                 bucket=bucket,
+                factor_id=resolved_factor_id,
+                position_id=pos.id,
             )
         )
+
+    def _factor_id(self, bucket: RiskFactorBucket | str, factor_name: str) -> str:
+        normalized_name = factor_name.lower().replace(" ", "_")
+        candidates = {
+            ("Rates", "yield_curve"): "rates.yield_curve",
+            ("Rates", "swap_curve"): "rates.swap_curve",
+            ("Rates", "risk_free_rate"): "rates.risk_free_rate",
+            ("FX", "fx_spot"): "fx.spot",
+            ("FX", normalized_name): f"fx.{normalized_name}",
+            ("Equity", "spot"): "equity.spot",
+            ("Equity", "spot_gamma"): "equity.spot_gamma",
+            ("Equity", "future_underlying"): "equity.spot",
+            ("Credit", "credit_spread"): "credit.spread",
+            ("Volatility", "implied_vol"): "vol.implied",
+        }
+        return candidates.get((bucket, factor_name), f"{str(bucket).lower()}.{normalized_name}")
 
     def _price_position(self, pos: Position):
         self._reset_position_risk(pos)
@@ -133,10 +224,10 @@ class PortfolioService:
             pos.vega = raw.get("vega", 0.0) * qt
             pos.theta = raw.get("theta", 0.0) * qt
             pos.rho = raw.get("rho", 0.0) * qt
-            self._add_exposure(pos, "Equity", "spot", pos.delta, "Delta", 1.0)
-            self._add_exposure(pos, "Equity", "spot_gamma", pos.gamma, "Gamma", 1.0)
-            self._add_exposure(pos, "Volatility", "implied_vol", pos.vega, "Vega", 0.01)
-            self._add_exposure(pos, "Rates", "risk_free_rate", pos.rho, "Rho", 0.01)
+            self._add_exposure(pos, "Equity", "spot", pos.delta, "Delta", 1.0, factor_id="equity.spot")
+            self._add_exposure(pos, "Equity", "spot_gamma", pos.gamma, "Gamma", 1.0, factor_id="equity.spot_gamma")
+            self._add_exposure(pos, "Volatility", "implied_vol", pos.vega, "Vega", 0.01, factor_id="vol.implied")
+            self._add_exposure(pos, "Rates", "risk_free_rate", pos.rho, "Rho", 0.01, factor_id="rates.risk_free_rate")
 
         elif inst == "bond":
             curve = p.get("curve") or self.market_data.flat_curve(p["r"])
@@ -149,7 +240,7 @@ class PortfolioService:
             pos.market_value = pos.price * qt / p["face"]
             pos.dv01 = raw.get("dv01", 0.0) * qt / p["face"]
             pos.delta = raw.get("mod_duration", 0.0) * pos.market_value / 100
-            self._add_exposure(pos, "Rates", "yield_curve", pos.dv01, "DV01", 0.0001)
+            self._add_exposure(pos, "Rates", "yield_curve", pos.dv01, "DV01", 0.0001, factor_id="rates.yield_curve")
 
         elif inst == "cds":
             from instruments.credit import cds, cds_implied_hazard
@@ -166,7 +257,7 @@ class PortfolioService:
             pos.cs01 = res["dv01"] * qt
             pos.model_id = "cds"
             pos.model_status = "Approximation"
-            self._add_exposure(pos, "Credit", "credit_spread", pos.cs01, "CS01", 0.0001)
+            self._add_exposure(pos, "Credit", "credit_spread", pos.cs01, "CS01", 0.0001, factor_id="credit.spread")
 
         elif inst in ("irs", "swap"):
             curve = p.get("curve") or self.market_data.flat_curve(p["r"])
@@ -180,7 +271,7 @@ class PortfolioService:
             pos.price = res["value"]
             pos.market_value = pos.price * qt
             pos.dv01 = raw.get("dv01", 0.0) * qt
-            self._add_exposure(pos, "Rates", "swap_curve", pos.dv01, "DV01", 0.0001)
+            self._add_exposure(pos, "Rates", "swap_curve", pos.dv01, "DV01", 0.0001, factor_id="rates.swap_curve")
 
         elif inst == "equity":
             S = p["S"]
@@ -189,7 +280,7 @@ class PortfolioService:
             pos.delta = qt
             pos.model_id = "equity_spot"
             pos.model_status = "Manual"
-            self._add_exposure(pos, "Equity", "spot", pos.delta, "Delta", 1.0)
+            self._add_exposure(pos, "Equity", "spot", pos.delta, "Delta", 1.0, factor_id="equity.spot")
 
         elif inst == "fx_forward":
             res = self.pricing.price_fx_forward(p["S"], p["r_d"], p["r_f"], p["T"])
@@ -200,7 +291,15 @@ class PortfolioService:
             pos.price = raw.get("forward", res["value"])
             pos.market_value = (pos.price - p.get("K", pos.price)) * qt
             pos.fx_delta = qt
-            self._add_exposure(pos, "FX", p.get("ccy_pair", pos.ccy_pair or "fx_spot"), pos.fx_delta, "FX Delta", 1.0)
+            self._add_exposure(
+                pos,
+                "FX",
+                p.get("ccy_pair", pos.ccy_pair or "fx_spot"),
+                pos.fx_delta,
+                "FX Delta",
+                1.0,
+                factor_id=f"fx.{p.get('ccy_pair', pos.ccy_pair or 'spot').lower()}",
+            )
 
         elif inst == "future":
             F = p.get("F", p.get("S", 0))
@@ -210,7 +309,7 @@ class PortfolioService:
             pos.delta = qt * multiplier
             pos.model_id = "future_mark"
             pos.model_status = "Manual"
-            self._add_exposure(pos, "Equity", "future_underlying", pos.delta, "Delta", 1.0)
+            self._add_exposure(pos, "Equity", "future_underlying", pos.delta, "Delta", 1.0, factor_id="equity.spot")
 
     def _attach_service_metadata(self, pos: Position, result: dict):
         pos.model_id = result.get("model_id", "")
@@ -238,19 +337,16 @@ class PortfolioService:
             market_value=risk.market_value,
             exposure_buckets=risk.exposure_buckets,
             risk_factor_exposures=risk.risk_factor_exposures,
+            risk_factors=self.risk_factor_totals(),
+            risk_factor_groups=risk.risk_factor_groups,
+            factor_contributions=risk.factor_contributions,
             **totals,
         )
 
     def risk(self) -> PortfolioRiskResult:
         """Canonical portfolio risk aggregation entry point."""
         valuation = self.value()
-        scenario = self._scenario_pnl_from_aggregate(
-            self._legacy_totals(),
-            dS=0,
-            dVol=0,
-            dr=0,
-            dSpread=0,
-        )
+        scenario = self._scenario_pnl_from_exposures(dS=0, dVol=0, dr=0, dSpread=0)
         return PortfolioRiskResult(
             portfolio_id=self.portfolio.portfolio_id,
             base_currency=self.portfolio.base_currency,
@@ -258,6 +354,8 @@ class PortfolioService:
             market_value=valuation.total_market_value,
             exposure_buckets=self.exposure_buckets(),
             risk_factor_exposures=self.risk_factor_exposures(),
+            risk_factor_groups=self.risk_factor_groups(),
+            factor_contributions=self.factor_contributions(),
             scenario_pnl=scenario,
             warnings=valuation.warnings,
             errors=valuation.errors,
@@ -279,6 +377,50 @@ class PortfolioService:
             bucket.setdefault(exp.unit, 0.0)
             bucket[exp.unit] += exp.sensitivity
         return buckets
+
+    def risk_factor_totals(self) -> dict[str, dict[str, float | str]]:
+        """Aggregate exposures by canonical factor ID."""
+        factors: dict[str, dict[str, float | str]] = {}
+        for exp in self.risk_factor_exposures():
+            factor_id = exp.factor_id or self._factor_id(exp.bucket, exp.factor_name)
+            factor = factors.setdefault(
+                factor_id,
+                {
+                    "factor_id": factor_id,
+                    "factor_name": exp.factor_name,
+                    "bucket": exp.bucket,
+                    "factor_type": exp.factor_type,
+                    "currency": exp.currency,
+                    "unit": exp.unit,
+                    "sensitivity": 0.0,
+                    "contribution": 0.0,
+                },
+            )
+            factor["sensitivity"] = float(factor["sensitivity"]) + exp.sensitivity
+            factor["contribution"] = float(factor["contribution"]) + exp.contribution
+        return factors
+
+    def risk_factor_groups(self) -> list[RiskFactorGroup]:
+        groups: dict[str, list[RiskFactorExposure]] = {bucket: [] for bucket in EXPOSURE_BUCKETS}
+        for exp in self.risk_factor_exposures():
+            groups.setdefault(exp.bucket, []).append(exp)
+        return [
+            RiskFactorGroup.from_exposures(bucket, exposures)
+            for bucket, exposures in groups.items()
+        ]
+
+    def factor_contributions(
+        self,
+        dS: float = 0,
+        dVol: float = 0,
+        dr: float = 0,
+        dSpread: float = 0,
+    ) -> dict[str, float]:
+        contributions: defaultdict[str, float] = defaultdict(float)
+        for exp in self.risk_factor_exposures():
+            factor_id = exp.factor_id or self._factor_id(exp.bucket, exp.factor_name)
+            contributions[factor_id] += self._exposure_pnl(exp, dS, dVol, dr, dSpread)
+        return dict(contributions)
 
     def positions_table(self) -> list[dict]:
         self.value()
@@ -305,8 +447,7 @@ class PortfolioService:
     def scenario_pnl(self, dS: float = 0, dVol: float = 0, dr: float = 0, dSpread: float = 0) -> dict:
         """First-order scenario P&L by risk-factor bucket."""
         self.value()
-        agg = self._legacy_totals()
-        return self._scenario_pnl_from_aggregate(agg, dS, dVol, dr, dSpread)
+        return self._scenario_pnl_from_exposures(dS, dVol, dr, dSpread)
 
     def _legacy_totals(self) -> dict:
         return {
@@ -357,6 +498,74 @@ class PortfolioService:
             bucket_pnl=components,
             components=dict(legacy_components),
         )
+
+    def _scenario_pnl_from_exposures(
+        self,
+        dS: float = 0,
+        dVol: float = 0,
+        dr: float = 0,
+        dSpread: float = 0,
+    ) -> dict:
+        bucket_pnl: defaultdict[str, float] = defaultdict(float)
+        factor_pnl: defaultdict[str, float] = defaultdict(float)
+        position_pnl: defaultdict[str, float] = defaultdict(float)
+        legacy_components: defaultdict[str, float] = defaultdict(float)
+
+        for exp in self.risk_factor_exposures():
+            contribution = self._exposure_pnl(exp, dS, dVol, dr, dSpread)
+            factor_id = exp.factor_id or self._factor_id(exp.bucket, exp.factor_name)
+            bucket_pnl[exp.bucket] += contribution
+            factor_pnl[factor_id] += contribution
+            position_pnl[exp.position_id] += contribution
+            legacy_components[self._legacy_component_name(exp)] += contribution
+
+        pnl = sum(bucket_pnl.values())
+        return dict(
+            pnl=pnl,
+            dS=dS,
+            dVol=dVol,
+            dr=dr,
+            dSpread=dSpread,
+            bucket_pnl={bucket: bucket_pnl.get(bucket, 0.0) for bucket in EXPOSURE_BUCKETS},
+            factor_pnl=dict(factor_pnl),
+            position_pnl=dict(position_pnl),
+            components=dict(legacy_components),
+        )
+
+    def _exposure_pnl(
+        self,
+        exp: RiskFactorExposure,
+        dS: float = 0,
+        dVol: float = 0,
+        dr: float = 0,
+        dSpread: float = 0,
+    ) -> float:
+        if exp.unit == "Delta":
+            return exp.sensitivity * dS
+        if exp.unit == "Gamma":
+            return exp.sensitivity * dS**2 / 2
+        if exp.unit == "Vega":
+            return exp.sensitivity * dVol * 100
+        if exp.unit == "Rho":
+            return exp.sensitivity * dr * 100
+        if exp.unit == "DV01":
+            return -exp.sensitivity * dr * 10000
+        if exp.unit == "CS01":
+            return -exp.sensitivity * dSpread * 10000
+        if exp.unit == "FX Delta":
+            return exp.sensitivity * dS
+        return 0.0
+
+    def _legacy_component_name(self, exp: RiskFactorExposure) -> str:
+        return {
+            "Delta": "delta",
+            "Gamma": "gamma",
+            "Vega": "vega",
+            "Rho": "rho",
+            "DV01": "ir_01",
+            "CS01": "cs_01",
+            "FX Delta": "fx",
+        }.get(exp.unit, exp.unit.lower().replace(" ", "_"))
 
     def __len__(self):
         return len(self.portfolio)

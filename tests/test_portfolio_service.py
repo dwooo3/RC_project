@@ -11,7 +11,10 @@ from domain import (
     PortfolioValuationResult,
     Position,
     PositionType,
+    RiskFactor,
     RiskFactorExposure,
+    RiskFactorGroup,
+    RiskFactorHierarchy,
 )
 from risk.portfolio import Portfolio as LegacyPortfolio
 from services.portfolio_service import PortfolioService
@@ -61,6 +64,34 @@ def test_risk_factor_exposure_supports_bucket_backward_compatibility():
     assert exposure.bucket == "Unclassified"
 
 
+def test_risk_factor_domain_hierarchy_contracts():
+    factor = RiskFactor(
+        factor_id="rates.yield_curve",
+        name="Yield Curve",
+        bucket=RiskFactorHierarchy.RATES.value,
+        factor_type="yield_curve",
+        currency="RUB",
+        unit="DV01",
+        bump_size=0.0001,
+    )
+    exposure = RiskFactorExposure(
+        factor_id=factor.factor_id,
+        factor_name=factor.name,
+        factor_type=factor.factor_type,
+        currency=factor.currency,
+        bump_size=factor.bump_size,
+        sensitivity=125.0,
+        unit=factor.unit,
+        bucket=factor.bucket,
+        position_id="bond1",
+    )
+    group = RiskFactorGroup.from_exposures("Rates", [exposure])
+
+    assert factor.bucket == "Rates"
+    assert group.totals_by_unit["DV01"] == pytest.approx(125.0)
+    assert group.exposures[0].position_id == "bond1"
+
+
 def test_portfolio_service_buckets_equity_and_vol_exposures():
     service = PortfolioService("Test")
     service.add(
@@ -80,6 +111,8 @@ def test_portfolio_service_buckets_equity_and_vol_exposures():
     assert agg["exposure_buckets"]["Volatility"]["Vega"] > 0
     assert agg["delta"] != 0
     assert agg["vega"] > 0
+    assert agg["risk_factors"]["equity.spot"]["sensitivity"] == pytest.approx(agg["delta"])
+    assert agg["risk_factors"]["vol.implied"]["sensitivity"] == pytest.approx(agg["vega"])
 
 
 def test_portfolio_service_returns_valuation_result():
@@ -120,6 +153,8 @@ def test_portfolio_service_returns_risk_result():
     assert result.portfolio_id == "risk"
     assert result.market_value == pytest.approx(100.0)
     assert result.exposure_buckets["Equity"]["Delta"] == pytest.approx(4.0)
+    assert result.risk_factor_groups
+    assert any(group.bucket == "Equity" for group in result.risk_factor_groups)
     assert result.scenario_pnl["bucket_pnl"]["Equity"] == pytest.approx(0.0)
 
 
@@ -139,6 +174,40 @@ def test_portfolio_service_scenario_pnl_returns_bucket_components():
 
     assert result["pnl"] == pytest.approx(20.0)
     assert result["bucket_pnl"]["Equity"] == pytest.approx(20.0)
+    assert result["factor_pnl"]["equity.spot"] == pytest.approx(20.0)
+    assert result["position_pnl"]["eq1"] == pytest.approx(20.0)
+
+
+def test_portfolio_service_contribution_analysis_by_factor():
+    service = PortfolioService("Contribution")
+    service.add(
+        Position(
+            id="eq1",
+            instrument="equity",
+            description="Equity spot",
+            quantity=10,
+            params={"S": 100.0},
+        )
+    )
+    service.add(
+        Position(
+            id="fx1",
+            instrument="fx_forward",
+            description="USD/RUB forward",
+            quantity=5,
+            params={"S": 90.0, "r_d": 0.10, "r_f": 0.04, "T": 0.5, "ccy_pair": "USD/RUB"},
+        )
+    )
+
+    service.value()
+    contributions = service.factor_contributions(dS=2.0)
+    scenario = service.scenario_pnl(dS=2.0)
+
+    assert contributions["equity.spot"] == pytest.approx(20.0)
+    assert contributions["fx.usd/rub"] == pytest.approx(10.0)
+    assert scenario["bucket_pnl"]["Equity"] == pytest.approx(20.0)
+    assert scenario["bucket_pnl"]["FX"] == pytest.approx(10.0)
+    assert scenario["pnl"] == pytest.approx(30.0)
 
 
 def test_legacy_risk_portfolio_import_path_still_works():
