@@ -80,7 +80,7 @@ class GlobalNavigation(QWidget):
         logo = QWidget()
         logo.setFixedHeight(56)
         logo.setStyleSheet(
-            f"background:{PALETTE.bg_sidebar};border-bottom:1px solid {PALETTE.border_soft};"
+            f"background:{PALETTE.bg_topbar};border-bottom:1px solid {PALETTE.border_soft};"
         )
         logo_layout = QVBoxLayout(logo)
         logo_layout.setContentsMargins(14, 10, 14, 8)
@@ -99,7 +99,7 @@ class GlobalNavigation(QWidget):
         root.addWidget(logo)
 
         body = QWidget()
-        body.setStyleSheet(f"background:{PALETTE.bg_sidebar};")
+        body.setStyleSheet(f"background:{PALETTE.bg_topbar};")
         nav_layout = QVBoxLayout(body)
         nav_layout.setContentsMargins(6, 8, 6, 6)
         nav_layout.setSpacing(1)
@@ -144,7 +144,7 @@ class GlobalNavigation(QWidget):
         footer = QLabel("DEMO data · Ctrl+K")
         footer.setStyleSheet(
             f"color:{PALETTE.txt2};font-size:10px;padding:6px 14px;"
-            f"background:{PALETTE.bg_sidebar};border-top:1px solid {PALETTE.border_soft};"
+            f"background:{PALETTE.bg_topbar};border-top:1px solid {PALETTE.border_soft};"
         )
         root.addWidget(footer)
 
