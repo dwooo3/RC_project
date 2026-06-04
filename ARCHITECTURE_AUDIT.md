@@ -260,6 +260,24 @@ Incomplete:
 - No test ensures every UI workflow reaches models through `GovernanceService`.
 - Unknown models become `Placeholder` through `models/registry.py`, but direct raw calls do not trigger that governance path.
 
+## 10.1 Analytics Lab Separation
+
+Analytics Lab separation is now documented in `ANALYTICS_LAB_ARCHITECTURE.md`.
+
+Production workflow ownership is restricted to governed service paths for Bond,
+VaR, Stress, IRS, and FX. Research ownership is assigned to Heston, SABR, GARCH,
+and experimental Monte Carlo models.
+
+The active boundary is enforced through model governance flags:
+
+- `workflow_layer`
+- `analytics_lab_only`
+- `production_allowed`
+
+Pricing and risk service results expose these flags so research models cannot
+enter production workflows silently. If a research model is requested through a
+service path, the service result must carry warnings.
+
 ## 11. Remaining Architectural Violations
 
 P0 - Dangerous:
@@ -312,4 +330,3 @@ P3 - Cosmetic:
 5. Start UI-to-service migration with the highest-risk panels first.
    - Files: `app/panels/bond_panel.py`, `app/panels/var_panel.py`, `app/panels/rates_panel.py`, `app/panels/portfolio_panel.py`, service tests.
    - Goal: remove direct UI-to-engine coupling from fixed income and VaR paths while preserving current screens.
-

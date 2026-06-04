@@ -61,6 +61,8 @@ class RiskService:
             "model_limitations": model_metadata["model_limitations"],
             "model_documentation_link": model.documentation_link,
             "model_production_allowed": model.production_allowed,
+            "model_workflow_layer": model.workflow_layer,
+            "model_analytics_lab_only": model.analytics_lab_only,
             "warnings": all_warnings,
             "errors": errors or [],
             "market_data_snapshot_id": snapshot.snapshot_id if snapshot else "",

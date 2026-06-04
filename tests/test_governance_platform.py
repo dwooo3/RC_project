@@ -34,6 +34,27 @@ def test_prototype_model_generates_governance_warning():
     assert any("not production" in warning for warning in warnings)
 
 
+def test_governance_separates_production_and_research_models():
+    governance = GovernanceService()
+
+    assert "fixed_bond" in governance.production_models()
+    assert "var_historical" in governance.production_models()
+    assert "heston_cf" in governance.research_models()
+    assert "sabr" in governance.research_models()
+    assert "garch" in governance.research_models()
+    assert "mc_lsm" in governance.research_models()
+    assert "heston_cf" not in governance.production_models()
+
+
+def test_research_models_are_analytics_lab_only_not_production_allowed():
+    entry = GovernanceService().get_model("heston_cf")
+
+    assert entry.workflow_layer == "Research"
+    assert entry.analytics_lab_only is True
+    assert entry.production_allowed is False
+    assert entry.is_research_only
+
+
 def test_pricing_service_exposes_model_metadata():
     result = PricingService().price_vanilla_option(100, 100, 1, 0.05, 0.20)
 
@@ -44,6 +65,17 @@ def test_pricing_service_exposes_model_metadata():
     assert result["model_limitations"]
     assert "model_documentation_link" in result
     assert isinstance(result["model_production_allowed"], bool)
+
+
+def test_pricing_service_warns_when_research_model_is_requested():
+    result = PricingService().price_vanilla_option(100, 100, 1, 0.05, 0.20, model="mc")
+
+    assert result["model_id"] == "mc_gbm"
+    assert result["model_workflow_layer"] == "Research"
+    assert result["model_analytics_lab_only"] is True
+    assert result["model_production_allowed"] is False
+    assert any("Analytics Lab" in warning for warning in result["warnings"])
+    assert any("not production allowed" in warning for warning in result["warnings"])
 
 
 def test_risk_service_exposes_model_metadata():

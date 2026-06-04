@@ -15,6 +15,8 @@ class ModelRegistryEntry:
     validation_date: date | None = None
     limitations: list[str] = field(default_factory=list)
     documentation_link: str = ""
+    workflow_layer: str = "Production"
+    analytics_lab_only: bool = False
     name: str = ""
     domain: str = "Unknown"
     production_allowed: bool = False
@@ -29,6 +31,10 @@ class ModelRegistryEntry:
     @property
     def is_prototype(self) -> bool:
         return self.status == "Prototype"
+
+    @property
+    def is_research_only(self) -> bool:
+        return self.analytics_lab_only or self.workflow_layer == "Research"
 
 
 ModelDefinition = ModelRegistryEntry

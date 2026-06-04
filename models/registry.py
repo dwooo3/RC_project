@@ -14,6 +14,28 @@ class ModelStatus(str, Enum):
     BROKEN       = "Broken"
 
 
+PRODUCTION_MODELS = {
+    "fixed_bond",
+    "irs",
+    "fx_forward",
+    "garman_kohlhagen",
+    "var_historical",
+    "var_parametric",
+    "var_mc",
+    "evt_var",
+}
+
+ANALYTICS_LAB_MODELS = {
+    "mc_gbm",
+    "mc_lsm",
+    "mc_heston",
+    "heston_cf",
+    "sabr",
+    "garch",
+    "short_rate",
+}
+
+
 MODEL_REGISTRY: dict[str, dict] = {
     # ── Equity / FX options ───────────────────────────────
     "black_scholes": {
@@ -283,13 +305,22 @@ MODEL_REGISTRY: dict[str, dict] = {
 
 
 def get(model_id: str) -> dict:
-    return MODEL_REGISTRY.get(model_id, {
+    entry = dict(MODEL_REGISTRY.get(model_id, {
         "name": model_id,
         "status": ModelStatus.PLACEHOLDER,
         "domain": "Unknown",
         "tests": [],
         "notes": "Not registered.",
-    })
+    }))
+    workflow_layer = "Research" if model_id in ANALYTICS_LAB_MODELS else "Production"
+    analytics_lab_only = model_id in ANALYTICS_LAB_MODELS
+    entry.setdefault("workflow_layer", workflow_layer)
+    entry.setdefault("analytics_lab_only", analytics_lab_only)
+    if model_id in PRODUCTION_MODELS:
+        entry.setdefault("production_allowed", entry.get("status") in {ModelStatus.VALIDATED, ModelStatus.APPROXIMATION})
+    elif analytics_lab_only:
+        entry.setdefault("production_allowed", False)
+    return entry
 
 
 def by_domain(domain: str) -> list[tuple[str, dict]]:

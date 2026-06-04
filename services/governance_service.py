@@ -30,6 +30,8 @@ class GovernanceService:
             validation_date=validation_date,
             limitations=entry.get("limitations", limitations),
             documentation_link=documentation_link,
+            workflow_layer=entry.get("workflow_layer", "Production"),
+            analytics_lab_only=entry.get("analytics_lab_only", False),
             name=entry.get("name", model_id),
             domain=entry.get("domain", "Unknown"),
             production_allowed=entry.get(
@@ -49,6 +51,10 @@ class GovernanceService:
         warnings = list(model.limitations)
         if model.is_prototype:
             warnings.append(f"Model {model_id} is Prototype and must not be used as production workflow.")
+        if model.is_research_only:
+            warnings.append(
+                f"Model {model_id} belongs to Analytics Lab / Research and is not a production workflow model."
+            )
         if not model.production_allowed:
             warnings.append(f"Model {model_id} is not production allowed: {model.status}.")
         elif model.status != "Validated":
@@ -67,4 +73,22 @@ class GovernanceService:
             "model_limitations": list(model.limitations),
             "model_documentation_link": model.documentation_link,
             "model_production_allowed": model.production_allowed,
+            "model_workflow_layer": model.workflow_layer,
+            "model_analytics_lab_only": model.analytics_lab_only,
         }
+
+    def production_models(self) -> list[str]:
+        """Return model ids allowed to appear in production workflows."""
+        return [
+            model_id
+            for model_id in registry.PRODUCTION_MODELS
+            if self.get_model(model_id).production_allowed and not self.get_model(model_id).is_research_only
+        ]
+
+    def research_models(self) -> list[str]:
+        """Return model ids owned by Analytics Lab / Research."""
+        return [
+            model_id
+            for model_id in registry.MODEL_REGISTRY
+            if self.get_model(model_id).is_research_only
+        ]
