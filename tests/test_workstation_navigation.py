@@ -93,3 +93,24 @@ def test_market_data_workspace_uses_market_data_service_boundary_only():
     assert "YieldCurve" not in source
     assert "MarketDataSnapshot" not in source
     assert "MarketDataSource" not in source
+
+
+def test_pricing_workspace_uses_pricing_service_boundary_only():
+    import inspect
+    import app.panels.pricing_workspace as pricing_workspace
+
+    source = inspect.getsource(pricing_workspace)
+
+    assert "from services.pricing_service import PricingService" in source
+    assert 'tabs.addTab(self._section_tab("Rates"), "Rates")' in source
+    assert 'tabs.addTab(self._section_tab("FX"), "FX")' in source
+    assert 'tabs.addTab(self._section_tab("Equity"), "Equity")' in source
+    assert 'tabs.addTab(self._section_tab("Credit"), "Credit")' in source
+    assert 'tabs.addTab(self._section_tab("Structured"), "Structured")' in source
+    assert "QStackedWidget" not in source
+    assert "_make_panel" not in source
+    assert "from app.panels" not in source
+    assert "from models" not in source
+    assert "from instruments" not in source
+    assert "from curves" not in source
+    assert "from risk" not in source

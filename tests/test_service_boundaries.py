@@ -127,3 +127,14 @@ def test_unknown_service_model_returns_structured_error_and_warning():
     _assert_contract(result, "unknown")
     assert result["errors"]
     assert any("not production allowed" in warning for warning in result["warnings"])
+
+
+def test_pricing_service_workflow_status_returns_governed_readiness_result():
+    result = PricingService().workflow_status("variance_swap", reason="wrapper pending")
+
+    _assert_contract(result, "variance_swap")
+    assert result["value"] is None
+    assert result["model_version"]
+    assert result["model_status"] == "Approximation"
+    assert result["raw"]["workflow_available"] is False
+    assert "wrapper pending" in result["warnings"]

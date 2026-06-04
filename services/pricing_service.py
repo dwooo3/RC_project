@@ -99,6 +99,26 @@ class PricingService:
             errors=[str(error)],
         )
 
+    def workflow_status(
+        self,
+        model_id: str,
+        *,
+        snapshot: MarketDataSnapshot | None = None,
+        reason: str = "Pricing workflow is not yet service-routed.",
+    ) -> dict:
+        """Return governed workflow readiness without calling a pricing engine."""
+        try:
+            self._enforce_model(model_id)
+            return self._result(
+                value=None,
+                model_id=model_id,
+                raw={"workflow_available": False, "reason": reason},
+                snapshot=snapshot,
+                warnings=[reason],
+            )
+        except Exception as exc:
+            return self._error_result(model_id=model_id, error=exc, snapshot=snapshot)
+
     def _enforce_model(self, model_id: str):
         return self.governance.enforce_model(
             model_id,
