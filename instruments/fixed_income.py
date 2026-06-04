@@ -255,10 +255,14 @@ def fixed_bond(face: float, coupon: float, T: float, freq: int,
     pv_t = sum(c * curve.discount(t) * t for c, t in zip(coupons, cf_times))
     mac_dur = pv_t / price if price else 0.0
 
-    # modified duration
-    maturity_time = max(cf_times) if cf_times else T
-    r_T = curve.rate(maturity_time)
-    mod_dur = mac_dur / (1 + r_T / freq)
+    # YTM (flat internal yield) — solved before modified duration, which is
+    # defined off the bond's own yield, not the zero rate at maturity.
+    def ytm_eq(y):
+        return sum(c / (1 + y / freq) ** (freq * t) for c, t in zip(coupons, cf_times)) - price
+    ytm = brentq(ytm_eq, -0.99 * freq, 1.0)
+
+    # modified duration = Macaulay / (1 + YTM/freq)  (was zero rate at maturity)
+    mod_dur = mac_dur / (1 + ytm / freq)
 
     # convexity
     conv = sum(c * curve.discount(t) * t**2 for c, t in zip(coupons, cf_times)) / price if price else 0.0
@@ -268,11 +272,6 @@ def fixed_bond(face: float, coupon: float, T: float, freq: int,
     price_up = _price_cashflows(list(zip(cf_times, coupons)), shifted_up)
     price_down = _price_cashflows(list(zip(cf_times, coupons)), shifted_down)
     dv01 = (price_down - price_up) / 2.0
-
-    # YTM (flat yield)
-    def ytm_eq(y):
-        return sum(c / (1 + y / freq) ** (freq * t) for c, t in zip(coupons, cf_times)) - price
-    ytm = brentq(ytm_eq, -0.99 * freq, 1.0)
 
     # z-spread
     def zspread_eq(z):

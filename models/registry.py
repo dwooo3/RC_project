@@ -43,7 +43,7 @@ MODEL_REGISTRY: dict[str, dict] = {
         "status": ModelStatus.APPROXIMATION,
         "domain": "Pricing",
         "tests": ["put_call_parity", "atm_call_known_value"],
-        "notes": "European vanilla only. No discrete dividends. Edge-cases (T→0, σ→0) need hardening.",
+        "notes": "European vanilla only. No discrete dividends. Expiry put delta now -1 when ITM; volga/ultima rescaled to per-1% convention.",
     },
     "black76": {
         "name": "Black-76 (Futures/Rates)",
@@ -96,7 +96,7 @@ MODEL_REGISTRY: dict[str, dict] = {
         "status": ModelStatus.APPROXIMATION,
         "domain": "Analytics",
         "tests": ["mc_european_vs_bsm"],
-        "notes": "Antithetic + moment matching + control variate. Greeks via common random numbers.",
+        "notes": "Antithetic + moment matching + control variate (CV expectation corrected to E[disc*S_T]=S0 e^{-qT}). Greeks via common random numbers.",
     },
     "mc_lsm": {
         "name": "Longstaff-Schwartz LSM",
@@ -119,7 +119,7 @@ MODEL_REGISTRY: dict[str, dict] = {
         "status": ModelStatus.PROTOTYPE,
         "domain": "Analytics",
         "tests": [],
-        "notes": "CF integration via scipy quad. Feller condition not enforced. No benchmark test.",
+        "notes": "CF integration via scipy quad (stable Little-Heston-Trap form). Delta now dividend-adjusted (e^{-qT} P1). Feller condition not enforced. No benchmark test.",
     },
     "sabr": {
         "name": "SABR",
@@ -152,7 +152,8 @@ MODEL_REGISTRY: dict[str, dict] = {
         "notes": (
             "Regular fixed-rate bond engine with ACT/365F, ACT/360, 30/360, "
             "business-day adjustment, settlement handling, accrued interest, clean/dirty price, "
-            "duration, convexity, and finite-difference DV01. Limitations: no external holiday "
+            "duration (modified duration now uses YTM, not the zero rate at maturity), "
+            "convexity, and finite-difference DV01. Limitations: no external holiday "
             "calendar source, no irregular stub policy, no ex-coupon logic, no amortization, "
             "no callable/putable features, and no inflation-linked bond mechanics."
         ),
@@ -222,7 +223,7 @@ MODEL_REGISTRY: dict[str, dict] = {
         "status": ModelStatus.APPROXIMATION,
         "domain": "Pricing",
         "tests": [],
-        "notes": "European cash/asset digital analytically. Touch: hit probability only.",
+        "notes": "European cash/asset digital analytically. Cash digital put gamma sign corrected. Touch: hit probability only.",
     },
     "lookback": {
         "name": "Lookback Options",

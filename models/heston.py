@@ -71,7 +71,10 @@ def heston_price(S: float, K: float, T: float, r: float, q: float,
     from models.implied_vol import implied_vol_bsm
     iv = implied_vol_bsm(price, S, K, T, r, q, opt)
 
-    return dict(price=price, implied_vol=iv, delta=P1 if opt=="call" else P1-1,
+    # Delta carries the dividend discount: dC/dS = e^{-qT} P1 (put via parity).
+    dq = np.exp(-q*T)
+    return dict(price=price, implied_vol=iv,
+                delta=dq*P1 if opt=="call" else dq*(P1-1),
                 v0=v0, kappa=kappa, theta=theta, xi=xi, rho=rho)
 
 

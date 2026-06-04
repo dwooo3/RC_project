@@ -119,8 +119,11 @@ def mc_price(payoff_fn: Callable[[np.ndarray], np.ndarray],
 
     if control_variate:
         S_T      = paths[:, -1]
-        cv_true  = S0 * np.exp((r - q)*T)
-        cv_sim   = np.mean(S_T)
+        # Control variate is the discounted terminal spot disc*S_T, whose known
+        # expectation is E[disc*S_T] = S0*e^{-qT} (a martingale up to dividends).
+        # Was S0*e^{(r-q)T} = E[S_T] (undiscounted), which left the CV uncentred
+        # and biased the price by ~beta*S0*(e^{(r-q)T}-e^{-qT}).
+        cv_true  = S0 * np.exp(-q*T)
         beta     = np.cov(pv, disc*S_T)[0,1] / np.var(disc*S_T)
         pv       = pv - beta*(disc*S_T - cv_true)
 

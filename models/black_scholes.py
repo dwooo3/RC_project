@@ -66,7 +66,12 @@ def bsm(S: float, K: float, T: float, r: float, sigma: float,
     """
     if T <= 0:
         intrinsic = max(S - K, 0) if opt == "call" else max(K - S, 0)
-        g = Greeks(); g.price = intrinsic; g.delta = 1.0 if opt == "call" and S > K else 0.0
+        g = Greeks(); g.price = intrinsic
+        # Expiry delta boundary: call -> +1 if ITM, put -> -1 if ITM (was 0 for puts).
+        if opt == "call":
+            g.delta = 1.0 if S > K else 0.0
+        else:
+            g.delta = -1.0 if S < K else 0.0
         return g
 
     F   = S * np.exp((r - q) * T)
@@ -91,14 +96,14 @@ def bsm(S: float, K: float, T: float, r: float, sigma: float,
 
     # higher-order Greeks
     vanna  = -dq * nd1 * d2 / sigma
-    volga  = S * dq * nd1 * np.sqrt(T) * d1 * d2 / sigma / 100
+    volga  = S * dq * nd1 * np.sqrt(T) * d1 * d2 / sigma / 10000  # per 1%^2 (consistent with vega per 1%)
     charm  = -dq * (nd1 * ((r - q) / (sigma * np.sqrt(T)) - d2 / (2 * T))
                     + sign * q * norm.cdf(sign * d1)) / 365
     speed  = -gamma / S * (d1 / sv + 1)
     color  = -dq * nd1 / (2 * S * T * sv) * (
                 2 * (r - q) * T + 1 + d1 * d2) / 365
     zomma  = gamma * (d1 * d2 - 1) / sigma
-    ultima = -vega * 100 / sigma * (d1 * d2 * (1 - d1 * d2) + d1**2 + d2**2)
+    ultima = -vega * 100 / sigma**2 * (d1 * d2 * (1 - d1 * d2) + d1**2 + d2**2)
 
     return Greeks(price=price, delta=delta, gamma=gamma, vega=vega,
                   theta=theta, rho=rho, vanna=vanna, volga=volga,

@@ -32,7 +32,8 @@ def cash_or_nothing(S: float, K: float, T: float, r: float, sigma: float,
 
     price = cash * disc * norm.cdf(sign*d2)
     delta = sign * cash * disc * norm.pdf(d2) / (S*sigma*np.sqrt(T))
-    gamma = -cash * disc * norm.pdf(d2) * d1 / (S**2*sigma**2*T)
+    # gamma of the put digital is the negative of the call's (sign factor was missing)
+    gamma = sign * (-cash * disc * norm.pdf(d2) * d1 / (S**2*sigma**2*T))
     vega  = -cash * disc * norm.pdf(d2) * d1 / (sigma * 100)
     theta = (cash * disc * (r*norm.cdf(sign*d2)
              + sign*norm.pdf(d2)*(r-q+0.5*sigma**2)/(sigma*np.sqrt(T)))) / (-365)
