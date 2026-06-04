@@ -26,6 +26,7 @@ def test_governance_returns_model_registry_entry_fields():
     assert entry.limitations
     assert entry.documentation_link == ""
     assert entry.validation_date is None
+    assert entry.quant_review_status == "Partially Validated"
 
 
 def test_governance_service_exposes_workspace_sections():
@@ -40,6 +41,7 @@ def test_governance_service_exposes_workspace_sections():
     assert any(model.model_id == "fixed_bond" for model in models)
     assert counts["Approximation"] > 0
     assert any(row["model_id"] == "fixed_bond" for row in validation)
+    assert any(row["quant_review_status"] == "Partially Validated" for row in validation)
     assert audit and audit[0]["status"] == "Pending"
     assert any(row["model_id"] == "fixed_bond" for row in limitations)
 
@@ -79,6 +81,7 @@ def test_pricing_service_exposes_model_metadata():
     assert result["model_version"]
     assert result["model_owner"]
     assert result["model_metadata"]["model_id"] == "black_scholes"
+    assert result["model_metadata"]["model_quant_review_status"] == "Fixed"
     assert result["model_limitations"]
     assert "model_documentation_link" in result
     assert isinstance(result["model_production_allowed"], bool)
@@ -168,6 +171,18 @@ def test_risk_service_exposes_model_metadata():
     assert result["model_version"]
     assert result["model_owner"]
     assert result["model_metadata"]["model_id"] == "var_historical"
+    assert result["model_metadata"]["model_quant_review_status"] == "Partially Validated"
     assert result["model_limitations"]
     assert "model_documentation_link" in result
     assert isinstance(result["model_production_allowed"], bool)
+
+
+def test_governance_quant_review_status_values_are_canonical():
+    governance = GovernanceService()
+    statuses = {model.quant_review_status for model in governance.list_models()}
+
+    assert statuses <= {"Fixed", "False Positive", "Partially Validated", "Open"}
+    assert "Fixed" in statuses
+    assert "False Positive" in statuses
+    assert "Partially Validated" in statuses
+    assert "Open" in statuses

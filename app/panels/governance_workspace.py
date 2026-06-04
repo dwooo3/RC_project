@@ -17,6 +17,7 @@ class GovernanceWorkspace(WorkstationWorkspace):
         self.governance = GovernanceService()
         self.models = self.governance.list_models()
         self.counts = self.governance.status_counts()
+        self.quant_counts = self._quant_review_counts()
         super().__init__(
             "Governance",
             "Model registry, validation status, audit trail, and limitations",
@@ -42,7 +43,6 @@ class GovernanceWorkspace(WorkstationWorkspace):
         )
 
     def _build_kpis(self):
-        missing_validation = sum(1 for model in self.models if not model.validation_date)
         limitation_count = len(self.governance.limitations_report())
         return KpiStrip(
             [
@@ -50,7 +50,7 @@ class GovernanceWorkspace(WorkstationWorkspace):
                 ("Approx", str(self.counts.get("Approximation", 0)), "allowed with warnings"),
                 ("Prototype", str(self.counts.get("Prototype", 0)), "not production"),
                 ("Blocked", str(self.counts.get("Placeholder", 0) + self.counts.get("Broken", 0)), "placeholder/broken"),
-                ("No Val Date", str(missing_validation), "metadata gap"),
+                ("Open Quant", str(self.quant_counts.get("Open", 0)), "review status"),
                 ("Limitations", str(limitation_count), "visible"),
             ]
         )
@@ -74,6 +74,12 @@ class GovernanceWorkspace(WorkstationWorkspace):
                 [[status, count] for status, count in sorted(self.counts.items())],
             )
         )
+        panel.layout.addWidget(
+            DenseTable(
+                ["Quant Review", "Count"],
+                [[status, self.quant_counts.get(status, 0)] for status in ("Fixed", "False Positive", "Partially Validated", "Open")],
+            )
+        )
         return panel
 
     def _build_sections(self):
@@ -89,13 +95,11 @@ class GovernanceWorkspace(WorkstationWorkspace):
         rows = [
             [
                 model.model_id,
-                model.version,
                 model.status,
                 model.owner,
                 self._date(model.validation_date),
                 "Yes" if model.production_allowed else "No",
-                model.workflow_layer,
-                self._limit_summary(model.limitations),
+                model.quant_review_status,
             ]
             for model in self.models
         ]
@@ -103,13 +107,11 @@ class GovernanceWorkspace(WorkstationWorkspace):
             DenseTable(
                 [
                     "Model ID",
-                    "Version",
                     "Status",
                     "Owner",
                     "Validation Date",
-                    "Prod Allowed",
-                    "Layer",
-                    "Limitations",
+                    "Production Allowed",
+                    "Quant Review Status",
                 ],
                 rows,
             )
@@ -128,12 +130,13 @@ class GovernanceWorkspace(WorkstationWorkspace):
                     item["evidence_count"],
                     ", ".join(item["tests"]) or "No tests recorded",
                     "Yes" if item["production_allowed"] else "No",
+                    item["quant_review_status"],
                     item["workflow_layer"],
                 ]
             )
         panel.layout.addWidget(
             DenseTable(
-                ["Model ID", "Status", "Validation Date", "Evidence", "Tests", "Prod Allowed", "Layer"],
+                ["Model ID", "Status", "Validation Date", "Evidence", "Tests", "Prod Allowed", "Quant Review", "Layer"],
                 rows,
             )
         )
@@ -164,11 +167,12 @@ class GovernanceWorkspace(WorkstationWorkspace):
                 item["model_id"],
                 item["status"],
                 "Yes" if item["production_allowed"] else "No",
+                item["quant_review_status"],
                 item["limitation"],
             ]
             for item in self.governance.limitations_report()
         ]
-        panel.layout.addWidget(DenseTable(["Model ID", "Status", "Prod Allowed", "Limitation"], rows))
+        panel.layout.addWidget(DenseTable(["Model ID", "Status", "Prod Allowed", "Quant Review", "Limitation"], rows))
         return panel
 
     def _build_policy(self):
@@ -183,6 +187,7 @@ class GovernanceWorkspace(WorkstationWorkspace):
                     ["Prototype models", "Warnings + not production"],
                     ["Approximation models", "Allowed with warnings"],
                     ["Validation evidence", "Visible in registry"],
+                    ["Quant review statuses", "Fixed / False Positive / Partially Validated / Open"],
                     ["Audit persistence", "Pending"],
                 ],
             )
@@ -193,9 +198,15 @@ class GovernanceWorkspace(WorkstationWorkspace):
         panel = WorkstationPanel("Top Limitations")
         rows = []
         for item in self.governance.limitations_report()[:12]:
-            rows.append([item["model_id"], item["status"], item["limitation"]])
-        panel.layout.addWidget(DenseTable(["Model ID", "Status", "Limitation"], rows))
+            rows.append([item["model_id"], item["status"], item["quant_review_status"], item["limitation"]])
+        panel.layout.addWidget(DenseTable(["Model ID", "Status", "Quant Review", "Limitation"], rows))
         return panel
+
+    def _quant_review_counts(self) -> dict[str, int]:
+        counts = {"Fixed": 0, "False Positive": 0, "Partially Validated": 0, "Open": 0}
+        for model in self.models:
+            counts[model.quant_review_status] = counts.get(model.quant_review_status, 0) + 1
+        return counts
 
     def _worst_status(self) -> str:
         order = ["Validated", "Approximation", "Prototype", "Placeholder", "Broken"]

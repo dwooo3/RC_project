@@ -10,6 +10,45 @@ _PRODUCTION_ALLOWED = {
     registry.ModelStatus.APPROXIMATION,
 }
 
+_QUANT_REVIEW_STATUS = {
+    "black_scholes": "Fixed",
+    "black76": "Partially Validated",
+    "binomial_crr": "False Positive",
+    "binomial_lr": "Partially Validated",
+    "trinomial": "Partially Validated",
+    "mc_gbm": "Fixed",
+    "mc_lsm": "Open",
+    "mc_heston": "Open",
+    "heston_cf": "Fixed",
+    "sabr": "Open",
+    "garch": "Open",
+    "fixed_bond": "Partially Validated",
+    "frn": "Open",
+    "irs": "Partially Validated",
+    "capfloor": "Partially Validated",
+    "short_rate": "Fixed",
+    "fx_forward": "Partially Validated",
+    "garman_kohlhagen": "Partially Validated",
+    "fx_smile": "Open",
+    "asian": "False Positive",
+    "digital": "Fixed",
+    "barrier": "Open",
+    "lookback": "Open",
+    "multi_asset": "Open",
+    "variance_swap": "Partially Validated",
+    "cds": "Open",
+    "cva_dva": "Open",
+    "structured_autocall": "Open",
+    "cln_ftd": "Open",
+    "var_parametric": "Partially Validated",
+    "var_historical": "Partially Validated",
+    "var_mc": "Partially Validated",
+    "evt_var": "Partially Validated",
+    "portfolio_aggregation": "Partially Validated",
+}
+
+QUANT_REVIEW_STATUSES = ("Fixed", "False Positive", "Partially Validated", "Open")
+
 
 class GovernanceService:
     """Normalize model registry entries for application services."""
@@ -52,10 +91,19 @@ class GovernanceService:
             production_allowed=entry.get(
                 "production_allowed", status in _PRODUCTION_ALLOWED
             ),
+            quant_review_status=entry.get(
+                "quant_review_status",
+                self.quant_review_status(model_id),
+            ),
             tests=list(entry.get("tests", [])),
             references=references,
             last_validated=validation_date,
         )
+
+    def quant_review_status(self, model_id: str) -> str:
+        """Return quant-review synchronization status for one model."""
+        status = _QUANT_REVIEW_STATUS.get(model_id, "Open")
+        return status if status in QUANT_REVIEW_STATUSES else "Open"
 
     def is_production_allowed(self, model_id: str) -> bool:
         return self.get_model(model_id).production_allowed
@@ -106,6 +154,7 @@ class GovernanceService:
             "model_limitations": list(model.limitations),
             "model_documentation_link": model.documentation_link,
             "model_production_allowed": model.production_allowed,
+            "model_quant_review_status": model.quant_review_status,
             "model_workflow_layer": model.workflow_layer,
             "model_analytics_lab_only": model.analytics_lab_only,
         }
@@ -138,6 +187,7 @@ class GovernanceService:
                     "tests": list(model.tests),
                     "evidence_count": len(model.tests) + len(model.references),
                     "production_allowed": model.production_allowed,
+                    "quant_review_status": model.quant_review_status,
                     "workflow_layer": model.workflow_layer,
                 }
             )
@@ -154,6 +204,7 @@ class GovernanceService:
                         "model_id": model.model_id,
                         "status": model.status,
                         "production_allowed": model.production_allowed,
+                        "quant_review_status": model.quant_review_status,
                         "limitation": limitation,
                     }
                 )

@@ -20,6 +20,7 @@ class ModelRegistryEntry:
     name: str = ""
     domain: str = "Unknown"
     production_allowed: bool = False
+    quant_review_status: str = "Open"
     tests: list[str] = field(default_factory=list)
     references: list[str] = field(default_factory=list)
     last_validated: date | None = None

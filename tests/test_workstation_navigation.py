@@ -26,6 +26,8 @@ def test_governance_workspace_is_first_class_panel():
     assert 'tabs.addTab(self._validation_status_tab(), "Validation Status")' in source
     assert 'tabs.addTab(self._audit_trail_tab(), "Audit Trail")' in source
     assert 'tabs.addTab(self._limitations_tab(), "Limitations")' in source
+    assert "Quant Review Status" in source
+    assert "Fixed / False Positive / Partially Validated / Open" in source
     assert "from models" not in source
     assert "MODEL_REGISTRY" not in source
 
