@@ -94,6 +94,30 @@ def test_market_data_store_versions_duplicate_snapshot_ids():
     assert [snapshot.version for snapshot in store.list_versions("manual-close")] == [1, 2]
 
 
+def test_market_data_service_exposes_snapshot_lineage_from_store():
+    store = MarketDataStore()
+    service = MarketDataService(store=store)
+    curve = service.flat_curve(0.05, valuation_date=date(2026, 6, 3))
+
+    service.manual_snapshot(
+        "manual-lineage",
+        valuation_date=date(2026, 6, 3),
+        curves={"rub": curve},
+    )
+    service.manual_snapshot(
+        "manual-lineage",
+        valuation_date=date(2026, 6, 3),
+        curves={"rub": curve},
+    )
+
+    lineage = service.snapshot_lineage("manual-lineage")
+
+    assert [item["version"] for item in lineage] == [1, 2]
+    assert all(item["snapshot_id"] == "manual-lineage" for item in lineage)
+    assert lineage[1]["parent_snapshot_id"] == "manual-lineage"
+    assert lineage[1]["source"] == "MANUAL"
+
+
 def test_manual_snapshot_owns_curve_fx_vol_and_credit_data():
     service = MarketDataService()
     curve = service.flat_curve(0.05, valuation_date=date(2026, 6, 3))

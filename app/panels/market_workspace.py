@@ -19,6 +19,7 @@ class MarketWorkspace(WorkstationWorkspace):
         self.market_data = MarketDataService()
         self.snapshot = self.market_data.demo_snapshot()
         self.validation = self._validation_summary()
+        self.snapshot_lineage = self.market_data.snapshot_lineage(self.snapshot.snapshot_id)
         source = self.snapshot.source_value
         validation_status = "Validated" if self.validation["status"] == "Pass" else "Approximation"
 
@@ -42,6 +43,7 @@ class MarketWorkspace(WorkstationWorkspace):
                 ("Version", f"v{self.snapshot.version}"),
                 ("Source", source),
                 ("Timestamp", self._timestamp()),
+                ("Lineage", self._lineage_label()),
                 ("Validation", self.validation["status"]),
             ],
             parent=parent,
@@ -56,6 +58,7 @@ class MarketWorkspace(WorkstationWorkspace):
                 ("FX", str(len(self.snapshot.fx_rates)), "spot pairs"),
                 ("Vol Surfaces", str(len(self.snapshot.vol_surfaces)), "surface objects"),
                 ("Validation", self.validation["status"], f"{self.validation['warnings']} warnings"),
+                ("Lineage", self._lineage_label(), "MarketDataStore"),
             ]
         )
 
@@ -79,14 +82,15 @@ class MarketWorkspace(WorkstationWorkspace):
 
     def _build_detail_tabs(self):
         tabs = QTabWidget()
-        tabs.addTab(self._yield_curves_tab(), "Yield Curves")
-        tabs.addTab(self._fx_tab(), "FX")
-        tabs.addTab(self._vol_surface_tab(), "Vol Surface")
-        tabs.addTab(self._credit_curves_tab(), "Credit Curves")
+        tabs.addTab(self._curve_explorer_tab(), "Curve Explorer")
+        tabs.addTab(self._fx_explorer_tab(), "FX Explorer")
+        tabs.addTab(self._vol_surface_explorer_tab(), "Vol Surface Explorer")
+        tabs.addTab(self._credit_curve_explorer_tab(), "Credit Curve Explorer")
         return tabs
 
-    def _yield_curves_tab(self):
-        panel = WorkstationPanel("Yield Curves")
+    def _curve_explorer_tab(self):
+        panel = WorkstationPanel("Curve Explorer")
+        panel.layout.addWidget(self._snapshot_context_table("Yield curves"))
         rows = []
         for curve_id, curve in self.snapshot.curves.items():
             check = curve.validate()
@@ -95,8 +99,10 @@ class MarketWorkspace(WorkstationWorkspace):
                     curve_id,
                     getattr(curve, "label", curve_id),
                     self.snapshot.source_value,
+                    self.snapshot.quality,
                     self._timestamp(),
                     self.snapshot.snapshot_id,
+                    self._lineage_label(),
                     "Pass" if check.valid else "Fail",
                     len(getattr(curve, "tenors", [])),
                     self._pct(curve.rate(1.0)),
@@ -110,8 +116,10 @@ class MarketWorkspace(WorkstationWorkspace):
                     "Curve ID",
                     "Label",
                     "Source",
+                    "Quality",
                     "Timestamp",
                     "Snapshot ID",
+                    "Lineage",
                     "Validation",
                     "Tenors",
                     "1Y",
@@ -121,31 +129,37 @@ class MarketWorkspace(WorkstationWorkspace):
                 rows,
             )
         )
+        panel.layout.addWidget(self._lineage_table())
         return panel
 
-    def _fx_tab(self):
-        panel = WorkstationPanel("FX")
+    def _fx_explorer_tab(self):
+        panel = WorkstationPanel("FX Explorer")
+        panel.layout.addWidget(self._snapshot_context_table("FX rates"))
         rows = [
             [
                 pair,
                 rate,
                 self.snapshot.source_value,
+                self.snapshot.quality,
                 self._timestamp(),
                 self.snapshot.snapshot_id,
+                self._lineage_label(),
                 "Pass" if self._positive_number(rate) else "Fail",
             ]
             for pair, rate in sorted(self.snapshot.fx_rates.items())
         ]
         panel.layout.addWidget(
             DenseTable(
-                ["Pair", "Spot", "Source", "Timestamp", "Snapshot ID", "Validation"],
+                ["Pair", "Spot", "Source", "Quality", "Timestamp", "Snapshot ID", "Lineage", "Validation"],
                 rows,
             )
         )
+        panel.layout.addWidget(self._lineage_table())
         return panel
 
-    def _vol_surface_tab(self):
-        panel = WorkstationPanel("Vol Surface")
+    def _vol_surface_explorer_tab(self):
+        panel = WorkstationPanel("Vol Surface Explorer")
+        panel.layout.addWidget(self._snapshot_context_table("Vol surfaces"))
         rows = []
         for surface_id, surface in sorted(self.snapshot.vol_surfaces.items()):
             rows.append(
@@ -154,21 +168,25 @@ class MarketWorkspace(WorkstationWorkspace):
                     self._value(surface, "type"),
                     self._vol_value(surface),
                     self.snapshot.source_value,
+                    self.snapshot.quality,
                     self._timestamp(),
                     self.snapshot.snapshot_id,
+                    self._lineage_label(),
                     self._vol_validation(surface),
                 ]
             )
         panel.layout.addWidget(
             DenseTable(
-                ["Surface ID", "Type", "Vol", "Source", "Timestamp", "Snapshot ID", "Validation"],
+                ["Surface ID", "Type", "Vol", "Source", "Quality", "Timestamp", "Snapshot ID", "Lineage", "Validation"],
                 rows,
             )
         )
+        panel.layout.addWidget(self._lineage_table())
         return panel
 
-    def _credit_curves_tab(self):
-        panel = WorkstationPanel("Credit Curves")
+    def _credit_curve_explorer_tab(self):
+        panel = WorkstationPanel("Credit Curve Explorer")
+        panel.layout.addWidget(self._snapshot_context_table("Credit curves"))
         rows = []
         for curve_id, curve in sorted(self.snapshot.credit_curves.items()):
             spread = self._value(curve, "spread")
@@ -178,8 +196,10 @@ class MarketWorkspace(WorkstationWorkspace):
                     self._value(curve, "base_curve_id"),
                     self._spread(spread),
                     self.snapshot.source_value,
+                    self.snapshot.quality,
                     self._timestamp(),
                     self.snapshot.snapshot_id,
+                    self._lineage_label(),
                     "Pass" if self._non_negative_number(spread) else "Review",
                 ]
             )
@@ -190,17 +210,20 @@ class MarketWorkspace(WorkstationWorkspace):
                     "spread",
                     self._spread(spread),
                     self.snapshot.source_value,
+                    self.snapshot.quality,
                     self._timestamp(),
                     self.snapshot.snapshot_id,
+                    self._lineage_label(),
                     "Pass" if self._non_negative_number(spread) else "Fail",
                 ]
             )
         panel.layout.addWidget(
             DenseTable(
-                ["Curve / Spread", "Base", "Spread", "Source", "Timestamp", "Snapshot ID", "Validation"],
+                ["Curve / Spread", "Base", "Spread", "Source", "Quality", "Timestamp", "Snapshot ID", "Lineage", "Validation"],
                 rows,
             )
         )
+        panel.layout.addWidget(self._lineage_table())
         return panel
 
     def _build_validation(self):
@@ -236,11 +259,46 @@ class MarketWorkspace(WorkstationWorkspace):
                     ["Quality", self.snapshot.quality],
                     ["Created By", self.snapshot.created_by],
                     ["Provider", self.snapshot.source_details.get("provider", "")],
+                    ["Parent Snapshot", self.snapshot.parent_snapshot_id or "ROOT"],
+                    ["Lineage", self._lineage_label()],
                     ["Warning", self.snapshot.metadata.get("warning", "")],
                 ],
             )
         )
         return panel
+
+    def _snapshot_context_table(self, data_set: str) -> DenseTable:
+        return DenseTable(
+            ["Field", "Value"],
+            [
+                ["Dataset", data_set],
+                ["Snapshot ID", self.snapshot.snapshot_id],
+                ["Version", f"v{self.snapshot.version}"],
+                ["Source", self.snapshot.source_value],
+                ["Quality", self.snapshot.quality],
+                ["Validation", self.validation["status"]],
+                ["Last Update", self._timestamp()],
+                ["Lineage", self._lineage_label()],
+            ],
+        )
+
+    def _lineage_table(self) -> DenseTable:
+        rows = [
+            [
+                item["snapshot_id"],
+                f"v{item['version']}",
+                item["source"],
+                item["quality"],
+                item["created_at"].isoformat(timespec="seconds"),
+                item["parent_snapshot_id"] or "ROOT",
+                item["created_by"],
+            ]
+            for item in self.snapshot_lineage
+        ]
+        return DenseTable(
+            ["Snapshot", "Version", "Source", "Quality", "Last Update", "Parent", "Created By"],
+            rows or [[self.snapshot.snapshot_id, f"v{self.snapshot.version}", self.snapshot.source_value, self.snapshot.quality, self._timestamp(), "ROOT", self.snapshot.created_by]],
+        )
 
     def _validation_summary(self) -> dict[str, str | int]:
         curve_results = [curve.validate() for curve in self.snapshot.curves.values()]
@@ -278,6 +336,9 @@ class MarketWorkspace(WorkstationWorkspace):
 
     def _timestamp(self) -> str:
         return self.snapshot.created_at.isoformat(timespec="seconds")
+
+    def _lineage_label(self) -> str:
+        return " -> ".join(f"v{item['version']}" for item in self.snapshot_lineage) or f"v{self.snapshot.version}"
 
     def _pct(self, value: float) -> str:
         return f"{value * 100:.2f}%"

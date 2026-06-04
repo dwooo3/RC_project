@@ -316,6 +316,22 @@ class MarketDataService:
     def list_snapshot_versions(self, snapshot_id: str) -> list[MarketDataSnapshot]:
         return self.store.list_versions(snapshot_id)
 
+    def snapshot_lineage(self, snapshot_id: str) -> list[dict[str, Any]]:
+        """Return version lineage metadata owned by MarketDataStore."""
+        return [
+            {
+                "snapshot_id": snapshot.snapshot_id,
+                "version": snapshot.version,
+                "source": snapshot.source_value,
+                "quality": snapshot.quality,
+                "created_at": snapshot.created_at,
+                "created_by": snapshot.created_by,
+                "parent_snapshot_id": snapshot.parent_snapshot_id,
+                "valuation_date": snapshot.valuation_date,
+            }
+            for snapshot in self.store.list_versions(snapshot_id)
+        ]
+
     def get_fx_rate(self, pair: str, snapshot: MarketDataSnapshot | None = None) -> float:
         snapshot = snapshot or self.demo_snapshot()
         return snapshot.fx_rates[pair]

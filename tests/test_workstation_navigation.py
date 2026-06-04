@@ -101,10 +101,14 @@ def test_market_data_workspace_uses_market_data_service_boundary_only():
     source = inspect.getsource(market_workspace)
 
     assert "from services.market_data_service import MarketDataService" in source
-    assert 'tabs.addTab(self._yield_curves_tab(), "Yield Curves")' in source
-    assert 'tabs.addTab(self._fx_tab(), "FX")' in source
-    assert 'tabs.addTab(self._vol_surface_tab(), "Vol Surface")' in source
-    assert 'tabs.addTab(self._credit_curves_tab(), "Credit Curves")' in source
+    assert 'tabs.addTab(self._curve_explorer_tab(), "Curve Explorer")' in source
+    assert 'tabs.addTab(self._fx_explorer_tab(), "FX Explorer")' in source
+    assert 'tabs.addTab(self._vol_surface_explorer_tab(), "Vol Surface Explorer")' in source
+    assert 'tabs.addTab(self._credit_curve_explorer_tab(), "Credit Curve Explorer")' in source
+    assert "snapshot_lineage" in source
+    assert "MarketDataStore" in source
+    assert "Quality" in source
+    assert "Lineage" in source
     assert "from app.panels.yield_curve_panel" not in source
     assert "from app.panels.volsurface_panel" not in source
     assert "from curves" not in source
