@@ -89,10 +89,10 @@ def test_price_bond_surfaces_fixed_income_audit_warnings():
     )
 
     warnings = " ".join(result["warnings"])
-    assert "approximation/demo path" in warnings
-    assert "no settlement date" in warnings
-    assert "Clean price equals dirty price" in warnings
-    assert "accrued interest is reported as 0.0" in warnings
+    assert "regular coupon schedules" in warnings
+    assert "ACT/365F" in warnings
+    assert "Limitations remain" in warnings
+    assert "Duration, convexity, and DV01" in warnings
 
 
 def test_price_bond_result_contains_market_data_source_metadata():

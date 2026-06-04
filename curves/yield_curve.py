@@ -14,7 +14,7 @@ from typing import Literal, Optional
 from domain.market_data import MarketDataSource
 
 
-DayCount = Literal["act365", "act360", "30360", "actact"]
+DayCount = Literal["act365", "act365f", "act/365f", "act360", "act/360", "30360", "30/360", "actact"]
 Compounding = Literal["continuous", "annual", "semiannual", "simple"]
 
 
@@ -28,9 +28,44 @@ class CurveValidation:
 # Day count conventions
 # ─────────────────────────────────────────────────────────
 
-def year_fraction(T: float, convention: DayCount = "act365") -> float:
-    """Already a float — identity. For real date pairs override below."""
-    return float(T)
+def _normalize_day_count(convention: str) -> str:
+    return convention.lower().replace("_", "").replace("-", "")
+
+
+def year_fraction(start, end=None, convention: DayCount = "act365") -> float:
+    """Year fraction for numeric maturities or date pairs.
+
+    Backward compatibility: ``year_fraction(T)`` still returns ``float(T)``.
+    Date-pair conventions implemented for fixed-income accrual/discounting:
+    ACT/365F, ACT/360, and 30/360 US bond basis.
+    """
+    if end is None:
+        return float(start)
+    if not isinstance(start, date) or not isinstance(end, date):
+        raise TypeError("year_fraction date-pair mode requires datetime.date inputs")
+    if end < start:
+        raise ValueError("end date must be on or after start date")
+
+    convention_key = _normalize_day_count(str(convention))
+    days = (end - start).days
+    if convention_key in {"act365", "act365f", "act/365f"}:
+        return days / 365.0
+    if convention_key in {"act360", "act/360"}:
+        return days / 360.0
+    if convention_key in {"30360", "30/360"}:
+        d1 = min(start.day, 30)
+        d2 = end.day
+        if d1 == 30 and d2 == 31:
+            d2 = 30
+        return ((end.year - start.year) * 360 + (end.month - start.month) * 30 + (d2 - d1)) / 360.0
+    if convention_key == "actact":
+        denominator = 366.0 if _is_leap_year(start.year) else 365.0
+        return days / denominator
+    raise ValueError(f"Unsupported day count convention: {convention}")
+
+
+def _is_leap_year(year: int) -> bool:
+    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
 
 
 # ─────────────────────────────────────────────────────────

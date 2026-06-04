@@ -13,10 +13,9 @@ from services.market_data_service import MarketDataService
 
 
 _BOND_APPROXIMATION_WARNINGS = [
-    "Fixed bond pricing is an approximation/demo path: no settlement date, coupon date schedule, day-count accrual, or accrued interest calculation.",
-    "Clean price equals dirty price and accrued interest is reported as 0.0 until the fixed-income schedule/day-count refactor is implemented.",
-    "Coupon schedule is generated from maturity * frequency rounded year fractions; stubs, holidays, business-day conventions, and ex-coupon logic are not modeled.",
-    "Duration, convexity, DV01, YTM, and z-spread are simplified analytics from the legacy fixed_bond engine.",
+    "Fixed bond pricing supports regular coupon schedules, settlement handling, ACT/365F, ACT/360, 30/360, clean price, dirty price, and accrued interest.",
+    "Limitations remain: no holiday-calendar source, no irregular stub policy, no ex-coupon logic, no callable/putable features, and no inflation-linked bond mechanics.",
+    "Duration, convexity, and DV01 are deterministic curve analytics and require benchmark validation before production use.",
 ]
 
 
@@ -158,6 +157,13 @@ class PricingService:
                 request.maturity,
                 request.frequency,
                 curve,
+                settlement_date=request.settlement_date,
+                maturity_date=request.maturity_date,
+                issue_date=request.issue_date,
+                valuation_date=request.valuation_date,
+                settlement_days=request.settlement_days,
+                day_count=request.day_count,
+                business_day_convention=request.business_day_convention,
             )
             result = self._result(
                 value=raw.get("price"),
@@ -169,17 +175,31 @@ class PricingService:
             result.update(
                 {
                     "request": request,
-                    "dirty_price": raw.get("price"),
-                    "clean_price": raw.get("price"),
-                    "accrued_interest": 0.0,
+                    "dirty_price": raw.get("dirty_price"),
+                    "clean_price": raw.get("clean_price"),
+                    "accrued_interest": raw.get("accrued_interest", 0.0),
+                    "settlement_date": raw.get("settlement_date"),
+                    "previous_coupon_date": raw.get("previous_coupon_date"),
+                    "next_coupon_date": raw.get("next_coupon_date"),
+                    "day_count": raw.get("day_count", request.day_count),
+                    "business_day_convention": raw.get(
+                        "business_day_convention", request.business_day_convention
+                    ),
                     "bond_result": BondPricingResult(
                         value=raw.get("price"),
-                        dirty_price=raw.get("price"),
-                        clean_price=raw.get("price"),
-                        accrued_interest=0.0,
+                        dirty_price=raw.get("dirty_price"),
+                        clean_price=raw.get("clean_price"),
+                        accrued_interest=raw.get("accrued_interest", 0.0),
                         currency=request.currency,
                         model_id=result["model_id"],
                         model_status=result["model_status"],
+                        settlement_date=raw.get("settlement_date"),
+                        previous_coupon_date=raw.get("previous_coupon_date"),
+                        next_coupon_date=raw.get("next_coupon_date"),
+                        day_count=raw.get("day_count", request.day_count),
+                        business_day_convention=raw.get(
+                            "business_day_convention", request.business_day_convention
+                        ),
                         market_data_snapshot_id=result["market_data_snapshot_id"],
                         market_data_source=result["market_data_source"],
                         market_data_quality=result["market_data_quality"],

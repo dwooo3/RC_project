@@ -13,11 +13,144 @@ Fixed income instruments:
   - CMS spread option
 """
 
+from dataclasses import dataclass
+from datetime import date, timedelta
+import calendar
+
 import numpy as np
 from scipy.optimize import brentq
 from scipy.stats import norm
-from curves.yield_curve import YieldCurve
+from curves.yield_curve import YieldCurve, year_fraction
 from models.black_scholes import black76
+
+
+BusinessDayConvention = str
+
+
+@dataclass(frozen=True)
+class CouponPeriod:
+    start_date: date
+    end_date: date
+    payment_date: date
+    accrual_factor: float
+
+
+def is_business_day(day: date, holidays: set[date] | None = None) -> bool:
+    """Weekend-based business-day check with optional holiday set."""
+    return day.weekday() < 5 and day not in (holidays or set())
+
+
+def adjust_business_day(
+    day: date,
+    convention: BusinessDayConvention = "following",
+    holidays: set[date] | None = None,
+) -> date:
+    """Adjust a date using a minimal business-day framework."""
+    convention_key = convention.lower().replace("_", "-")
+    holidays = holidays or set()
+    if convention_key in {"none", "unadjusted"} or is_business_day(day, holidays):
+        return day
+    if convention_key in {"following", "modified-following"}:
+        adjusted = day
+        while not is_business_day(adjusted, holidays):
+            adjusted += timedelta(days=1)
+        if convention_key == "modified-following" and adjusted.month != day.month:
+            return adjust_business_day(day, "preceding", holidays)
+        return adjusted
+    if convention_key == "preceding":
+        adjusted = day
+        while not is_business_day(adjusted, holidays):
+            adjusted -= timedelta(days=1)
+        return adjusted
+    raise ValueError(f"Unsupported business-day convention: {convention}")
+
+
+def settlement_from_valuation(
+    valuation_date: date,
+    settlement_days: int = 0,
+    business_day_convention: BusinessDayConvention = "following",
+    holidays: set[date] | None = None,
+) -> date:
+    """Advance a valuation date by business settlement days."""
+    if settlement_days < 0:
+        raise ValueError("settlement_days must be non-negative")
+    current = valuation_date
+    remaining = settlement_days
+    while remaining > 0:
+        current += timedelta(days=1)
+        if is_business_day(current, holidays):
+            remaining -= 1
+    return adjust_business_day(current, business_day_convention, holidays)
+
+
+def _add_months(day: date, months: int) -> date:
+    month_index = day.month - 1 + months
+    year = day.year + month_index // 12
+    month = month_index % 12 + 1
+    last_day = calendar.monthrange(year, month)[1]
+    return date(year, month, min(day.day, last_day))
+
+
+def _maturity_from_years(settlement_date: date, T: float, freq: int) -> date:
+    periods = max(1, int(round(T * freq)))
+    return _add_months(settlement_date, periods * int(round(12 / freq)))
+
+
+def generate_coupon_schedule(
+    issue_date: date,
+    maturity_date: date,
+    frequency: int,
+    day_count: str = "act365",
+    business_day_convention: BusinessDayConvention = "following",
+    holidays: set[date] | None = None,
+) -> list[CouponPeriod]:
+    """Generate regular coupon periods backward from maturity."""
+    if frequency <= 0:
+        raise ValueError("frequency must be positive")
+    if maturity_date <= issue_date:
+        raise ValueError("maturity_date must be after issue_date")
+    months = int(round(12 / frequency))
+    if months <= 0 or 12 % frequency != 0:
+        raise ValueError("frequency must divide 12 for date-based schedules")
+
+    dates = [maturity_date]
+    cursor = maturity_date
+    while True:
+        previous = _add_months(cursor, -months)
+        if previous <= issue_date:
+            dates.append(issue_date)
+            break
+        dates.append(previous)
+        cursor = previous
+    dates = sorted(set(dates))
+    periods = []
+    for start, end in zip(dates[:-1], dates[1:]):
+        periods.append(
+            CouponPeriod(
+                start_date=start,
+                end_date=end,
+                payment_date=adjust_business_day(end, business_day_convention, holidays),
+                accrual_factor=year_fraction(start, end, day_count),
+            )
+        )
+    return periods
+
+
+def _active_coupon_period(periods: list[CouponPeriod], settlement_date: date) -> CouponPeriod:
+    for period in periods:
+        if period.start_date <= settlement_date < period.end_date:
+            return period
+        if settlement_date == period.end_date:
+            continue
+    if settlement_date < periods[0].start_date:
+        return periods[0]
+    if settlement_date == periods[-1].end_date:
+        return periods[-1]
+    raise ValueError("settlement_date must be before or on maturity_date")
+
+
+def _price_cashflows(cashflows: list[tuple[float, float]], curve: YieldCurve) -> float:
+    return sum(amount * curve.discount(t) for t, amount in cashflows)
 
 
 # ─────────────────────────────────────────────────────────
@@ -39,37 +172,107 @@ def zcb(T: float, curve: YieldCurve, face: float = 100.0) -> dict:
 # ─────────────────────────────────────────────────────────
 
 def fixed_bond(face: float, coupon: float, T: float, freq: int,
-               curve: YieldCurve) -> dict:
+               curve: YieldCurve, settlement_date: date | None = None,
+               maturity_date: date | None = None,
+               issue_date: date | None = None,
+               valuation_date: date | None = None,
+               settlement_days: int = 0,
+               day_count: str = "act365",
+               business_day_convention: BusinessDayConvention = "following",
+               holidays: set[date] | None = None) -> dict:
     """
     Price fixed-rate bond.
     coupon: annual coupon rate (e.g. 0.05 = 5%).
     freq:   coupons per year.
     """
-    dt      = 1.0 / freq
-    periods = int(round(T * freq))
-    cf_times = [i * dt for i in range(1, periods + 1)]
-    coupons  = [face * coupon / freq] * periods
-    coupons[-1] += face  # add principal at maturity
+    if freq <= 0:
+        raise ValueError("freq must be positive")
 
-    price = sum(c * curve.discount(t) for c, t in zip(coupons, cf_times))
+    schedule = []
+    accrued_interest = 0.0
+    clean_price = None
+    previous_coupon_date = None
+    next_coupon_date = None
+
+    if settlement_date is None and valuation_date is not None:
+        settlement_date = settlement_from_valuation(
+            valuation_date, settlement_days, business_day_convention, holidays
+        )
+
+    if settlement_date is not None:
+        maturity_date = maturity_date or _maturity_from_years(settlement_date, T, freq)
+        issue_date = issue_date or _add_months(maturity_date, -int(round(T * 12)))
+        periods = generate_coupon_schedule(
+            issue_date,
+            maturity_date,
+            freq,
+            day_count,
+            business_day_convention,
+            holidays,
+        )
+        active_period = _active_coupon_period(periods, settlement_date)
+        previous_coupon_date = active_period.start_date
+        next_coupon_date = active_period.end_date
+        elapsed_factor = 0.0
+        if settlement_date != active_period.end_date:
+            elapsed_factor = year_fraction(active_period.start_date, settlement_date, day_count)
+        period_factor = active_period.accrual_factor
+        coupon_amount = face * coupon / freq
+        accrued_interest = coupon_amount * elapsed_factor / period_factor if period_factor > 0 else 0.0
+
+        cf_times = []
+        coupons = []
+        for period in periods:
+            if period.payment_date <= settlement_date:
+                continue
+            t = year_fraction(settlement_date, period.payment_date, day_count)
+            amount = coupon_amount
+            if period.end_date == maturity_date:
+                amount += face
+            cf_times.append(t)
+            coupons.append(amount)
+            schedule.append(
+                {
+                    "start_date": period.start_date,
+                    "end_date": period.end_date,
+                    "payment_date": period.payment_date,
+                    "time": t,
+                    "accrual_factor": period.accrual_factor,
+                    "cash_flow": amount,
+                }
+            )
+    else:
+        dt = 1.0 / freq
+        periods = int(round(T * freq))
+        cf_times = [i * dt for i in range(1, periods + 1)]
+        coupons = [face * coupon / freq] * periods
+        coupons[-1] += face
+
+    price = _price_cashflows(list(zip(cf_times, coupons)), curve)
+    clean_price = price - accrued_interest
 
     # macaulay duration
     pv_t = sum(c * curve.discount(t) * t for c, t in zip(coupons, cf_times))
-    mac_dur = pv_t / price
+    mac_dur = pv_t / price if price else 0.0
 
     # modified duration
-    r_T = curve.rate(T)
+    maturity_time = max(cf_times) if cf_times else T
+    r_T = curve.rate(maturity_time)
     mod_dur = mac_dur / (1 + r_T / freq)
 
     # convexity
-    conv = sum(c * curve.discount(t) * t**2 for c, t in zip(coupons, cf_times)) / price
+    conv = sum(c * curve.discount(t) * t**2 for c, t in zip(coupons, cf_times)) / price if price else 0.0
 
-    dv01 = price * mod_dur / 10000
+    shifted_up = curve.parallel_shift(1.0)
+    shifted_down = curve.parallel_shift(-1.0)
+    price_up = _price_cashflows(list(zip(cf_times, coupons)), shifted_up)
+    price_down = _price_cashflows(list(zip(cf_times, coupons)), shifted_down)
+    dv01 = (price_down - price_up) / 2.0
 
     # YTM (flat yield)
     def ytm_eq(y):
-        return sum(c * np.exp(-y*t) for c, t in zip(coupons, cf_times)) - price
-    ytm = brentq(ytm_eq, -0.1, 0.5)
+        return sum(c / (1 + y / freq) ** (freq * t) for c, t in zip(coupons, cf_times)) - price
+    ytm = brentq(ytm_eq, -0.99 * freq, 1.0)
 
     # z-spread
     def zspread_eq(z):
@@ -80,10 +283,20 @@ def fixed_bond(face: float, coupon: float, T: float, freq: int,
     except Exception:
         zspread = np.nan
 
-    return dict(price=price, ytm=ytm, zspread=zspread,
+    return dict(price=price, dirty_price=price, clean_price=clean_price,
+                accrued_interest=accrued_interest,
+                settlement_date=settlement_date,
+                maturity_date=maturity_date,
+                issue_date=issue_date,
+                previous_coupon_date=previous_coupon_date,
+                next_coupon_date=next_coupon_date,
+                day_count=day_count,
+                business_day_convention=business_day_convention,
+                ytm=ytm, zspread=zspread,
                 mac_duration=mac_dur, mod_duration=mod_dur,
                 convexity=conv, dv01=dv01,
-                cash_flows=list(zip(cf_times, coupons)))
+                cash_flows=list(zip(cf_times, coupons)),
+                cashflow_schedule=schedule)
 
 
 # ─────────────────────────────────────────────────────────

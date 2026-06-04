@@ -141,8 +141,21 @@ MODEL_REGISTRY: dict[str, dict] = {
         "name": "Fixed-Rate Bond",
         "status": ModelStatus.APPROXIMATION,
         "domain": "Pricing",
-        "tests": [],
-        "notes": "No settlement date / day count / accrued interest. Schedule from T*freq. DV01 via duration.",
+        "tests": [
+            "day_count_act365f",
+            "day_count_act360",
+            "day_count_30360",
+            "coupon_schedule_regular",
+            "clean_dirty_accrued_consistency",
+            "flat_curve_bond_baseline",
+        ],
+        "notes": (
+            "Regular fixed-rate bond engine with ACT/365F, ACT/360, 30/360, "
+            "business-day adjustment, settlement handling, accrued interest, clean/dirty price, "
+            "duration, convexity, and finite-difference DV01. Limitations: no external holiday "
+            "calendar source, no irregular stub policy, no ex-coupon logic, no amortization, "
+            "no callable/putable features, and no inflation-linked bond mechanics."
+        ),
     },
     "frn": {
         "name": "Floating Rate Note",

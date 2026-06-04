@@ -1,6 +1,7 @@
 """Calculation result contracts."""
 
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from domain.risk_factors import RiskFactorExposure
@@ -24,7 +25,7 @@ class PricingResult:
 
 @dataclass(frozen=True)
 class BondPricingRequest:
-    """Service-level request for the legacy fixed-rate bond engine."""
+    """Service-level request for fixed-rate bond pricing."""
 
     face: float
     coupon: float
@@ -32,11 +33,18 @@ class BondPricingRequest:
     frequency: int
     curve_id: str = "flat_rub"
     currency: str = "RUB"
+    valuation_date: date | None = None
+    settlement_date: date | None = None
+    settlement_days: int = 0
+    issue_date: date | None = None
+    maturity_date: date | None = None
+    day_count: str = "act365"
+    business_day_convention: str = "following"
 
 
 @dataclass(frozen=True)
 class BondPricingResult:
-    """Structured fixed-income result with explicit approximation metadata."""
+    """Structured fixed-income result with clean/dirty price separation."""
 
     value: float | None
     dirty_price: float | None
@@ -45,6 +53,11 @@ class BondPricingResult:
     currency: str
     model_id: str
     model_status: str
+    settlement_date: date | None = None
+    previous_coupon_date: date | None = None
+    next_coupon_date: date | None = None
+    day_count: str = "act365"
+    business_day_convention: str = "following"
     market_data_snapshot_id: str = ""
     market_data_source: str = ""
     market_data_quality: str = ""
