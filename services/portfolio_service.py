@@ -329,6 +329,84 @@ class PortfolioService:
             pos.model_status = "Manual"
             self._add_exposure(pos, "Equity", "future_underlying", pos.delta, "Delta", 1.0, factor_id="equity.spot")
 
+        elif inst == "digital":
+            res = self.pricing.price_digital_option(
+                p["S"], p["K"], p["T"], p["r"], p["sigma"], p.get("q", 0),
+                p.get("opt", "call"), p.get("style", "cash"), p.get("cash", 1.0))
+            if res["errors"]:
+                raise ValueError("; ".join(res["errors"]))
+            raw = res["raw"] or {}
+            self._attach_service_metadata(pos, res)
+            pos.price = res["value"]
+            pos.market_value = pos.price * qt
+            pos.delta = raw.get("delta", 0.0) * qt
+            pos.gamma = raw.get("gamma", 0.0) * qt
+            pos.vega = raw.get("vega", 0.0) * qt
+            self._add_exposure(pos, "Equity", "spot", pos.delta, "Delta", 1.0, factor_id="equity.spot")
+            self._add_exposure(pos, "Equity", "spot_gamma", pos.gamma, "Gamma", 1.0, factor_id="equity.spot_gamma")
+            self._add_exposure(pos, "Volatility", "implied_vol", pos.vega, "Vega", 0.01, factor_id="vol.implied")
+
+        elif inst in ("barrier", "asian", "lookback", "spread", "basket", "autocall"):
+            # Engines return price only (or MC) -> sensitivities via finite difference.
+            base, S0, vol0 = self._equity_exotic_pricer(inst, p)
+            res = base(S0, vol0)
+            if res["errors"]:
+                raise ValueError("; ".join(res["errors"]))
+            self._attach_service_metadata(pos, res)
+            p0, delta, gamma, vega = self._fd_equity_greeks(lambda S, v: base(S, v)["value"], S0, vol0)
+            pos.price = p0
+            pos.market_value = p0 * qt
+            pos.delta = delta * qt
+            pos.gamma = gamma * qt
+            pos.vega = vega * qt
+            self._add_exposure(pos, "Equity", "spot", pos.delta, "Delta", 1.0, factor_id="equity.spot")
+            self._add_exposure(pos, "Equity", "spot_gamma", pos.gamma, "Gamma", 1.0, factor_id="equity.spot_gamma")
+            self._add_exposure(pos, "Volatility", "implied_vol", pos.vega, "Vega", 0.01, factor_id="vol.implied")
+
+    def _equity_exotic_pricer(self, inst: str, p: dict):
+        """Return (value_fn(S, sigma) -> governed result, base_spot, base_vol) for an exotic."""
+        if inst == "barrier":
+            return (lambda S, v: self.pricing.price_barrier_option(
+                S, p["K"], p["H"], p["T"], p["r"], v, p.get("q", 0),
+                p.get("opt", "call"), p.get("barrier_type", "down-out"))), p["S"], p["sigma"]
+        if inst == "asian":
+            return (lambda S, v: self.pricing.price_asian_option(
+                S, p["K"], p["T"], p["r"], v, p.get("q", 0), p.get("opt", "call"),
+                p.get("averaging", "arithmetic"), p.get("n", 12),
+                p.get("n_sims", 20_000))), p["S"], p["sigma"]
+        if inst == "lookback":
+            return (lambda S, v: self.pricing.price_lookback_option(
+                S, p["T"], p["r"], v, p.get("q", 0), p.get("opt", "call"),
+                p.get("strike_type", "floating"), p.get("K"))), p["S"], p["sigma"]
+        if inst == "spread":
+            return (lambda S, v: self.pricing.price_spread_option(
+                S, p["S2"], p["K"], p["T"], p["r"], v, p["sigma2"], p["rho"],
+                p.get("q1", 0), p.get("q2", 0))), p["S1"], p["sigma1"]
+        if inst == "basket":
+            return (lambda S, v: self.pricing.price_basket_option(
+                [S] + list(p["assets"][1:]), p["weights"], p["K"], p["T"], p["r"],
+                [v] + list(p["sigmas"][1:]), p["corr"], p.get("opt", "call"))), \
+                p["assets"][0], p["sigmas"][0]
+        # autocall / phoenix
+        return (lambda S, v: self.pricing.price_autocall_phoenix(
+            S, p["r"], p.get("q", 0), v, p["T"], p["obs_dates"], p["autocall_barrier"],
+            p["coupon_barrier"], p["ki_barrier"], p["coupon_rate"],
+            p.get("memory_coupon", True), p.get("n_sims", 20_000),
+            p.get("steps", 100))), p["S0"], p["sigma"]
+
+    @staticmethod
+    def _fd_equity_greeks(value_fn, S: float, sigma: float):
+        """Central-difference (price, delta, gamma, vega-per-1%) for an equity pricer."""
+        dS = max(abs(S) * 0.01, 1e-4)
+        dV = 0.01
+        p0 = value_fn(S, sigma)
+        pu, pd = value_fn(S + dS, sigma), value_fn(S - dS, sigma)
+        vu, vd = value_fn(S, sigma + dV), value_fn(S, sigma - dV)
+        delta = (pu - pd) / (2 * dS)
+        gamma = (pu - 2 * p0 + pd) / (dS * dS)
+        vega = (vu - vd) / (2 * dV) * 0.01
+        return p0, delta, gamma, vega
+
     def _attach_service_metadata(self, pos: Position, result: dict):
         pos.model_id = result.get("model_id", "")
         pos.model_status = result.get("model_status", "")
