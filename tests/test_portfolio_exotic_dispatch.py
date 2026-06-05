@@ -150,3 +150,13 @@ def test_repo_in_portfolio_funding_dv01():
     pos = _priced(pf, _pos("repo", {"spot": 1000, "repo_rate": 0.10, "T": 0.25,
                                     "coupon_income": 0.0, "direction": "repo"}))
     assert pos.dv01 != 0 and any(e.factor_id == "rates.repo" for e in pos.exposures)
+
+
+def test_futures_in_portfolio():
+    pf = PortfolioService("T")
+    pf.add(_pos("bond_future", {"clean_price": 98, "accrued": 1.0, "conversion_factor": 0.9,
+                                "coupon_income": 0.0, "ctd_dv01": 0.08, "futures_price": 108,
+                                "repo_rate": 0.08, "T_delivery": 0.25, "target_bpv": 1000}))
+    pf.add(_pos("stir_future", {"forward_rate": 0.10, "notional": 1_000_000, "tenor": 0.25}))
+    pf.value()
+    assert all(p.dv01 != 0 for p in pf.positions)

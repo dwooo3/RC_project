@@ -158,6 +158,20 @@ MODEL_REGISTRY: dict[str, dict] = {
             "no callable/putable features, and no inflation-linked bond mechanics."
         ),
     },
+    "bond_future": {
+        "name": "Bond Future (CTD)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": [],
+        "notes": "Cheapest-to-deliver via min net basis; theoretical futures, invoice, futures DV01, hedge ratio. Conversion factors supplied externally.",
+    },
+    "stir_future": {
+        "name": "STIR Future",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": [],
+        "notes": "Price = 100 - rate; linear DV01 on notional and tenor.",
+    },
     "repo": {
         "name": "Repo / Reverse Repo",
         "status": ModelStatus.APPROXIMATION,

@@ -293,6 +293,24 @@ class PricingService:
             inputs={"face": face, "spread": spread, "T": T, "freq": freq, "curve_id": curve_id},
             snapshot=snapshot, user_action="Price FRN")
 
+    def price_bond_future(self, deliverables, futures_price, repo_rate, T_delivery,
+                          target_bpv=None, snapshot=None) -> dict:
+        from instruments.fixed_income import bond_future
+        return self._priced(
+            model_id="bond_future", calculation_type="bond_future_pricing",
+            engine=lambda: bond_future(deliverables, futures_price, repo_rate, T_delivery, target_bpv),
+            inputs={"deliverables": deliverables, "futures_price": futures_price,
+                    "repo_rate": repo_rate, "T_delivery": T_delivery, "target_bpv": target_bpv},
+            snapshot=snapshot, user_action="Price bond future")
+
+    def price_stir_future(self, forward_rate, notional=1_000_000, tenor=0.25, snapshot=None) -> dict:
+        from instruments.fixed_income import stir_future
+        return self._priced(
+            model_id="stir_future", calculation_type="stir_future_pricing",
+            engine=lambda: stir_future(forward_rate, notional, tenor),
+            inputs={"forward_rate": forward_rate, "notional": notional, "tenor": tenor},
+            snapshot=snapshot, user_action="Price STIR future")
+
     def price_repo(self, spot, repo_rate, T, coupon_income=0.0, direction="repo",
                    snapshot=None) -> dict:
         from instruments.fixed_income import repo

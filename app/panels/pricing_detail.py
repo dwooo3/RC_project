@@ -27,6 +27,11 @@ _GREEK_KEYS = [
     ("indexed_principal", "Indexed Prin"), ("inflation_dv01", "Infl DV01"),
     ("forward_price", "Forward"), ("carry", "Carry"), ("funding_dv01", "Funding DV01"),
     ("financing_cost", "Financing"), ("repo_rate", "Repo Rate"),
+    ("theoretical_futures", "Theo Futures"), ("invoice_price", "Invoice"),
+    ("net_basis", "Net Basis"), ("gross_basis", "Gross Basis"),
+    ("implied_repo", "Implied Repo"), ("futures_dv01", "Futures DV01"),
+    ("hedge_ratio", "Hedge Ratio"), ("conversion_factor", "Conv Factor"),
+    ("implied_rate", "Implied Rate"),
     ("fair_spread", "Fair spread"), ("npv", "NPV"), ("delta_S", "Delta"), ("annuity", "Annuity"),
 ]
 

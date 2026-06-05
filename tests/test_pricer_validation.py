@@ -218,3 +218,36 @@ def test_reverse_repo_flips_carry_sign(s):
     rp = s.price_repo(1000, 0.10, 0.25, 0.0, "repo")["raw"]["carry"]
     rev = s.price_repo(1000, 0.10, 0.25, 0.0, "reverse")["raw"]["carry"]
     assert rev == pytest.approx(-rp)
+
+
+# ── FI-5: interest rate futures ──────────────────────────
+def test_bond_future_ctd_and_invoice(s):
+    deliv = [{"name": "B1", "clean_price": 98, "accrued": 1.0, "conversion_factor": 0.9,
+              "coupon_income": 0.0, "dv01": 0.08}]
+    res = s.price_bond_future(deliv, futures_price=108, repo_rate=0.08, T_delivery=0.25,
+                              target_bpv=1000)
+    raw = res["raw"]
+    assert raw["ctd"] == "B1"
+    assert raw["invoice_price"] == pytest.approx(108 * 0.9 + 1.0)
+    assert raw["futures_dv01"] == pytest.approx(0.08 / 0.9)
+    assert raw["hedge_ratio"] == pytest.approx(1000 / (0.08 / 0.9))
+
+
+def test_bond_future_picks_min_net_basis(s):
+    deliv = [
+        {"name": "cheap", "clean_price": 95, "accrued": 0, "conversion_factor": 0.95,
+         "coupon_income": 0, "dv01": 0.07},
+        {"name": "rich", "clean_price": 99, "accrued": 0, "conversion_factor": 0.92,
+         "coupon_income": 0, "dv01": 0.08},
+    ]
+    res = s.price_bond_future(deliv, 103, 0.05, 0.25)
+    assert res["raw"]["ctd"] in ("cheap", "rich")
+    # CTD must have the minimum net basis in the basket
+    nb = {a["name"]: a["net_basis"] for a in res["raw"]["analysis"]}
+    assert res["raw"]["net_basis"] == pytest.approx(min(nb.values()))
+
+
+def test_stir_future_price_and_dv01(s):
+    res = s.price_stir_future(0.10, 1_000_000, 0.25)
+    assert res["value"] == pytest.approx(90.0)        # 100 - 10
+    assert res["raw"]["dv01"] == pytest.approx(25.0)  # 1e6*0.25*1bp

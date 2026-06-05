@@ -405,6 +405,52 @@ def fra(notional: float, K: float, T1: float, T2: float, curve: YieldCurve) -> d
 
 
 # ─────────────────────────────────────────────────────────
+# Interest rate futures (FI-5)
+# ─────────────────────────────────────────────────────────
+
+def bond_future(deliverables: list, futures_price: float, repo_rate: float,
+                T_delivery: float, target_bpv: float | None = None) -> dict:
+    """
+    Bond future with cheapest-to-deliver (CTD) analysis.
+    deliverables: [{name, clean_price, accrued, conversion_factor, coupon_income, dv01}].
+    Returns CTD, theoretical futures, invoice, net/gross basis, implied repo,
+    futures DV01 and (optional) hedge ratio for a target BPV.
+    """
+    analysis = []
+    for b in deliverables:
+        cf = b["conversion_factor"]
+        full = b["clean_price"] + b.get("accrued", 0.0)
+        fwd = full * (1 + repo_rate * T_delivery) - b.get("coupon_income", 0.0)
+        gross_basis = b["clean_price"] - futures_price * cf
+        net_basis = fwd - futures_price * cf
+        invoice = futures_price * cf + b.get("accrued", 0.0)
+        implied_repo = (((futures_price * cf + b.get("coupon_income", 0.0)) / full - 1) / T_delivery
+                        if full > 0 and T_delivery > 0 else 0.0)
+        analysis.append({**b, "forward_price": fwd, "gross_basis": gross_basis,
+                         "net_basis": net_basis, "invoice_price": invoice,
+                         "implied_repo": implied_repo})
+    ctd = min(analysis, key=lambda a: a["net_basis"])     # min net basis = max implied repo
+    cf = ctd["conversion_factor"]
+    theo = ctd["forward_price"] / cf if cf else 0.0
+    futures_dv01 = ctd.get("dv01", 0.0) / cf if cf else 0.0
+    hedge_ratio = (target_bpv / futures_dv01) if (target_bpv and futures_dv01) else None
+    return dict(price=theo, theoretical_futures=theo, futures_price=futures_price,
+                ctd=ctd.get("name", "CTD"), conversion_factor=cf,
+                invoice_price=ctd["invoice_price"], net_basis=ctd["net_basis"],
+                gross_basis=ctd["gross_basis"], implied_repo=ctd["implied_repo"],
+                futures_dv01=futures_dv01, hedge_ratio=hedge_ratio, analysis=analysis)
+
+
+def stir_future(forward_rate: float, notional: float = 1_000_000,
+                tenor: float = 0.25) -> dict:
+    """Short-term interest-rate future: price = 100*(1-rate); DV01 = N*tenor*1bp."""
+    price = 100.0 * (1 - forward_rate)
+    dv01 = notional * tenor * 0.0001
+    return dict(price=price, futures_price=price, implied_rate=forward_rate,
+                dv01=dv01, pv01=dv01, bpv=dv01, notional=notional, tenor=tenor)
+
+
+# ─────────────────────────────────────────────────────────
 # Repo / reverse repo (FI-4)
 # ─────────────────────────────────────────────────────────
 

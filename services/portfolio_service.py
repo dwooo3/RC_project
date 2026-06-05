@@ -266,6 +266,35 @@ class PortfolioService:
                 self._add_exposure(pos, "Rates", f"kr_{tenor:g}y", kr_dv01, "Key Rate DV01",
                                    0.0001, factor_id=f"rates.kr_{tenor:g}")
 
+        elif inst == "bond_future":
+            deliverables = [{"name": "CTD", "clean_price": p["clean_price"],
+                             "accrued": p.get("accrued", 0.0),
+                             "conversion_factor": p["conversion_factor"],
+                             "coupon_income": p.get("coupon_income", 0.0),
+                             "dv01": p.get("ctd_dv01", 0.0)}]
+            res = self.pricing.price_bond_future(deliverables, p["futures_price"],
+                                                 p["repo_rate"], p["T_delivery"], p.get("target_bpv"))
+            if res["errors"]:
+                raise ValueError("; ".join(res["errors"]))
+            raw = res["raw"] or {}
+            self._attach_service_metadata(pos, res)
+            pos.price = raw.get("theoretical_futures", res["value"])
+            pos.dv01 = raw.get("futures_dv01", 0.0) * qt
+            pos.market_value = pos.price * qt
+            self._add_exposure(pos, "Rates", "yield_curve", pos.dv01, "DV01", 0.0001, factor_id="rates.yield_curve")
+
+        elif inst == "stir_future":
+            res = self.pricing.price_stir_future(p["forward_rate"], p.get("notional", 1_000_000),
+                                                 p.get("tenor", 0.25))
+            if res["errors"]:
+                raise ValueError("; ".join(res["errors"]))
+            raw = res["raw"] or {}
+            self._attach_service_metadata(pos, res)
+            pos.price = res["value"]
+            pos.market_value = pos.price * qt
+            pos.dv01 = raw.get("dv01", 0.0) * qt
+            self._add_exposure(pos, "Rates", "yield_curve", pos.dv01, "DV01", 0.0001, factor_id="rates.yield_curve")
+
         elif inst == "repo":
             res = self.pricing.price_repo(p["spot"], p["repo_rate"], p["T"],
                                           p.get("coupon_income", 0.0), p.get("direction", "repo"))
