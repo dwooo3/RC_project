@@ -206,6 +206,74 @@ class PricingService:
                 inputs={"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q, "opt": opt, "model": model},
             )
 
+    def _priced(self, *, model_id, calculation_type, engine, inputs, snapshot,
+                user_action, value_key="price", warnings=None):
+        """Uniform governed wrapper: enforce -> call engine -> structured result."""
+        try:
+            self._enforce_model(model_id)
+            raw = engine()
+            value = raw.get(value_key) if isinstance(raw, dict) else raw
+            return self._result(value=value, model_id=model_id, raw=raw, snapshot=snapshot,
+                                calculation_type=calculation_type, inputs=inputs,
+                                user_action=user_action, warnings=warnings)
+        except Exception as exc:
+            return self._error_result(model_id=model_id, error=exc, snapshot=snapshot,
+                                      calculation_type=calculation_type, inputs=inputs)
+
+    # ── Equity exotics ────────────────────────────────────────────────
+    def price_barrier_option(self, S, K, H, T, r, sigma, q=0.0, opt="call",
+                             barrier_type="down-out", rebate=0.0, snapshot=None) -> dict:
+        """Single-barrier European option (closed form)."""
+        from instruments.barrier import single_barrier
+        return self._priced(
+            model_id="barrier", calculation_type="barrier_option_pricing",
+            engine=lambda: single_barrier(S, K, H, T, r, sigma, q, opt, barrier_type, rebate),
+            inputs={"S": S, "K": K, "H": H, "T": T, "r": r, "sigma": sigma, "q": q,
+                    "opt": opt, "barrier_type": barrier_type, "rebate": rebate},
+            snapshot=snapshot, user_action="Price barrier option")
+
+    def price_asian_option(self, S, K, T, r, sigma, q=0.0, opt="call",
+                           averaging="arithmetic", n=12, n_sims=50_000, snapshot=None) -> dict:
+        """Asian option (arithmetic via MC+control variate, or geometric closed form)."""
+        from instruments.asian import arithmetic_asian, geometric_asian_discrete
+        if averaging == "geometric":
+            engine = lambda: geometric_asian_discrete(S, K, T, r, sigma, q, n, opt)
+        else:
+            engine = lambda: arithmetic_asian(S, K, T, r, sigma, q, n, opt, n_sims)
+        return self._priced(
+            model_id="asian", calculation_type="asian_option_pricing", engine=engine,
+            inputs={"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q, "opt": opt,
+                    "averaging": averaging, "n": n},
+            snapshot=snapshot, user_action="Price asian option")
+
+    def price_digital_option(self, S, K, T, r, sigma, q=0.0, opt="call",
+                             style="cash", cash=1.0, snapshot=None) -> dict:
+        """Digital option: cash-or-nothing or asset-or-nothing."""
+        from instruments.digital import asset_or_nothing, cash_or_nothing
+        if style == "asset":
+            engine = lambda: asset_or_nothing(S, K, T, r, sigma, q, opt)
+        else:
+            engine = lambda: cash_or_nothing(S, K, T, r, sigma, q, opt, cash)
+        return self._priced(
+            model_id="digital", calculation_type="digital_option_pricing", engine=engine,
+            inputs={"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q, "opt": opt,
+                    "style": style, "cash": cash},
+            snapshot=snapshot, user_action="Price digital option")
+
+    def price_lookback_option(self, S, T, r, sigma, q=0.0, opt="call",
+                              strike_type="floating", K=None, snapshot=None) -> dict:
+        """Lookback option: floating- or fixed-strike (closed form)."""
+        from instruments.lookback import fixed_lookback, floating_lookback
+        if strike_type == "fixed":
+            engine = lambda: fixed_lookback(S, K, T, r, sigma, q, opt)
+        else:
+            engine = lambda: floating_lookback(S, T, r, sigma, q, opt)
+        return self._priced(
+            model_id="lookback", calculation_type="lookback_option_pricing", engine=engine,
+            inputs={"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q, "opt": opt,
+                    "strike_type": strike_type},
+            snapshot=snapshot, user_action="Price lookback option")
+
     def price_bond(
         self,
         face: float | BondPricingRequest,
