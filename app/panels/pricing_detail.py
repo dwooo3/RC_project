@@ -22,6 +22,9 @@ _GREEK_KEYS = [
     ("clean_price", "Clean"), ("dirty_price", "Dirty"), ("accrued_interest", "Accrued"),
     ("z_spread", "Z-Spread"), ("zspread", "Z-Spread"), ("g_spread", "G-Spread"),
     ("i_spread", "I-Spread"), ("discount_margin", "Disc Margin"), ("spread_dv01", "Spread DV01"),
+    ("discount_yield", "Disc Yield"), ("money_market_yield", "MM Yield"), ("bey", "BEY"),
+    ("maturity_value", "Maturity Val"), ("real_yield", "Real Yield"),
+    ("indexed_principal", "Indexed Prin"), ("inflation_dv01", "Infl DV01"),
     ("fair_spread", "Fair spread"), ("npv", "NPV"), ("delta_S", "Delta"), ("annuity", "Annuity"),
 ]
 

@@ -180,3 +180,25 @@ def test_inflation_linked_indexation_and_inflation_dv01(s):
     assert raw["indexed_principal"] == pytest.approx(1100.0)   # face*110/100
     assert "inflation_dv01" in raw and "real_yield" in raw
     assert res["value"] > 0
+
+
+# ── FI-3: money market ───────────────────────────────────
+def test_deposit_npv_and_dv01(s):
+    res = s.price_deposit(1_000_000, 0.10, 0.25, curve=s.market_data.flat_curve(0.10))
+    assert res["value"] > 0
+    assert res["raw"]["dv01"] > 0 and res["raw"]["maturity_value"] > 1_000_000
+
+
+def test_treasury_bill_discount_and_bey(s):
+    res = s.price_treasury_bill(1000, 0.09, 0.25)
+    raw = res["raw"]
+    assert res["value"] == pytest.approx(1000 * (1 - 0.09 * 0.25))
+    assert raw["discount_yield"] == pytest.approx(0.09)
+    assert raw["bey"] > raw["discount_yield"]          # BEY > discount yield
+    assert raw["money_market_yield"] > 0
+
+
+def test_commercial_paper_price_below_face(s):
+    res = s.price_commercial_paper(1000, 0.11, 0.25)
+    assert 0 < res["value"] < 1000
+    assert res["raw"]["money_market_yield"] > 0

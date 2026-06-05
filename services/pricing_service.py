@@ -293,6 +293,32 @@ class PricingService:
             inputs={"face": face, "spread": spread, "T": T, "freq": freq, "curve_id": curve_id},
             snapshot=snapshot, user_action="Price FRN")
 
+    def price_deposit(self, notional, rate, T, curve=None, snapshot=None,
+                      curve_id="flat_rub") -> dict:
+        from instruments.fixed_income import mm_deposit
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="mm_deposit", calculation_type="deposit_pricing", value_key="npv",
+            engine=lambda: mm_deposit(notional, rate, T, curve),
+            inputs={"notional": notional, "rate": rate, "T": T, "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price deposit")
+
+    def price_treasury_bill(self, face, discount_rate, T, snapshot=None) -> dict:
+        from instruments.fixed_income import treasury_bill
+        return self._priced(
+            model_id="treasury_bill", calculation_type="treasury_bill_pricing",
+            engine=lambda: treasury_bill(face, discount_rate, T),
+            inputs={"face": face, "discount_rate": discount_rate, "T": T},
+            snapshot=snapshot, user_action="Price treasury bill")
+
+    def price_commercial_paper(self, face, discount_rate, T, snapshot=None) -> dict:
+        from instruments.fixed_income import commercial_paper
+        return self._priced(
+            model_id="commercial_paper", calculation_type="commercial_paper_pricing",
+            engine=lambda: commercial_paper(face, discount_rate, T),
+            inputs={"face": face, "discount_rate": discount_rate, "T": T},
+            snapshot=snapshot, user_action="Price commercial paper")
+
     def price_amortizing_bond(self, face, coupon, T, freq, amort_type="linear",
                               curve=None, snapshot=None, curve_id="flat_rub") -> dict:
         from instruments.fixed_income import amortizing_bond

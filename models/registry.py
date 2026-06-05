@@ -158,6 +158,27 @@ MODEL_REGISTRY: dict[str, dict] = {
             "no callable/putable features, and no inflation-linked bond mechanics."
         ),
     },
+    "mm_deposit": {
+        "name": "Money Market Deposit",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": [],
+        "notes": "Simple-interest term deposit; PV on the discount curve.",
+    },
+    "treasury_bill": {
+        "name": "Treasury Bill",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": [],
+        "notes": "Discount instrument; discount yield, money-market yield, bond-equivalent yield.",
+    },
+    "commercial_paper": {
+        "name": "Commercial Paper",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": [],
+        "notes": "Discount instrument; discount yield and money-market yield.",
+    },
     "amortizing_bond": {
         "name": "Amortizing Bond",
         "status": ModelStatus.APPROXIMATION,

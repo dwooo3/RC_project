@@ -266,6 +266,17 @@ class PortfolioService:
                 self._add_exposure(pos, "Rates", f"kr_{tenor:g}y", kr_dv01, "Key Rate DV01",
                                    0.0001, factor_id=f"rates.kr_{tenor:g}")
 
+        elif inst in ("deposit", "treasury_bill", "commercial_paper"):
+            res = self._price_mm(inst, p)
+            if res["errors"]:
+                raise ValueError("; ".join(res["errors"]))
+            raw = res["raw"] or {}
+            self._attach_service_metadata(pos, res)
+            pos.price = res["value"]
+            pos.market_value = pos.price * qt
+            pos.dv01 = raw.get("dv01", 0.0) * qt
+            self._add_exposure(pos, "Rates", "yield_curve", pos.dv01, "DV01", 0.0001, factor_id="rates.yield_curve")
+
         elif inst in ("amortizing", "step_bond", "perpetual", "inflation_linked"):
             res = self._price_fi_bond(inst, p)
             if res["errors"]:
@@ -450,6 +461,16 @@ class PortfolioService:
                 v, opt, curve=curve)["value"], p["sigma"]) * qt
             self._add_exposure(pos, "Rates", "swap_curve", pos.dv01, "DV01", 0.0001, factor_id="rates.swap_curve")
             self._add_exposure(pos, "Volatility", "rate_vol", pos.vega, "Vega", 0.01, factor_id="vol.rate")
+
+    def _price_mm(self, inst: str, p: dict) -> dict:
+        """Route a money-market position to its PricingService method."""
+        md = self.pricing
+        if inst == "deposit":
+            curve = p.get("curve") or self.market_data.flat_curve(p["r"])
+            return md.price_deposit(p["notional"], p["rate"], p["T"], curve=curve)
+        if inst == "treasury_bill":
+            return md.price_treasury_bill(p["face"], p["discount_rate"], p["T"])
+        return md.price_commercial_paper(p["face"], p["discount_rate"], p["T"])
 
     def _price_fi_bond(self, inst: str, p: dict) -> dict:
         """Route a bond-family position to its PricingService method (curve from r)."""

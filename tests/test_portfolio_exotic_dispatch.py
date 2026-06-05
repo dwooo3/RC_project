@@ -133,3 +133,13 @@ def test_fi2_bonds_in_portfolio_with_key_rate():
     amo = pf.positions[0]
     assert amo.price > 0 and any(e.unit == "Key Rate DV01" for e in amo.exposures)
     assert all(p.dv01 != 0 for p in pf.positions)
+
+
+def test_money_market_in_portfolio():
+    pf = PortfolioService("T")
+    pf.add(_pos("deposit", {"notional": 1_000_000, "rate": 0.10, "T": 0.25, "r": 0.10}))
+    pf.add(_pos("treasury_bill", {"face": 1000, "discount_rate": 0.09, "T": 0.25}))
+    pf.add(_pos("commercial_paper", {"face": 1000, "discount_rate": 0.11, "T": 0.25}))
+    pf.value()
+    assert all(p.price > 0 for p in pf.positions)
+    assert all(any(e.unit == "DV01" for e in p.exposures) for p in pf.positions)

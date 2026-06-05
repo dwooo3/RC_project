@@ -405,6 +405,44 @@ def fra(notional: float, K: float, T1: float, T2: float, curve: YieldCurve) -> d
 
 
 # ─────────────────────────────────────────────────────────
+# Money market (FI-3): deposit, commercial paper, treasury bill
+# ─────────────────────────────────────────────────────────
+
+def mm_deposit(notional: float, rate: float, T: float, curve: YieldCurve) -> dict:
+    """Term money-market deposit: simple interest to maturity, PV on the curve."""
+    maturity_value = notional * (1 + rate * T)
+    disc = curve.discount(T)
+    npv = maturity_value * disc
+    dv01 = maturity_value * T * disc / 10000
+    return dict(npv=npv, price=npv, clean_price=npv, dirty_price=npv,
+                accrued_interest=0.0, maturity_value=maturity_value, yield_=rate,
+                dv01=dv01, pv01=dv01, bpv=dv01)
+
+
+def treasury_bill(face: float, discount_rate: float, T: float,
+                  curve: YieldCurve | None = None) -> dict:
+    """Discount T-bill: price on discount basis; discount yield, MM yield, BEY."""
+    price = face * (1 - discount_rate * T)
+    mmy = (face - price) / price / T if price > 0 and T > 0 else 0.0   # money-market yield
+    bey = (face / price - 1) / T if price > 0 and T > 0 else 0.0        # bond-equivalent (act/365)
+    dv01 = face * T / 10000
+    return dict(price=price, clean_price=price, dirty_price=price, accrued_interest=0.0,
+                discount_yield=discount_rate, money_market_yield=mmy, bey=bey, yield_=bey,
+                dv01=dv01, pv01=dv01, bpv=dv01)
+
+
+def commercial_paper(face: float, discount_rate: float, T: float,
+                     curve: YieldCurve | None = None) -> dict:
+    """Discount commercial paper: price, discount yield, money-market yield."""
+    price = face * (1 - discount_rate * T)
+    mmy = (face - price) / price / T if price > 0 and T > 0 else 0.0
+    dv01 = face * T / 10000
+    return dict(price=price, clean_price=price, dirty_price=price, accrued_interest=0.0,
+                discount_yield=discount_rate, money_market_yield=mmy, yield_=mmy,
+                dv01=dv01, pv01=dv01, bpv=dv01)
+
+
+# ─────────────────────────────────────────────────────────
 # Bond family (FI-2): shared metric builder + new structures
 # ─────────────────────────────────────────────────────────
 
