@@ -179,6 +179,13 @@ MODEL_REGISTRY: dict[str, dict] = {
         "tests": [],
         "notes": "Black-76. No vol surface by tenor/strike. T1=0 caplet degenerates.",
     },
+    "swaption": {
+        "name": "European Swaption (Black-76)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": [],
+        "notes": "Black-76 on the forward swap rate. Single-curve; no swaption vol cube; no smile.",
+    },
     "short_rate": {
         "name": "Short Rate Models (Hull-White / Vasicek / CIR)",
         "status": ModelStatus.PROTOTYPE,

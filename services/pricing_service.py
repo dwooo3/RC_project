@@ -274,6 +274,106 @@ class PricingService:
                     "strike_type": strike_type},
             snapshot=snapshot, user_action="Price lookback option")
 
+    def _resolve_curve(self, curve, snapshot, curve_id):
+        """Resolve a pricing curve from an explicit curve or a market snapshot."""
+        if curve is not None:
+            return curve, snapshot
+        snapshot = snapshot or self.market_data.demo_snapshot()
+        return self.market_data.get_curve(curve_id, snapshot), snapshot
+
+    # ── Rates (curve-based) ───────────────────────────────────────────
+    def price_frn(self, face, spread, T, freq, curve=None, snapshot=None,
+                  curve_id="flat_rub") -> dict:
+        """Floating-rate note through the FRN engine (curve from snapshot if not given)."""
+        from instruments.fixed_income import frn
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="frn", calculation_type="frn_pricing",
+            engine=lambda: frn(face, spread, T, freq, curve),
+            inputs={"face": face, "spread": spread, "T": T, "freq": freq, "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price FRN")
+
+    def price_cap_floor(self, notional, K, T, freq, vol, opt="cap", curve=None,
+                        snapshot=None, curve_id="flat_rub") -> dict:
+        """Cap/Floor as a strip of Black-76 caplets/floorlets."""
+        from instruments.fixed_income import cap_floor
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="capfloor", calculation_type="cap_floor_pricing",
+            engine=lambda: cap_floor(notional, K, T, freq, curve, vol, opt),
+            inputs={"notional": notional, "K": K, "T": T, "freq": freq, "vol": vol,
+                    "opt": opt, "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price cap/floor")
+
+    def price_swaption(self, notional, K, T_option, T_swap, freq, sigma, opt="payer",
+                       curve=None, snapshot=None, curve_id="flat_rub") -> dict:
+        """European swaption via Black-76 on the forward swap rate."""
+        from instruments.fixed_income import swaption
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="swaption", calculation_type="swaption_pricing",
+            engine=lambda: swaption(notional, K, T_option, T_swap, freq, curve, sigma, opt),
+            inputs={"notional": notional, "K": K, "T_option": T_option, "T_swap": T_swap,
+                    "freq": freq, "sigma": sigma, "opt": opt, "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price swaption")
+
+    # ── Credit ────────────────────────────────────────────────────────
+    def price_cds(self, notional, spread, T, freq, hazard, r, recovery=0.4,
+                  buy_protection=True, snapshot=None) -> dict:
+        """Credit default swap NPV / fair spread."""
+        from instruments.credit import cds
+        return self._priced(
+            model_id="cds", calculation_type="cds_pricing", value_key="npv",
+            engine=lambda: cds(notional, spread, T, freq, hazard, r, recovery, buy_protection),
+            inputs={"notional": notional, "spread": spread, "T": T, "freq": freq,
+                    "hazard": hazard, "r": r, "recovery": recovery,
+                    "buy_protection": buy_protection},
+            snapshot=snapshot, user_action="Price CDS")
+
+    # ── Multi-asset ───────────────────────────────────────────────────
+    def price_spread_option(self, S1, S2, K, T, r, sigma1, sigma2, rho,
+                            q1=0.0, q2=0.0, snapshot=None) -> dict:
+        """Spread option via the Kirk approximation."""
+        from instruments.multi_asset import spread_option_kirk
+        return self._priced(
+            model_id="multi_asset", calculation_type="spread_option_pricing",
+            engine=lambda: spread_option_kirk(S1, S2, K, T, r, sigma1, sigma2, rho, q1, q2),
+            inputs={"S1": S1, "S2": S2, "K": K, "T": T, "r": r, "sigma1": sigma1,
+                    "sigma2": sigma2, "rho": rho, "q1": q1, "q2": q2},
+            snapshot=snapshot, user_action="Price spread option")
+
+    def price_basket_option(self, assets, weights, K, T, r, sigmas, corr,
+                            opt="call", snapshot=None) -> dict:
+        """Basket option via Monte Carlo (correlation matrix)."""
+        import numpy as np
+        from instruments.multi_asset import basket_option
+        corr_matrix = np.array(corr, dtype=float)
+        return self._priced(
+            model_id="multi_asset", calculation_type="basket_option_pricing",
+            engine=lambda: basket_option(list(assets), list(weights), K, T, r,
+                                         list(sigmas), corr_matrix, opt=opt),
+            inputs={"assets": list(assets), "weights": list(weights), "K": K, "T": T,
+                    "r": r, "sigmas": list(sigmas), "opt": opt},
+            snapshot=snapshot, user_action="Price basket option")
+
+    # ── Structured ────────────────────────────────────────────────────
+    def price_autocall_phoenix(self, S0, r, q, sigma, T, obs_dates, autocall_barrier,
+                               coupon_barrier, ki_barrier, coupon_rate,
+                               memory_coupon=True, n_sims=50_000, steps=252,
+                               snapshot=None) -> dict:
+        """Phoenix / autocallable structured note via Monte Carlo."""
+        from instruments.structured.phoenix import phoenix
+        return self._priced(
+            model_id="structured_autocall", calculation_type="autocall_phoenix_pricing",
+            engine=lambda: phoenix(S0, r, q, sigma, T, list(obs_dates), autocall_barrier,
+                                   coupon_barrier, ki_barrier, coupon_rate,
+                                   memory_coupon=memory_coupon, n_sims=n_sims, steps=steps),
+            inputs={"S0": S0, "r": r, "q": q, "sigma": sigma, "T": T,
+                    "obs_dates": list(obs_dates), "autocall_barrier": autocall_barrier,
+                    "coupon_barrier": coupon_barrier, "ki_barrier": ki_barrier,
+                    "coupon_rate": coupon_rate, "memory_coupon": memory_coupon},
+            snapshot=snapshot, user_action="Price autocall/phoenix note")
+
     def price_bond(
         self,
         face: float | BondPricingRequest,
