@@ -5,6 +5,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from PySide6.QtWidgets import QTabWidget
 
+from app.panels.session import shared_portfolio
 from domain.portfolio import Position
 from services.portfolio_service import PortfolioService
 from ui.components import DataSourceChip, DenseTable, KpiStrip, StatusChip, WarningBanner, WorkstationPanel, make_action
@@ -15,7 +16,9 @@ class PortfolioPanel(WorkstationWorkspace):
     """Institutional portfolio workstation using PortfolioService as the UI boundary."""
 
     def __init__(self, parent=None):
-        self.portfolio_service = PortfolioService("Main Portfolio")
+        # Shared session portfolio: instruments priced and added on the Pricing
+        # tab appear here. Demo seed only when the portfolio is still empty.
+        self.portfolio_service = shared_portfolio()
         self._seed_demo_portfolio()
         self.valuation = self.portfolio_service.value()
         self.aggregate = self.portfolio_service.aggregate()

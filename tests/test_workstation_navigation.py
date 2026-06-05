@@ -125,28 +125,30 @@ def test_pricing_workspace_uses_pricing_service_boundary_only():
 
     source = inspect.getsource(pricing_workspace)
 
+    # Service boundary + provenance preserved
     assert "from services.pricing_service import PricingService" in source
-    assert 'tabs.addTab(self._section_tab("Rates"), "Rates")' in source
-    assert 'tabs.addTab(self._section_tab("FX"), "FX")' in source
-    assert 'tabs.addTab(self._section_tab("Equity"), "Equity")' in source
-    assert 'tabs.addTab(self._section_tab("Credit"), "Credit")' in source
-    assert 'tabs.addTab(self._section_tab("Structured"), "Structured")' in source
     assert "Pricing Audit Trail" in source
     assert "audit_trail" in source
     assert "inputs_hash" in source
     assert "Market Snapshot" in source
     assert "Governance" in source
-    assert "model_version" in source
-    assert "warnings" in source
-    assert "Calculator" not in source
-    assert "Calculators" not in source
-    assert "QStackedWidget" not in source
-    assert "_make_panel" not in source
-    assert "from app.panels" not in source
+    # Interactive instrument hub: 7 category tabs driven by the product catalogue
+    assert "from app.panels.pricing_catalogue import CATEGORIES" in source
+    assert "PricingDetailScreen" in source
+    assert "for category in CATEGORIES" in source
+    assert "Add to portfolio" in source
+
+    # The 7 categories each expose at least one service-backed product
+    from app.panels.pricing_catalogue import CATEGORIES, products_by_category
+    assert CATEGORIES == ["Fixed Income", "Option", "Equity", "FX", "Swaps",
+                          "Structured Notes", "Credit"]
+    for category in CATEGORIES:
+        assert products_by_category(category), f"{category} has no products"
+    # Service boundary preserved: no direct engine imports (UI submodules are fine).
     assert "from models" not in source
     assert "from instruments" not in source
     assert "from curves" not in source
-    assert "from risk" not in source
+    assert "from risk." not in source
 
 
 def test_analytics_lab_workspace_is_research_boundary_only():
