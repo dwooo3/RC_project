@@ -524,6 +524,7 @@ class PricingService:
         curve=None,
         snapshot: MarketDataSnapshot | None = None,
         curve_id: str = "flat_rub",
+        day_count: str | None = None,
     ) -> dict:
         """Price a fixed-rate bond through the existing fixed income engine."""
         from instruments.fixed_income import fixed_bond
@@ -532,6 +533,7 @@ class PricingService:
         try:
             self._enforce_model("fixed_bond")
             request = self._bond_request(face, coupon, T, freq, curve_id)
+            effective_day_count = day_count or request.day_count
             warnings = list(_BOND_APPROXIMATION_WARNINGS)
             if curve is None:
                 resolved_snapshot = resolved_snapshot or self.market_data.demo_snapshot()
@@ -551,7 +553,7 @@ class PricingService:
                 issue_date=request.issue_date,
                 valuation_date=request.valuation_date,
                 settlement_days=request.settlement_days,
-                day_count=request.day_count,
+                day_count=effective_day_count,
                 business_day_convention=request.business_day_convention,
             )
             result = self._result(

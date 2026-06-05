@@ -60,9 +60,10 @@ PRODUCTS: list[Product] = [
     # ── Fixed Income ──────────────────────────────────────
     Product("bond", "Bond / OFZ", "Fixed Income",
             [F("face", "Face", 1000), F("coupon", "Coupon", 0.07), F("T", "Maturity (y)", 10),
-             F("freq", "Freq/y", 2), F("r", "Flat rate", 0.12)],
+             F("freq", "Freq/y", 2), F("r", "Flat rate", 0.12),
+             F("day_count", "Day count", "act365", _DC)],
             lambda s, v: s.price_bond(v["face"], v["coupon"], v["T"], int(v["freq"]),
-                                      curve=s.market_data.flat_curve(v["r"])),
+                                      curve=s.market_data.flat_curve(v["r"]), day_count=v["day_count"]),
             lambda v: ("bond", dict(face=v["face"], coupon=v["coupon"], T=v["T"],
                                     freq=int(v["freq"]), r=v["r"]), "Bond / OFZ")),
     Product("zcb", "Zero-Coupon Bond", "Fixed Income",

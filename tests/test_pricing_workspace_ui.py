@@ -57,3 +57,32 @@ def test_add_to_portfolio_creates_priced_position_with_greeks(app):
     assert pos.instrument == "barrier"
     assert pos.model_id == "barrier"            # governance provenance carried over
     assert pos.delta != 0 and pos.vega != 0     # sensitivities computed
+
+
+def test_detail_screen_shows_cashflow_schedule(app):
+    from app.panels.pricing_catalogue import PRODUCTS
+    from app.panels.pricing_detail import PricingDetailScreen
+    from services.pricing_service import PricingService
+    svc = PricingService()
+    bond = next(p for p in PRODUCTS if p.id == "bond")
+    scr = PricingDetailScreen(bond, svc)
+    scr.calculate()
+    assert not scr._cf_table.isHidden()       # schedule shown for a coupon bond
+    assert scr._cf_table.rowCount() > 0
+
+
+def test_day_count_selectable_on_bond(app):
+    from app.panels.pricing_catalogue import PRODUCTS
+    bond = next(p for p in PRODUCTS if p.id == "bond")
+    keys = {f.key for f in bond.fields}
+    assert "day_count" in keys
+
+
+def test_custom_bond_manual_schedule_prices(app):
+    from app.panels.pricing_catalogue import PRODUCTS
+    from app.panels.pricing_detail import PricingDetailScreen
+    from services.pricing_service import PricingService
+    cb = next(p for p in PRODUCTS if p.id == "custom_bond")
+    scr = PricingDetailScreen(cb, PricingService())
+    scr.calculate()
+    assert scr._last_result["value"] > 0
