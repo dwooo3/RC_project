@@ -186,6 +186,13 @@ MODEL_REGISTRY: dict[str, dict] = {
         "tests": [],
         "notes": "Black-76 on the forward swap rate. Single-curve; no swaption vol cube; no smile.",
     },
+    "fra": {
+        "name": "Forward Rate Agreement",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": [],
+        "notes": "Simple forward rate from the discount curve. Single-curve; no convexity adjustment.",
+    },
     "short_rate": {
         "name": "Short Rate Models (Hull-White / Vasicek / CIR)",
         "status": ModelStatus.PROTOTYPE,

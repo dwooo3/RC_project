@@ -293,6 +293,17 @@ class PricingService:
             inputs={"face": face, "spread": spread, "T": T, "freq": freq, "curve_id": curve_id},
             snapshot=snapshot, user_action="Price FRN")
 
+    def price_fra(self, notional, K, T1, T2, curve=None, snapshot=None,
+                  curve_id="flat_rub") -> dict:
+        """Forward Rate Agreement NPV from the discount curve."""
+        from instruments.fixed_income import fra
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="fra", calculation_type="fra_pricing", value_key="npv",
+            engine=lambda: fra(notional, K, T1, T2, curve),
+            inputs={"notional": notional, "K": K, "T1": T1, "T2": T2, "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price FRA")
+
     def price_cap_floor(self, notional, K, T, freq, vol, opt="cap", curve=None,
                         snapshot=None, curve_id="flat_rub") -> dict:
         """Cap/Floor as a strip of Black-76 caplets/floorlets."""

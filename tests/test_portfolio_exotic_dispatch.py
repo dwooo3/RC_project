@@ -106,3 +106,9 @@ def test_swaption_position_dv01_and_vega():
     assert pos.model_id == "swaption"
     units = {e.unit for e in pos.exposures}
     assert "DV01" in units and "Vega" in units
+
+
+def test_fra_position_dv01():
+    pf = PortfolioService("T")
+    pos = _priced(pf, _pos("fra", {"notional": 1_000_000, "K": 0.10, "T1": 1, "T2": 1.5, "r": 0.10}))
+    assert any(e.unit == "DV01" for e in pos.exposures)

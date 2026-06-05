@@ -132,3 +132,20 @@ def test_autocall_finite_bounded(s):
                                    n_sims=5000, steps=50)
     v = res["value"]
     assert v is not None and math.isfinite(v) and 0 < v < 300
+
+
+# ── Fixed Income expansion: ZCB + FRA ────────────────────
+def test_zero_coupon_bond_equals_discounted_face(s):
+    import math as _m
+    r, T, face = 0.10, 5.0, 1000.0
+    res = s.price_bond(face, 0.0, T, 1, curve=s.market_data.flat_curve(r))
+    assert res["value"] == pytest.approx(face * _m.exp(-r * T), rel=1e-6)
+
+
+def test_fra_zero_at_fair_and_sign(s):
+    curve = s.market_data.flat_curve(0.10)
+    fair = s.price_fra(1_000_000, 0.10, 1, 1.5, curve=curve)["raw"]["forward_rate"]
+    at_fair = s.price_fra(1_000_000, fair, 1, 1.5, curve=curve)["value"]
+    assert abs(at_fair) < 1.0                       # NPV ~ 0 at the fair forward
+    # pay-fixed below fair -> positive NPV (receive higher floating)
+    assert s.price_fra(1_000_000, fair - 0.01, 1, 1.5, curve=curve)["value"] > 0

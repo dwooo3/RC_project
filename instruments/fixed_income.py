@@ -352,6 +352,19 @@ def frn(face: float, spread: float, T: float, freq: int, curve: YieldCurve) -> d
     return dict(price=price, spread_pv=spread_pv, dv01=dv01, duration=dt, annuity=annuity)
 
 
+def fra(notional: float, K: float, T1: float, T2: float, curve: YieldCurve) -> dict:
+    """
+    Forward Rate Agreement: pay fixed K, receive the simple forward rate set at
+    T1 for the accrual period [T1, T2], settled (PV) at T2.
+    """
+    tau = T2 - T1
+    df1, df2 = curve.discount(T1), curve.discount(T2)
+    fwd = (df1 / df2 - 1.0) / tau if tau > 0 else 0.0   # simple-compounded forward
+    npv = notional * (fwd - K) * tau * df2
+    dv01 = notional * tau * df2 / 10000
+    return dict(npv=npv, forward_rate=fwd, dv01=dv01, tau=tau)
+
+
 # ─────────────────────────────────────────────────────────
 # Interest rate swap (IRS)
 # ─────────────────────────────────────────────────────────

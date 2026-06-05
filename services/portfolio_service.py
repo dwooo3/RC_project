@@ -376,6 +376,19 @@ class PortfolioService:
                 curve=self.market_data.flat_curve(r))["value"], p["r"]) * qt / p["face"]
             self._add_exposure(pos, "Rates", "swap_curve", pos.dv01, "DV01", 0.0001, factor_id="rates.swap_curve")
 
+        elif inst == "fra":
+            curve = p.get("curve") or self.market_data.flat_curve(p["r"])
+            res = self.pricing.price_fra(p["notional"], p["K"], p["T1"], p["T2"], curve=curve)
+            if res["errors"]:
+                raise ValueError("; ".join(res["errors"]))
+            self._attach_service_metadata(pos, res)
+            pos.price = res["value"]
+            pos.market_value = pos.price * qt
+            pos.dv01 = self._fd_rates_dv01(lambda r: self.pricing.price_fra(
+                p["notional"], p["K"], p["T1"], p["T2"],
+                curve=self.market_data.flat_curve(r))["value"], p["r"]) * qt
+            self._add_exposure(pos, "Rates", "swap_curve", pos.dv01, "DV01", 0.0001, factor_id="rates.swap_curve")
+
         elif inst in ("cap", "floor", "cap_floor"):
             curve = p.get("curve") or self.market_data.flat_curve(p["r"])
             opt = p.get("opt", "cap")
