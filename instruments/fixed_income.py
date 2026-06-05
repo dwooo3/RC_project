@@ -849,8 +849,10 @@ def swaption(notional: float, K: float, T_option: float,
     disc_T  = curve.discount(T_option + T_swap)
     S0      = (disc0 - disc_T) / annuity
 
-    r_eff   = -np.log(curve.discount(T_option)) / T_option if T_option > 0 else 0
-    g       = black76(S0, K, T_option, r_eff, sigma,
+    # Black-76 with r=0: the annuity is the numeraire and carries ALL discounting,
+    # so the option must be the *undiscounted* forward value (else double-discounting
+    # by disc(T_option) breaks payer-receiver parity). Cf. the caplet fix.
+    g       = black76(S0, K, T_option, 0.0, sigma,
                       "call" if opt=="payer" else "put")
     price   = notional * annuity * g.price
     delta_S = notional * annuity * g.delta
