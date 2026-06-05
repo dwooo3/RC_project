@@ -73,37 +73,24 @@ def single_barrier(S: float, K: float, H: float, T: float, r: float, sigma: floa
     F  = rebate*((H/S)**(mu+lam)*norm.cdf(eta*z)
                 +(H/S)**(mu-lam)*norm.cdf(eta*(z-2*lam*sv)))
 
-    # out-of-money / in-the-money cases
+    # Reiner-Rubinstein KNOCK-OUT value; knock-in is taken via in-out parity below
+    # (computing the in-leg with a different formula AND subtracting broke parity).
     if "down" in barrier_type:
         if opt == "call":
-            if K >= H:
-                out_val = (A - C + F) if "out" in barrier_type else (B - D + F)
-            else:
-                out_val = (A - B + C - D + F) if "out" in barrier_type else B - C + D + F
+            out_val = (A - C + F) if K >= H else (A - B + C - D + F)
         else:
-            if K >= H:
-                out_val = (B - C + D + F) if "out" in barrier_type else (A - B + C - D + F)
-            else:
-                out_val = (A + F) if "out" in barrier_type else C + F
+            out_val = (B - C + D + F) if K >= H else (A + F)
     else:  # up
         if opt == "call":
-            if K >= H:
-                out_val = (B - D + F) if "out" in barrier_type else (A - C + F)
-            else:
-                out_val = F if "out" in barrier_type else A - B + C - D + F
+            out_val = (B - D + F) if K >= H else F
         else:
-            if K >= H:
-                out_val = (A - B + C - D + F) if "out" in barrier_type else B - C + D + F
-            else:
-                out_val = (A - C + F) if "out" in barrier_type else C + F  # simplified
+            out_val = (A - B + C - D + F) if K >= H else (A - C + F)
 
-    # knock-in + knock-out = vanilla
+    # knock-in + knock-out = vanilla (exact parity, no rebate double count)
     from models.black_scholes import bsm
     vanilla = bsm(S, K, T, r, sigma, q, opt).price
-    if "out" in barrier_type:
-        price = max(out_val, 0)
-    else:
-        price = max(vanilla - max(out_val, 0), 0)
+    out_val = max(out_val, 0)
+    price = out_val if "out" in barrier_type else max(vanilla - out_val, 0)
 
     return dict(price=price, barrier=H, barrier_type=barrier_type,
                 vanilla=vanilla, rebate=rebate)

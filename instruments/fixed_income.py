@@ -342,10 +342,14 @@ def frn(face: float, spread: float, T: float, freq: int, curve: YieldCurve) -> d
     dt      = 1.0 / freq
     periods = int(round(T * freq))
     spread_pv = sum(face * spread / freq * curve.discount(i*dt) for i in range(1, periods+1))
-    principal_pv = face * curve.discount(T)
-    price = principal_pv + spread_pv
-    dv01  = price * T / 10000 * 0.1  # approximate (low duration)
-    return dict(price=price, spread_pv=spread_pv, dv01=dv01, duration=0.5/freq)
+    # Par-reset identity: the floating leg (index coupons + redemption) replicates
+    # a par bond, so at a reset date its PV is the face. Adding the fixed spread
+    # coupons gives FRN = face + spread_pv. (Previously only face*disc(T) was used,
+    # omitting the floating coupon PVs, which underpriced the note towards a ZCB.)
+    price = face + spread_pv
+    annuity = sum(dt * curve.discount(i*dt) for i in range(1, periods+1))
+    dv01  = face * dt * curve.discount(dt) / 10000  # next-reset rate sensitivity
+    return dict(price=price, spread_pv=spread_pv, dv01=dv01, duration=dt, annuity=annuity)
 
 
 # ─────────────────────────────────────────────────────────

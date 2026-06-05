@@ -125,18 +125,12 @@ def test_pricing_workspace_uses_pricing_service_boundary_only():
 
     source = inspect.getsource(pricing_workspace)
 
-    # Service boundary + provenance preserved
+    # Service boundary preserved (provenance shown per result in the detail screen)
     assert "from services.pricing_service import PricingService" in source
-    assert "Pricing Audit Trail" in source
-    assert "audit_trail" in source
-    assert "inputs_hash" in source
-    assert "Market Snapshot" in source
-    assert "Governance" in source
     # Interactive instrument hub: 7 category tabs driven by the product catalogue
     assert "from app.panels.pricing_catalogue import CATEGORIES" in source
     assert "PricingDetailScreen" in source
     assert "for category in CATEGORIES" in source
-    assert "Add to portfolio" in source
 
     # The 7 categories each expose at least one service-backed product
     from app.panels.pricing_catalogue import CATEGORIES, products_by_category

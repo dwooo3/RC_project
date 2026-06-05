@@ -16,7 +16,7 @@ from app.panels.pricing_catalogue import CATEGORIES, products_by_category
 from app.panels.pricing_detail import PricingDetailScreen
 from services.market_data_service import MarketDataService
 from services.pricing_service import PricingService
-from ui.components import DataSourceChip, DenseTable, KpiStrip, StatusChip, WorkstationPanel
+from ui.components import DataSourceChip
 from ui.layouts import WorkstationWorkspace
 from ui.theme import PALETTE
 
@@ -28,27 +28,9 @@ class PricingWorkspace(WorkstationWorkspace):
         super().__init__(
             "Pricing",
             "Value any instrument, view sensitivities, add it to the portfolio",
-            chips=[DataSourceChip("DEMO"), StatusChip("Approximation", text="GOVERNED")],
-            kpi_strip=self._kpi_strip(),
+            chips=[DataSourceChip("DEMO")],
             center=self._category_tabs(),
-            right=self._governance_panel(),
-            bottom=self._audit_trail_panel(),
-            context_items=[
-                ("Service", "PricingService boundary"),
-                ("Market Snapshot", "via MarketDataService"),
-                ("Governance", "model status + warnings per result"),
-                ("Portfolio", "Add to portfolio with sensitivities"),
-            ],
         )
-
-    def _kpi_strip(self):
-        total = sum(len(products_by_category(c)) for c in CATEGORIES)
-        return KpiStrip([
-            ("Categories", str(len(CATEGORIES)), "instrument groups"),
-            ("Products", str(total), "service-backed pricers"),
-            ("Boundary", "PricingService", "no direct engine calls"),
-            ("Provenance", "Audit", "snapshot + model + hash"),
-        ])
 
     def _category_tabs(self):
         tabs = QTabWidget()
@@ -80,35 +62,3 @@ class PricingWorkspace(WorkstationWorkspace):
         lay.addWidget(nav)
         lay.addWidget(stack, 1)
         return page
-
-    def _governance_panel(self) -> QWidget:
-        panel = WorkstationPanel("Governance")
-        panel.layout.addWidget(DenseTable(
-            ["Guardrail", "State"],
-            [
-                ["Pricing boundary", "PricingService only"],
-                ["Market data", "Snapshot via MarketDataService"],
-                ["Model status", "Shown per result"],
-                ["Prototype models", "Warned, not blocked"],
-                ["Reproducibility", "snapshot_id + inputs_hash"],
-            ],
-        ))
-        return panel
-
-    def _audit_trail_panel(self) -> QWidget:
-        panel = WorkstationPanel("Pricing Audit Trail")
-        try:
-            trail = self.pricing.audit.audit_trail()
-        except Exception:
-            trail = []
-        rows = [
-            [
-                str(r.get("calculation_type", "")),
-                str(r.get("model_id", "")),
-                str(r.get("inputs_hash", ""))[:12],
-                str(r.get("record_id", ""))[:12],
-            ]
-            for r in trail[-12:]
-        ]
-        panel.layout.addWidget(DenseTable(["Type", "Model", "Inputs hash", "Audit id"], rows))
-        return panel
