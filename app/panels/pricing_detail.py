@@ -15,9 +15,14 @@ from ui.theme import PALETTE
 
 _GREEK_KEYS = [
     ("delta", "Delta"), ("gamma", "Gamma"), ("vega", "Vega"), ("theta", "Theta"),
-    ("rho", "Rho"), ("dv01", "DV01"), ("cs01", "CS01"), ("duration", "Duration"),
-    ("mod_duration", "Mod Duration"), ("ytm", "YTM"), ("fair_spread", "Fair spread"),
-    ("npv", "NPV"), ("delta_S", "Delta"), ("annuity", "Annuity"),
+    ("rho", "Rho"), ("dv01", "DV01"), ("pv01", "PV01"), ("cs01", "CS01"),
+    ("mac_duration", "Mac Duration"), ("mod_duration", "Mod Duration"),
+    ("effective_duration", "Eff Duration"), ("convexity", "Convexity"),
+    ("ytm", "YTM"), ("ytc", "YTC"), ("ytp", "YTP"), ("ytw", "YTW"),
+    ("clean_price", "Clean"), ("dirty_price", "Dirty"), ("accrued_interest", "Accrued"),
+    ("z_spread", "Z-Spread"), ("zspread", "Z-Spread"), ("g_spread", "G-Spread"),
+    ("i_spread", "I-Spread"), ("discount_margin", "Disc Margin"), ("spread_dv01", "Spread DV01"),
+    ("fair_spread", "Fair spread"), ("npv", "NPV"), ("delta_S", "Delta"), ("annuity", "Annuity"),
 ]
 
 

@@ -259,6 +259,12 @@ class PortfolioService:
             pos.dv01 = raw.get("dv01", 0.0) * qt / p["face"]
             pos.delta = raw.get("mod_duration", 0.0) * pos.market_value / 100
             self._add_exposure(pos, "Rates", "yield_curve", pos.dv01, "DV01", 0.0001, factor_id="rates.yield_curve")
+            # bucketed key-rate DV01 (distinct unit -> does not double-count the headline DV01)
+            dirty = raw.get("dirty_price") or raw.get("price") or 0.0
+            for tenor, krd in (raw.get("key_rate_durations") or {}).items():
+                kr_dv01 = krd * dirty * 1e-4 * qt / p["face"]
+                self._add_exposure(pos, "Rates", f"kr_{tenor:g}y", kr_dv01, "Key Rate DV01",
+                                   0.0001, factor_id=f"rates.kr_{tenor:g}")
 
         elif inst == "cds":
             from instruments.credit import cds, cds_implied_hazard

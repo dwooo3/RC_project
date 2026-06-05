@@ -112,3 +112,12 @@ def test_fra_position_dv01():
     pf = PortfolioService("T")
     pos = _priced(pf, _pos("fra", {"notional": 1_000_000, "K": 0.10, "T1": 1, "T2": 1.5, "r": 0.10}))
     assert any(e.unit == "DV01" for e in pos.exposures)
+
+
+def test_bond_position_has_key_rate_exposures():
+    pf = PortfolioService("T")
+    pos = _priced(pf, _pos("bond", {"face": 1000, "coupon": 0.07, "T": 10, "freq": 2, "r": 0.10}))
+    kr = [e for e in pos.exposures if e.unit == "Key Rate DV01"]
+    assert len(kr) >= 3
+    headline = next(e for e in pos.exposures if e.unit == "DV01")
+    assert sum(e.sensitivity for e in kr) == pytest.approx(headline.sensitivity, rel=0.1)

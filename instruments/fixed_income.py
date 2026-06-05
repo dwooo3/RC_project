@@ -158,13 +158,22 @@ def _price_cashflows(cashflows: list[tuple[float, float]], curve: YieldCurve) ->
 # ─────────────────────────────────────────────────────────
 
 def zcb(T: float, curve: YieldCurve, face: float = 100.0) -> dict:
-    """Zero-coupon bond price, duration, convexity."""
+    """Zero-coupon bond — unified §6 metrics."""
+    from instruments.fixed_income_analytics import (
+        effective_duration_convexity, key_rate_durations,
+    )
     r     = curve.rate(T)
     price = face * curve.discount(T)
-    dur   = T
-    conv  = T**2
     dv01  = price * T / 10000
-    return dict(price=price, duration=dur, convexity=conv, dv01=dv01, ytm=r)
+    cfs   = [(T, face)]
+    reprice = lambda sh: face * curve.parallel_shift(sh * 1e4).discount(T)
+    eff_dur, eff_cvx = effective_duration_convexity(reprice, price)
+    krd = key_rate_durations(cfs, curve, price, _price_cashflows)
+    return dict(price=price, clean_price=price, dirty_price=price,
+                accrued_interest=0.0, ytm=r, yield_=r,
+                duration=T, mac_duration=T, mod_duration=T,
+                effective_duration=eff_dur, convexity=eff_cvx,
+                dv01=dv01, pv01=dv01, bpv=dv01, key_rate_durations=krd)
 
 
 # ─────────────────────────────────────────────────────────
@@ -370,8 +379,16 @@ def frn(face: float, spread: float, T: float, freq: int, curve: YieldCurve) -> d
     # omitting the floating coupon PVs, which underpriced the note towards a ZCB.)
     price = face + spread_pv
     annuity = sum(dt * curve.discount(i*dt) for i in range(1, periods+1))
-    dv01  = face * dt * curve.discount(dt) / 10000  # next-reset rate sensitivity
-    return dict(price=price, spread_pv=spread_pv, dv01=dv01, duration=dt, annuity=annuity)
+    accrued = 0.0                                    # valued at a reset date
+    clean = price - accrued
+    ir_dv01 = face * dt * curve.discount(dt) / 10000     # rate risk ~ next reset only
+    spread_dv01 = face * annuity / 10000                 # sensitivity to the quoted spread
+    discount_margin = spread                              # par discount margin under par-reset
+    return dict(price=price, clean_price=clean, dirty_price=price,
+                accrued_interest=accrued, spread_pv=spread_pv,
+                dv01=ir_dv01, ir_dv01=ir_dv01, spread_dv01=spread_dv01,
+                discount_margin=discount_margin, yield_=None,
+                duration=dt, annuity=annuity)
 
 
 def fra(notional: float, K: float, T1: float, T2: float, curve: YieldCurve) -> dict:

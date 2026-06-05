@@ -95,3 +95,21 @@ def test_fixed_bond_exposes_unified_metrics():
     assert abs(sum(res["key_rate_durations"].values()) - res["effective_duration"]) < 0.05 * res["effective_duration"]
     assert res["g_spread"] > 0          # 6% bond vs 4% govt
     assert res["ytw"] <= res["ytm"] + 1e-9
+
+
+def test_frn_unified_fields():
+    from instruments.fixed_income import frn
+    res = frn(1000, 0.01, 5, 2, _flat_curve(0.10))
+    for k in ("clean_price", "dirty_price", "accrued_interest", "discount_margin",
+              "ir_dv01", "spread_dv01"):
+        assert k in res
+    assert res["spread_dv01"] > 0
+    assert res["discount_margin"] == pytest.approx(0.01)
+
+
+def test_zcb_unified_fields():
+    from instruments.fixed_income import zcb
+    res = zcb(5.0, _flat_curve(0.05), face=100)
+    assert "effective_duration" in res and "key_rate_durations" in res
+    assert res["pv01"] == res["dv01"]
+    assert res["effective_duration"] == pytest.approx(5.0, abs=0.1)   # ZCB eff dur ~ maturity
