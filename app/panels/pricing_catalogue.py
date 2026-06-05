@@ -40,6 +40,21 @@ def F(key, label, default, choices=None):
 
 
 _OPT = ["call", "put"]
+_DC = ["act365", "act360", "30360", "actact"]
+
+
+def parse_cashflows(text) -> list:
+    """Parse a manual schedule 't:amount,t:amount' into [(t, amount), ...]."""
+    if isinstance(text, (list, tuple)):
+        return [(float(t), float(a)) for t, a in text]
+    out = []
+    for part in str(text).replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        t, a = part.split(":")
+        out.append((float(t), float(a)))
+    return out
 
 PRODUCTS: list[Product] = [
     # ── Fixed Income ──────────────────────────────────────
@@ -70,24 +85,34 @@ PRODUCTS: list[Product] = [
                                      curve=s.market_data.flat_curve(v["r"])),
             lambda v: ("frn", dict(face=v["face"], spread=v["spread"], T=v["T"],
                                    freq=int(v["freq"]), r=v["r"]), "FRN")),
+    Product("custom_bond", "Custom Cashflow Bond", "Fixed Income",
+            [F("cashflows", "Cashflows t:amt", "1:35,2:35,3:1035"), F("freq", "Freq/y", 2),
+             F("r", "Flat rate", 0.10)],
+            lambda s, v: s.price_custom_bond(parse_cashflows(v["cashflows"]), int(v["freq"]),
+                                             curve=s.market_data.flat_curve(v["r"])),
+            lambda v: ("custom_bond", dict(cashflows=parse_cashflows(v["cashflows"]),
+                                           freq=int(v["freq"]), r=v["r"]), "Custom Bond")),
     Product("amortizing", "Amortizing Bond", "Fixed Income",
             [F("face", "Face", 1000), F("coupon", "Coupon", 0.07), F("T", "Maturity (y)", 10),
              F("freq", "Freq/y", 2), F("r", "Flat rate", 0.12),
-             F("amort_type", "Amort", "linear", ["linear", "annuity"])],
+             F("amort_type", "Amort", "linear", ["linear", "annuity"]),
+             F("day_count", "Day count", "act365", _DC)],
             lambda s, v: s.price_amortizing_bond(v["face"], v["coupon"], v["T"], int(v["freq"]),
-                                                 v["amort_type"], curve=s.market_data.flat_curve(v["r"])),
+                                                 v["amort_type"], v["day_count"],
+                                                 curve=s.market_data.flat_curve(v["r"])),
             lambda v: ("amortizing", dict(face=v["face"], coupon=v["coupon"], T=v["T"],
-                                          freq=int(v["freq"]), r=v["r"], amort_type=v["amort_type"]),
-                       "Amortizing Bond")),
+                                          freq=int(v["freq"]), r=v["r"], amort_type=v["amort_type"],
+                                          day_count=v["day_count"]), "Amortizing Bond")),
     Product("step_bond", "Step-Up / Step-Down Bond", "Fixed Income",
             [F("face", "Face", 1000), F("coupon1", "Coupon 1", 0.05), F("coupon2", "Coupon 2", 0.08),
              F("switch_year", "Switch (y)", 3), F("T", "Maturity (y)", 6), F("freq", "Freq/y", 2),
-             F("r", "Flat rate", 0.10)],
+             F("r", "Flat rate", 0.10), F("day_count", "Day count", "act365", _DC)],
             lambda s, v: s.price_step_bond(v["face"], v["coupon1"], v["coupon2"], v["switch_year"],
-                                           v["T"], int(v["freq"]), curve=s.market_data.flat_curve(v["r"])),
+                                           v["T"], int(v["freq"]), v["day_count"],
+                                           curve=s.market_data.flat_curve(v["r"])),
             lambda v: ("step_bond", dict(face=v["face"], coupon1=v["coupon1"], coupon2=v["coupon2"],
                                          switch_year=v["switch_year"], T=v["T"], freq=int(v["freq"]),
-                                         r=v["r"]), "Step Bond")),
+                                         r=v["r"], day_count=v["day_count"]), "Step Bond")),
     Product("perpetual", "Perpetual / Consol", "Fixed Income",
             [F("face", "Face", 1000), F("coupon", "Coupon", 0.08), F("freq", "Freq/y", 1),
              F("r", "Flat rate", 0.09)],
@@ -98,15 +123,16 @@ PRODUCTS: list[Product] = [
     Product("inflation_linked", "Inflation-Linked Bond", "Fixed Income",
             [F("face", "Face", 1000), F("real_coupon", "Real coupon", 0.03), F("T", "Maturity (y)", 10),
              F("freq", "Freq/y", 2), F("base_cpi", "Base CPI", 100), F("current_cpi", "Curr CPI", 110),
-             F("inflation_rate", "Inflation", 0.04), F("r", "Flat rate", 0.12)],
+             F("inflation_rate", "Inflation", 0.04), F("r", "Flat rate", 0.12),
+             F("day_count", "Day count", "act365", _DC)],
             lambda s, v: s.price_inflation_linked_bond(v["face"], v["real_coupon"], v["T"], int(v["freq"]),
                                                        v["base_cpi"], v["current_cpi"], v["inflation_rate"],
-                                                       curve=s.market_data.flat_curve(v["r"])),
+                                                       v["day_count"], curve=s.market_data.flat_curve(v["r"])),
             lambda v: ("inflation_linked", dict(face=v["face"], real_coupon=v["real_coupon"], T=v["T"],
                                                 freq=int(v["freq"]), base_cpi=v["base_cpi"],
                                                 current_cpi=v["current_cpi"],
-                                                inflation_rate=v["inflation_rate"], r=v["r"]),
-                       "Inflation-Linked Bond")),
+                                                inflation_rate=v["inflation_rate"], r=v["r"],
+                                                day_count=v["day_count"]), "Inflation-Linked Bond")),
     Product("callable", "Callable Bond (OAS)", "Fixed Income",
             [F("face", "Face", 1000), F("coupon", "Coupon", 0.08), F("T", "Maturity (y)", 5),
              F("freq", "Freq/y", 2), F("sigma", "Rate vol", 0.15), F("call_price", "Call price", 1000),

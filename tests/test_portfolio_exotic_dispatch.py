@@ -170,3 +170,10 @@ def test_callable_putable_in_portfolio():
                             "put_price": 1000, "put_start": 2, "r": 0.07}))
     pf.value()
     assert all(p.price > 0 and p.dv01 != 0 for p in pf.positions)
+
+
+def test_custom_bond_in_portfolio():
+    pf = PortfolioService("T")
+    pos = _priced(pf, _pos("custom_bond", {"cashflows": [(1, 35), (2, 35), (3, 1035)],
+                                           "freq": 2, "r": 0.10}))
+    assert pos.price > 0 and pos.dv01 != 0

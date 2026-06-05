@@ -391,14 +391,18 @@ def frn(face: float, spread: float, T: float, freq: int, curve: YieldCurve) -> d
                 duration=dt, annuity=annuity)
 
 
-def fra(notional: float, K: float, T1: float, T2: float, curve: YieldCurve) -> dict:
+def fra(notional: float, K: float, T1: float, T2: float, curve: YieldCurve,
+        proj_curve: YieldCurve | None = None) -> dict:
     """
-    Forward Rate Agreement: pay fixed K, receive the simple forward rate set at
-    T1 for the accrual period [T1, T2], settled (PV) at T2.
+    Forward Rate Agreement: pay fixed K, receive the simple forward set at T1 for
+    [T1, T2], settled (PV) at T2. Dual-curve: forward from proj_curve, discount
+    from curve (proj defaults to the discount curve = single-curve).
     """
+    proj = proj_curve or curve
     tau = T2 - T1
-    df1, df2 = curve.discount(T1), curve.discount(T2)
-    fwd = (df1 / df2 - 1.0) / tau if tau > 0 else 0.0   # simple-compounded forward
+    df1p, df2p = proj.discount(T1), proj.discount(T2)
+    fwd = (df1p / df2p - 1.0) / tau if tau > 0 else 0.0   # projection-curve forward
+    df2 = curve.discount(T2)                              # discount curve
     npv = notional * (fwd - K) * tau * df2
     dv01 = notional * tau * df2 / 10000
     return dict(npv=npv, forward_rate=fwd, dv01=dv01, tau=tau)
@@ -614,13 +618,37 @@ def metrics_from_cashflows(cashflows: list, curve: YieldCurve, face: float, freq
                 cash_flows=cashflows)
 
 
+def period_accrual(freq: int, day_count: str = "act365") -> float:
+    """Per-coupon-period accrual fraction tau for a regular schedule and convention."""
+    dc = str(day_count).lower().replace("/", "").replace("_", "").replace(" ", "")
+    days = 365.0 / freq                                   # nominal regular-period length
+    if dc in ("act360", "actual360"):
+        return days / 360.0
+    if dc in ("30360", "thirty360", "bond", "30360bond"):
+        return 1.0 / freq
+    if dc in ("actact", "actualactual"):
+        return 1.0 / freq
+    # act/365(F) and default
+    return days / 365.0
+
+
+def custom_bond(cashflows: list, curve: YieldCurve, freq: int = 2) -> dict:
+    """Price an arbitrary user-supplied cashflow schedule [(t_years, amount), ...]."""
+    cfs = sorted((float(t), float(a)) for t, a in cashflows)
+    face = cfs[-1][1] if cfs else 0.0
+    res = metrics_from_cashflows(cfs, curve, face, freq)
+    res["custom"] = True
+    return res
+
+
 def amortizing_bond(face: float, coupon: float, T: float, freq: int,
-                    curve: YieldCurve, amort_type: str = "linear") -> dict:
+                    curve: YieldCurve, amort_type: str = "linear",
+                    day_count: str = "act365") -> dict:
     """Amortizing bond: principal repaid over life (linear or level-annuity)."""
     n = int(round(T * freq)); dt = 1.0 / freq
     cfs: list[tuple[float, float]] = []
     outstanding = face
-    c = coupon / freq
+    c = coupon * period_accrual(freq, day_count)
     if amort_type == "annuity" and c > 0:
         A = face * c / (1 - (1 + c) ** (-n))
         for i in range(1, n + 1):
@@ -640,9 +668,10 @@ def amortizing_bond(face: float, coupon: float, T: float, freq: int,
 
 
 def step_bond(face: float, coupon_steps: list, T: float, freq: int,
-              curve: YieldCurve) -> dict:
+              curve: YieldCurve, day_count: str = "act365") -> dict:
     """Step-up/step-down bond. coupon_steps: [(effective_from_year, annual_rate), ...]."""
     n = int(round(T * freq)); dt = 1.0 / freq
+    tau = period_accrual(freq, day_count)
     steps = sorted(coupon_steps, key=lambda s: s[0])
 
     def rate_at(t):
@@ -655,7 +684,7 @@ def step_bond(face: float, coupon_steps: list, T: float, freq: int,
     cfs = []
     for i in range(1, n + 1):
         t = i * dt
-        amt = face * rate_at(t) / freq
+        amt = face * rate_at(t) * tau
         if i == n:
             amt += face
         cfs.append((t, amt))
@@ -680,19 +709,21 @@ def perpetual_bond(face: float, coupon: float, curve: YieldCurve, freq: int = 1)
 
 def inflation_linked_bond(face: float, real_coupon: float, T: float, freq: int,
                           curve: YieldCurve, base_cpi: float = 100.0,
-                          current_cpi: float = 100.0, inflation_rate: float = 0.04) -> dict:
+                          current_cpi: float = 100.0, inflation_rate: float = 0.04,
+                          day_count: str = "act365") -> dict:
     """
     Inflation-linked bond: principal indexed to CPI (projected at inflation_rate),
     real coupons on the indexed principal, discounted on the nominal curve.
     """
     n = int(round(T * freq)); dt = 1.0 / freq
+    tau = period_accrual(freq, day_count)
     ratio0 = current_cpi / base_cpi
     cfs = []
     for i in range(1, n + 1):
         t = i * dt
         idx = ratio0 * (1 + inflation_rate) ** t
         principal_t = face * idx
-        amt = principal_t * real_coupon / freq
+        amt = principal_t * real_coupon * tau
         if i == n:
             amt += principal_t
         cfs.append((t, amt))
@@ -703,7 +734,7 @@ def inflation_linked_bond(face: float, real_coupon: float, T: float, freq: int,
         t = i * dt
         idx = ratio0 * (1 + inflation_rate + 1e-4) ** t
         principal_t = face * idx
-        amt = principal_t * real_coupon / freq
+        amt = principal_t * real_coupon * tau
         if i == n:
             amt += principal_t
         bumped.append((t, amt))
@@ -721,19 +752,22 @@ def inflation_linked_bond(face: float, real_coupon: float, T: float, freq: int,
 # ─────────────────────────────────────────────────────────
 
 def irs(notional: float, fixed_rate: float, T: float, freq: int,
-        curve: YieldCurve, pay_fixed: bool = True) -> dict:
+        curve: YieldCurve, pay_fixed: bool = True,
+        proj_curve: YieldCurve | None = None) -> dict:
     """
-    Vanilla IRS: fixed vs floating.
+    Vanilla IRS: fixed vs floating. Dual-curve: floating leg projected on
+    proj_curve, both legs discounted on curve (proj defaults to discount curve).
     Returns fair swap rate, NPV, DV01, BPV.
     """
+    proj    = proj_curve or curve
     dt      = 1.0 / freq
     periods = int(round(T * freq))
     times   = [i*dt for i in range(1, periods+1)]
 
-    # annuity (PV of fixed leg basis)
+    # annuity (PV of fixed leg basis) on the discount curve
     annuity = sum(dt * curve.discount(t) for t in times)
-    # floating leg = 1 - final discount (par FRN)
-    float_pv = curve.discount(0.001) - curve.discount(T)  # approx
+    # floating leg replicated as par FRN on the projection curve, discounted appropriately
+    float_pv = proj.discount(0.001) - proj.discount(T)  # approx
 
     fair_rate = float_pv / annuity
     fixed_pv  = fixed_rate * annuity * notional
@@ -795,18 +829,21 @@ def caplet(notional: float, K: float, T1: float, T2: float,
 
 
 def cap_floor(notional: float, K: float, T: float, freq: int,
-              curve: YieldCurve, vol_curve, opt: str = "cap") -> dict:
+              curve: YieldCurve, vol_curve, opt: str = "cap",
+              proj_curve: YieldCurve | None = None) -> dict:
     """
-    Cap/Floor as sum of caplets.
+    Cap/Floor as a strip of caplets. Dual-curve: forwards from proj_curve,
+    discounting from curve (proj defaults to the discount curve).
     vol_curve: callable(T) → vol, or constant float.
     """
+    proj  = proj_curve or curve
     dt    = 1.0 / freq
     total = 0.0
     total_delta = 0.0
     caplets = []
     for i in range(1, int(round(T*freq))+1):
         T1 = (i-1)*dt; T2 = i*dt
-        fwd  = curve.forward_rate(T1, T2)
+        fwd  = proj.forward_rate(T1, T2)
         disc = curve.discount(T2)
         sigma = vol_curve(T2) if callable(vol_curve) else vol_curve
         cl   = caplet(notional, K, T1, T2, fwd, sigma, disc, opt)

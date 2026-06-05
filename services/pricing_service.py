@@ -362,27 +362,40 @@ class PricingService:
             inputs={"face": face, "discount_rate": discount_rate, "T": T},
             snapshot=snapshot, user_action="Price commercial paper")
 
+    def price_custom_bond(self, cashflows, freq=2, curve=None, snapshot=None,
+                          curve_id="flat_rub") -> dict:
+        """Price a manual cashflow schedule [(t_years, amount), ...]."""
+        from instruments.fixed_income import custom_bond
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="custom_bond", calculation_type="custom_bond_pricing",
+            engine=lambda: custom_bond(cashflows, curve, int(freq)),
+            inputs={"cashflows": list(cashflows), "freq": int(freq), "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price custom bond")
+
     def price_amortizing_bond(self, face, coupon, T, freq, amort_type="linear",
-                              curve=None, snapshot=None, curve_id="flat_rub") -> dict:
+                              day_count="act365", curve=None, snapshot=None,
+                              curve_id="flat_rub") -> dict:
         from instruments.fixed_income import amortizing_bond
         curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
         return self._priced(
             model_id="amortizing_bond", calculation_type="amortizing_bond_pricing",
-            engine=lambda: amortizing_bond(face, coupon, T, int(freq), curve, amort_type),
+            engine=lambda: amortizing_bond(face, coupon, T, int(freq), curve, amort_type, day_count),
             inputs={"face": face, "coupon": coupon, "T": T, "freq": int(freq),
-                    "amort_type": amort_type, "curve_id": curve_id},
+                    "amort_type": amort_type, "day_count": day_count, "curve_id": curve_id},
             snapshot=snapshot, user_action="Price amortizing bond")
 
     def price_step_bond(self, face, coupon1, coupon2, switch_year, T, freq,
-                        curve=None, snapshot=None, curve_id="flat_rub") -> dict:
+                        day_count="act365", curve=None, snapshot=None, curve_id="flat_rub") -> dict:
         from instruments.fixed_income import step_bond
         curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
         steps = [(0.0, coupon1), (switch_year, coupon2)]
         return self._priced(
             model_id="step_bond", calculation_type="step_bond_pricing",
-            engine=lambda: step_bond(face, steps, T, int(freq), curve),
+            engine=lambda: step_bond(face, steps, T, int(freq), curve, day_count),
             inputs={"face": face, "coupon1": coupon1, "coupon2": coupon2,
-                    "switch_year": switch_year, "T": T, "freq": int(freq), "curve_id": curve_id},
+                    "switch_year": switch_year, "T": T, "freq": int(freq),
+                    "day_count": day_count, "curve_id": curve_id},
             snapshot=snapshot, user_action="Price step bond")
 
     def price_perpetual_bond(self, face, coupon, freq=1, curve=None, snapshot=None,
@@ -396,32 +409,33 @@ class PricingService:
             snapshot=snapshot, user_action="Price perpetual bond")
 
     def price_inflation_linked_bond(self, face, real_coupon, T, freq, base_cpi=100.0,
-                                    current_cpi=100.0, inflation_rate=0.04, curve=None,
-                                    snapshot=None, curve_id="flat_rub") -> dict:
+                                    current_cpi=100.0, inflation_rate=0.04, day_count="act365",
+                                    curve=None, snapshot=None, curve_id="flat_rub") -> dict:
         from instruments.fixed_income import inflation_linked_bond
         curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
         return self._priced(
             model_id="inflation_linked_bond", calculation_type="inflation_linked_bond_pricing",
             engine=lambda: inflation_linked_bond(face, real_coupon, T, int(freq), curve,
-                                                 base_cpi, current_cpi, inflation_rate),
+                                                 base_cpi, current_cpi, inflation_rate, day_count),
             inputs={"face": face, "real_coupon": real_coupon, "T": T, "freq": int(freq),
                     "base_cpi": base_cpi, "current_cpi": current_cpi,
                     "inflation_rate": inflation_rate, "curve_id": curve_id},
             snapshot=snapshot, user_action="Price inflation-linked bond")
 
-    def price_fra(self, notional, K, T1, T2, curve=None, snapshot=None,
+    def price_fra(self, notional, K, T1, T2, curve=None, proj_curve=None, snapshot=None,
                   curve_id="flat_rub") -> dict:
-        """Forward Rate Agreement NPV from the discount curve."""
+        """Forward Rate Agreement: forward on proj_curve, discount on the curve."""
         from instruments.fixed_income import fra
         curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
         return self._priced(
             model_id="fra", calculation_type="fra_pricing", value_key="npv",
-            engine=lambda: fra(notional, K, T1, T2, curve),
-            inputs={"notional": notional, "K": K, "T1": T1, "T2": T2, "curve_id": curve_id},
+            engine=lambda: fra(notional, K, T1, T2, curve, proj_curve),
+            inputs={"notional": notional, "K": K, "T1": T1, "T2": T2, "curve_id": curve_id,
+                    "dual_curve": proj_curve is not None},
             snapshot=snapshot, user_action="Price FRA")
 
     def price_cap_floor(self, notional, K, T, freq, vol, opt="cap", curve=None,
-                        snapshot=None, curve_id="flat_rub") -> dict:
+                        proj_curve=None, snapshot=None, curve_id="flat_rub") -> dict:
         """Cap/Floor as a strip of Black-76 caplets/floorlets."""
         from instruments.fixed_income import cap_floor
         curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
@@ -632,8 +646,9 @@ class PricingService:
         pay_fixed: bool = True,
         snapshot: MarketDataSnapshot | None = None,
         curve_id: str = "flat_rub",
+        proj_curve=None,
     ) -> dict:
-        """Price an IRS through the existing single-curve engine."""
+        """Price an IRS: floating leg on proj_curve, discount on the curve."""
         from instruments.fixed_income import irs
 
         try:
@@ -641,7 +656,7 @@ class PricingService:
             if curve is None:
                 snapshot = snapshot or self.market_data.demo_snapshot()
                 curve = self.market_data.get_curve(curve_id, snapshot)
-            raw = irs(notional, fixed_rate, T, freq, curve, pay_fixed)
+            raw = irs(notional, fixed_rate, T, freq, curve, pay_fixed, proj_curve)
             return self._result(
                 value=raw.get("npv"),
                 model_id="irs",

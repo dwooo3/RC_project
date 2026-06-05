@@ -158,6 +158,13 @@ MODEL_REGISTRY: dict[str, dict] = {
             "no callable/putable features, and no inflation-linked bond mechanics."
         ),
     },
+    "custom_bond": {
+        "name": "Custom Cashflow Bond",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": [],
+        "notes": "Prices an arbitrary user-supplied cashflow schedule on the discount curve.",
+    },
     "callable_bond": {
         "name": "Callable / Putable Bond (OAS)",
         "status": ModelStatus.PROTOTYPE,

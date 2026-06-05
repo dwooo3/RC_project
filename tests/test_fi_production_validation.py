@@ -91,3 +91,27 @@ def test_callable_putable_ordering(s):
                                 option="putable", curve=curve)["raw"]
     assert call["callable_value"] <= call["straight_value"] + 1e-6
     assert put["putable_value"] >= put["straight_value"] - 1e-6
+
+
+# ── Increment 2: conventions, dual-curve, manual schedule ──
+def test_custom_bond_matches_dcf(s):
+    cfs = [(1, 35), (2, 35), (3, 1035)]
+    curve = _curve(s, 0.10)
+    res = s.price_custom_bond(cfs, 2, curve=curve)
+    dcf = sum(a * curve.discount(t) for t, a in cfs)
+    assert res["value"] == pytest.approx(dcf, rel=1e-9)
+
+
+def test_day_count_act360_richer_than_act365(s):
+    curve = _curve(s, 0.10)
+    p365 = s.price_amortizing_bond(1000, 0.08, 10, 2, "linear", "act365", curve=curve)["value"]
+    p360 = s.price_amortizing_bond(1000, 0.08, 10, 2, "linear", "act360", curve=curve)["value"]
+    assert p360 > p365      # act/360 accrues more interest per period
+
+
+def test_fra_dual_curve_forward_from_projection(s):
+    disc = s.market_data.flat_curve(0.05)
+    proj = s.market_data.flat_curve(0.12)
+    single = s.price_fra(1_000_000, 0.10, 1, 1.5, curve=disc)["raw"]["forward_rate"]
+    dual = s.price_fra(1_000_000, 0.10, 1, 1.5, curve=disc, proj_curve=proj)["raw"]["forward_rate"]
+    assert dual > single        # forward driven by the higher projection curve
