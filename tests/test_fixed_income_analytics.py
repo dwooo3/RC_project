@@ -77,3 +77,21 @@ def test_fixed_income_result_aliases_and_dict():
     assert r.pv01 == 0.045 and r.bpv == 0.045   # aliases populated
     d = r.as_dict()
     assert d["yield"] == 0.06 and "yield_" not in d
+
+
+# ── fixed_bond now exposes the unified §6 metric set ─────
+def test_fixed_bond_exposes_unified_metrics():
+    from instruments.fixed_income import fixed_bond
+    govt = _flat_curve(0.04)
+    swap = _flat_curve(0.045)
+    res = fixed_bond(1000, 0.07, 10, 2, curve=_flat_curve(0.06),
+                     govt_curve=govt, swap_curve=swap,
+                     call_schedule=[(5, 1000 * 1.0 + 1000 * 0.07 / 2)])
+    for k in ("effective_duration", "key_rate_durations", "pv01", "bpv",
+              "ytc", "ytp", "ytw", "g_spread", "i_spread"):
+        assert k in res
+    assert res["pv01"] == res["dv01"]
+    assert res["effective_duration"] > 0
+    assert abs(sum(res["key_rate_durations"].values()) - res["effective_duration"]) < 0.05 * res["effective_duration"]
+    assert res["g_spread"] > 0          # 6% bond vs 4% govt
+    assert res["ytw"] <= res["ytm"] + 1e-9

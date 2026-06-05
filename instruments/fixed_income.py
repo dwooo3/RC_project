@@ -179,7 +179,11 @@ def fixed_bond(face: float, coupon: float, T: float, freq: int,
                settlement_days: int = 0,
                day_count: str = "act365",
                business_day_convention: BusinessDayConvention = "following",
-               holidays: set[date] | None = None) -> dict:
+               holidays: set[date] | None = None,
+               govt_curve: "YieldCurve | None" = None,
+               swap_curve: "YieldCurve | None" = None,
+               call_schedule: list | None = None,
+               put_schedule: list | None = None) -> dict:
     """
     Price fixed-rate bond.
     coupon: annual coupon rate (e.g. 0.05 = 5%).
@@ -282,6 +286,20 @@ def fixed_bond(face: float, coupon: float, T: float, freq: int,
     except Exception:
         zspread = np.nan
 
+    # ── unified §6 analytics (effective/key-rate duration, YTW, spreads) ──
+    from instruments.fixed_income_analytics import (
+        effective_duration_convexity, key_rate_durations, yield_to_worst,
+        g_spread as _g_spread, i_spread as _i_spread,
+    )
+    cfs = list(zip(cf_times, coupons))
+    reprice = lambda sh: _price_cashflows(cfs, curve.parallel_shift(sh * 1e4))
+    eff_dur, eff_cvx = effective_duration_convexity(reprice, price)
+    krd = key_rate_durations(cfs, curve, price, _price_cashflows)
+    workouts = yield_to_worst(cfs, price, freq, call_schedule, put_schedule)
+    maturity_time = max(cf_times) if cf_times else T
+    g_sp = _g_spread(ytm, govt_curve, maturity_time, freq) if govt_curve is not None else None
+    i_sp = _i_spread(ytm, swap_curve, maturity_time, freq) if swap_curve is not None else None
+
     return dict(price=price, dirty_price=price, clean_price=clean_price,
                 accrued_interest=accrued_interest,
                 settlement_date=settlement_date,
@@ -293,8 +311,12 @@ def fixed_bond(face: float, coupon: float, T: float, freq: int,
                 business_day_convention=business_day_convention,
                 ytm=ytm, zspread=zspread,
                 mac_duration=mac_dur, mod_duration=mod_dur,
-                convexity=conv, dv01=dv01,
-                cash_flows=list(zip(cf_times, coupons)),
+                effective_duration=eff_dur, effective_convexity=eff_cvx,
+                convexity=conv, dv01=dv01, pv01=dv01, bpv=dv01,
+                key_rate_durations=krd,
+                ytc=workouts["ytc"], ytp=workouts["ytp"], ytw=workouts["ytw"],
+                g_spread=g_sp, i_spread=i_sp,
+                cash_flows=cfs,
                 cashflow_schedule=schedule)
 
 
