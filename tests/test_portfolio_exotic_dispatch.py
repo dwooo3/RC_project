@@ -77,3 +77,32 @@ def test_portfolio_aggregates_exotic_exposures():
     factor_ids = {e.factor_id for e in exposures}
     assert "equity.spot" in factor_ids
     assert "vol.implied" in factor_ids
+
+
+# ── Rates derivatives dispatch ───────────────────────────
+
+def test_frn_position_dv01():
+    pf = PortfolioService("T")
+    pos = _priced(pf, _pos("frn", {"face": 1000, "spread": 0.01, "T": 5, "freq": 2, "r": 0.10}))
+    assert pos.price > 0
+    assert any(e.unit == "DV01" for e in pos.exposures)
+
+
+def test_cap_floor_position_dv01_and_vega():
+    pf = PortfolioService("T")
+    pos = _priced(pf, _pos("cap_floor", {"notional": 1_000_000, "K": 0.10, "T": 3,
+                                         "freq": 2, "vol": 0.20, "r": 0.10, "opt": "cap"}))
+    assert pos.price >= 0
+    units = {e.unit for e in pos.exposures}
+    assert "DV01" in units and "Vega" in units
+
+
+def test_swaption_position_dv01_and_vega():
+    pf = PortfolioService("T")
+    pos = _priced(pf, _pos("swaption", {"notional": 1_000_000, "K": 0.10, "T_option": 1,
+                                        "T_swap": 5, "freq": 2, "sigma": 0.20, "r": 0.10,
+                                        "opt": "payer"}))
+    assert pos.price >= 0
+    assert pos.model_id == "swaption"
+    units = {e.unit for e in pos.exposures}
+    assert "DV01" in units and "Vega" in units

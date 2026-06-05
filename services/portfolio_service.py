@@ -363,6 +363,58 @@ class PortfolioService:
             self._add_exposure(pos, "Equity", "spot_gamma", pos.gamma, "Gamma", 1.0, factor_id="equity.spot_gamma")
             self._add_exposure(pos, "Volatility", "implied_vol", pos.vega, "Vega", 0.01, factor_id="vol.implied")
 
+        elif inst == "frn":
+            curve = p.get("curve") or self.market_data.flat_curve(p["r"])
+            res = self.pricing.price_frn(p["face"], p["spread"], p["T"], p.get("freq", 2), curve=curve)
+            if res["errors"]:
+                raise ValueError("; ".join(res["errors"]))
+            self._attach_service_metadata(pos, res)
+            pos.price = res["value"]
+            pos.market_value = pos.price * qt / p["face"]
+            pos.dv01 = self._fd_rates_dv01(lambda r: self.pricing.price_frn(
+                p["face"], p["spread"], p["T"], p.get("freq", 2),
+                curve=self.market_data.flat_curve(r))["value"], p["r"]) * qt / p["face"]
+            self._add_exposure(pos, "Rates", "swap_curve", pos.dv01, "DV01", 0.0001, factor_id="rates.swap_curve")
+
+        elif inst in ("cap", "floor", "cap_floor"):
+            curve = p.get("curve") or self.market_data.flat_curve(p["r"])
+            opt = p.get("opt", "cap")
+            res = self.pricing.price_cap_floor(
+                p["notional"], p["K"], p["T"], p.get("freq", 2), p["vol"], opt, curve=curve)
+            if res["errors"]:
+                raise ValueError("; ".join(res["errors"]))
+            self._attach_service_metadata(pos, res)
+            pos.price = res["value"]
+            pos.market_value = pos.price * qt
+            pos.dv01 = self._fd_rates_dv01(lambda r: self.pricing.price_cap_floor(
+                p["notional"], p["K"], p["T"], p.get("freq", 2), p["vol"], opt,
+                curve=self.market_data.flat_curve(r))["value"], p["r"]) * qt
+            pos.vega = self._fd_vol_vega(lambda v: self.pricing.price_cap_floor(
+                p["notional"], p["K"], p["T"], p.get("freq", 2), v, opt, curve=curve)["value"],
+                p["vol"]) * qt
+            self._add_exposure(pos, "Rates", "swap_curve", pos.dv01, "DV01", 0.0001, factor_id="rates.swap_curve")
+            self._add_exposure(pos, "Volatility", "rate_vol", pos.vega, "Vega", 0.01, factor_id="vol.rate")
+
+        elif inst == "swaption":
+            curve = p.get("curve") or self.market_data.flat_curve(p["r"])
+            opt = p.get("opt", "payer")
+            res = self.pricing.price_swaption(
+                p["notional"], p["K"], p["T_option"], p["T_swap"], p.get("freq", 2),
+                p["sigma"], opt, curve=curve)
+            if res["errors"]:
+                raise ValueError("; ".join(res["errors"]))
+            self._attach_service_metadata(pos, res)
+            pos.price = res["value"]
+            pos.market_value = pos.price * qt
+            pos.dv01 = self._fd_rates_dv01(lambda r: self.pricing.price_swaption(
+                p["notional"], p["K"], p["T_option"], p["T_swap"], p.get("freq", 2),
+                p["sigma"], opt, curve=self.market_data.flat_curve(r))["value"], p["r"]) * qt
+            pos.vega = self._fd_vol_vega(lambda v: self.pricing.price_swaption(
+                p["notional"], p["K"], p["T_option"], p["T_swap"], p.get("freq", 2),
+                v, opt, curve=curve)["value"], p["sigma"]) * qt
+            self._add_exposure(pos, "Rates", "swap_curve", pos.dv01, "DV01", 0.0001, factor_id="rates.swap_curve")
+            self._add_exposure(pos, "Volatility", "rate_vol", pos.vega, "Vega", 0.01, factor_id="vol.rate")
+
     def _equity_exotic_pricer(self, inst: str, p: dict):
         """Return (value_fn(S, sigma) -> governed result, base_spot, base_vol) for an exotic."""
         if inst == "barrier":
@@ -406,6 +458,17 @@ class PortfolioService:
         gamma = (pu - 2 * p0 + pd) / (dS * dS)
         vega = (vu - vd) / (2 * dV) * 0.01
         return p0, delta, gamma, vega
+
+    @staticmethod
+    def _fd_rates_dv01(value_fn, r: float):
+        """DV01 via a 1bp parallel curve bump: price change for a 1bp fall in rates."""
+        dr = 1e-4
+        return (value_fn(r - dr) - value_fn(r + dr)) / 2.0
+
+    @staticmethod
+    def _fd_vol_vega(value_fn, sigma: float, dV: float = 0.01):
+        """Vega per 1% vol via central difference."""
+        return (value_fn(sigma + dV) - value_fn(sigma - dV)) / (2 * dV) * 0.01
 
     def _attach_service_metadata(self, pos: Position, result: dict):
         pos.model_id = result.get("model_id", "")
