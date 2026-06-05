@@ -405,6 +405,133 @@ def fra(notional: float, K: float, T1: float, T2: float, curve: YieldCurve) -> d
 
 
 # ─────────────────────────────────────────────────────────
+# Bond family (FI-2): shared metric builder + new structures
+# ─────────────────────────────────────────────────────────
+
+def metrics_from_cashflows(cashflows: list, curve: YieldCurve, face: float, freq: int) -> dict:
+    """Unified §6 metric set for any deterministic bond cashflow stream."""
+    from instruments.fixed_income_analytics import (
+        bond_yield, effective_duration_convexity, key_rate_durations,
+    )
+    price = _price_cashflows(cashflows, curve)
+    ytm = bond_yield(cashflows, price, freq)
+    pv_t = sum(c * curve.discount(t) * t for t, c in cashflows)
+    mac = pv_t / price if price else 0.0
+    mod = mac / (1 + ytm / freq) if ytm == ytm else mac
+    reprice = lambda sh: _price_cashflows(cashflows, curve.parallel_shift(sh * 1e4))
+    eff_dur, eff_cvx = effective_duration_convexity(reprice, price)
+    dv01 = (reprice(-1e-4) - reprice(1e-4)) / 2.0
+    krd = key_rate_durations(cashflows, curve, price, _price_cashflows)
+    return dict(price=price, clean_price=price, dirty_price=price, accrued_interest=0.0,
+                ytm=ytm, yield_=ytm, mac_duration=mac, mod_duration=mod,
+                effective_duration=eff_dur, convexity=eff_cvx,
+                dv01=dv01, pv01=dv01, bpv=dv01, key_rate_durations=krd,
+                cash_flows=cashflows)
+
+
+def amortizing_bond(face: float, coupon: float, T: float, freq: int,
+                    curve: YieldCurve, amort_type: str = "linear") -> dict:
+    """Amortizing bond: principal repaid over life (linear or level-annuity)."""
+    n = int(round(T * freq)); dt = 1.0 / freq
+    cfs: list[tuple[float, float]] = []
+    outstanding = face
+    c = coupon / freq
+    if amort_type == "annuity" and c > 0:
+        A = face * c / (1 - (1 + c) ** (-n))
+        for i in range(1, n + 1):
+            interest = outstanding * c
+            principal = A - interest
+            outstanding -= principal
+            cfs.append((i * dt, A))
+    else:
+        principal = face / n
+        for i in range(1, n + 1):
+            interest = outstanding * c
+            outstanding -= principal
+            cfs.append((i * dt, principal + interest))
+    res = metrics_from_cashflows(cfs, curve, face, freq)
+    res["amort_type"] = amort_type
+    return res
+
+
+def step_bond(face: float, coupon_steps: list, T: float, freq: int,
+              curve: YieldCurve) -> dict:
+    """Step-up/step-down bond. coupon_steps: [(effective_from_year, annual_rate), ...]."""
+    n = int(round(T * freq)); dt = 1.0 / freq
+    steps = sorted(coupon_steps, key=lambda s: s[0])
+
+    def rate_at(t):
+        r = steps[0][1]
+        for start, rr in steps:
+            if t >= start - 1e-9:
+                r = rr
+        return r
+
+    cfs = []
+    for i in range(1, n + 1):
+        t = i * dt
+        amt = face * rate_at(t) / freq
+        if i == n:
+            amt += face
+        cfs.append((t, amt))
+    res = metrics_from_cashflows(cfs, curve, face, freq)
+    res["coupon_steps"] = steps
+    return res
+
+
+def perpetual_bond(face: float, coupon: float, curve: YieldCurve, freq: int = 1) -> dict:
+    """Perpetual / consol: infinite level coupon, value = C / y."""
+    y = curve.par_rate(30, freq)
+    C = face * coupon
+    price = C / y if y > 0 else float("inf")
+    mod = 1.0 / y if y > 0 else float("inf")
+    mac = mod * (1 + y / freq)
+    dv01 = C / (y * y) * 1e-4 if y > 0 else float("inf")
+    return dict(price=price, clean_price=price, dirty_price=price, accrued_interest=0.0,
+                ytm=y, yield_=y, mac_duration=mac, mod_duration=mod,
+                effective_duration=mod, convexity=2.0 / y**2 if y > 0 else float("inf"),
+                dv01=dv01, pv01=dv01, bpv=dv01, key_rate_durations={})
+
+
+def inflation_linked_bond(face: float, real_coupon: float, T: float, freq: int,
+                          curve: YieldCurve, base_cpi: float = 100.0,
+                          current_cpi: float = 100.0, inflation_rate: float = 0.04) -> dict:
+    """
+    Inflation-linked bond: principal indexed to CPI (projected at inflation_rate),
+    real coupons on the indexed principal, discounted on the nominal curve.
+    """
+    n = int(round(T * freq)); dt = 1.0 / freq
+    ratio0 = current_cpi / base_cpi
+    cfs = []
+    for i in range(1, n + 1):
+        t = i * dt
+        idx = ratio0 * (1 + inflation_rate) ** t
+        principal_t = face * idx
+        amt = principal_t * real_coupon / freq
+        if i == n:
+            amt += principal_t
+        cfs.append((t, amt))
+    res = metrics_from_cashflows(cfs, curve, face, freq)
+    # inflation DV01: reprice under a +1bp inflation bump
+    bumped = []
+    for i in range(1, n + 1):
+        t = i * dt
+        idx = ratio0 * (1 + inflation_rate + 1e-4) ** t
+        principal_t = face * idx
+        amt = principal_t * real_coupon / freq
+        if i == n:
+            amt += principal_t
+        bumped.append((t, amt))
+    res["inflation_dv01"] = _price_cashflows(bumped, curve) - res["price"]
+    res["real_dv01"] = res["dv01"]
+    res["indexed_principal"] = face * ratio0
+    res["index_ratio"] = ratio0
+    res["real_yield"] = res["ytm"] - inflation_rate
+    res["inflation_rate"] = inflation_rate
+    return res
+
+
+# ─────────────────────────────────────────────────────────
 # Interest rate swap (IRS)
 # ─────────────────────────────────────────────────────────
 

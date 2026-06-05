@@ -293,6 +293,53 @@ class PricingService:
             inputs={"face": face, "spread": spread, "T": T, "freq": freq, "curve_id": curve_id},
             snapshot=snapshot, user_action="Price FRN")
 
+    def price_amortizing_bond(self, face, coupon, T, freq, amort_type="linear",
+                              curve=None, snapshot=None, curve_id="flat_rub") -> dict:
+        from instruments.fixed_income import amortizing_bond
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="amortizing_bond", calculation_type="amortizing_bond_pricing",
+            engine=lambda: amortizing_bond(face, coupon, T, int(freq), curve, amort_type),
+            inputs={"face": face, "coupon": coupon, "T": T, "freq": int(freq),
+                    "amort_type": amort_type, "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price amortizing bond")
+
+    def price_step_bond(self, face, coupon1, coupon2, switch_year, T, freq,
+                        curve=None, snapshot=None, curve_id="flat_rub") -> dict:
+        from instruments.fixed_income import step_bond
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        steps = [(0.0, coupon1), (switch_year, coupon2)]
+        return self._priced(
+            model_id="step_bond", calculation_type="step_bond_pricing",
+            engine=lambda: step_bond(face, steps, T, int(freq), curve),
+            inputs={"face": face, "coupon1": coupon1, "coupon2": coupon2,
+                    "switch_year": switch_year, "T": T, "freq": int(freq), "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price step bond")
+
+    def price_perpetual_bond(self, face, coupon, freq=1, curve=None, snapshot=None,
+                             curve_id="flat_rub") -> dict:
+        from instruments.fixed_income import perpetual_bond
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="perpetual_bond", calculation_type="perpetual_bond_pricing",
+            engine=lambda: perpetual_bond(face, coupon, curve, int(freq)),
+            inputs={"face": face, "coupon": coupon, "freq": int(freq), "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price perpetual bond")
+
+    def price_inflation_linked_bond(self, face, real_coupon, T, freq, base_cpi=100.0,
+                                    current_cpi=100.0, inflation_rate=0.04, curve=None,
+                                    snapshot=None, curve_id="flat_rub") -> dict:
+        from instruments.fixed_income import inflation_linked_bond
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="inflation_linked_bond", calculation_type="inflation_linked_bond_pricing",
+            engine=lambda: inflation_linked_bond(face, real_coupon, T, int(freq), curve,
+                                                 base_cpi, current_cpi, inflation_rate),
+            inputs={"face": face, "real_coupon": real_coupon, "T": T, "freq": int(freq),
+                    "base_cpi": base_cpi, "current_cpi": current_cpi,
+                    "inflation_rate": inflation_rate, "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price inflation-linked bond")
+
     def price_fra(self, notional, K, T1, T2, curve=None, snapshot=None,
                   curve_id="flat_rub") -> dict:
         """Forward Rate Agreement NPV from the discount curve."""

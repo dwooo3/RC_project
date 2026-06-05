@@ -158,6 +158,34 @@ MODEL_REGISTRY: dict[str, dict] = {
             "no callable/putable features, and no inflation-linked bond mechanics."
         ),
     },
+    "amortizing_bond": {
+        "name": "Amortizing Bond",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": [],
+        "notes": "Linear or level-annuity principal amortization; DCF on the curve. No prepayment model.",
+    },
+    "step_bond": {
+        "name": "Step-Up / Step-Down Bond",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": [],
+        "notes": "Scheduled coupon changes; DCF on the curve.",
+    },
+    "perpetual_bond": {
+        "name": "Perpetual / Consol",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": [],
+        "notes": "Level perpetual coupon valued as C/y at a long-run par yield. No call feature.",
+    },
+    "inflation_linked_bond": {
+        "name": "Inflation-Linked Bond",
+        "status": ModelStatus.PROTOTYPE,
+        "domain": "Pricing",
+        "tests": [],
+        "notes": "CPI-indexed principal projected at an assumed inflation rate; nominal-curve discounting. Needs a real/inflation curve for production.",
+    },
     "frn": {
         "name": "Floating Rate Note",
         "status": ModelStatus.PROTOTYPE,

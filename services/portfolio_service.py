@@ -266,6 +266,23 @@ class PortfolioService:
                 self._add_exposure(pos, "Rates", f"kr_{tenor:g}y", kr_dv01, "Key Rate DV01",
                                    0.0001, factor_id=f"rates.kr_{tenor:g}")
 
+        elif inst in ("amortizing", "step_bond", "perpetual", "inflation_linked"):
+            res = self._price_fi_bond(inst, p)
+            if res["errors"]:
+                raise ValueError("; ".join(res["errors"]))
+            raw = res["raw"] or {}
+            self._attach_service_metadata(pos, res)
+            face = p.get("face", 1000.0)
+            pos.price = res["value"]
+            pos.market_value = pos.price * qt / face
+            pos.dv01 = raw.get("dv01", 0.0) * qt / face
+            self._add_exposure(pos, "Rates", "yield_curve", pos.dv01, "DV01", 0.0001, factor_id="rates.yield_curve")
+            dirty = raw.get("dirty_price") or raw.get("price") or 0.0
+            for tenor, krd in (raw.get("key_rate_durations") or {}).items():
+                kr = krd * dirty * 1e-4 * qt / face
+                self._add_exposure(pos, "Rates", f"kr_{tenor:g}y", kr, "Key Rate DV01",
+                                   0.0001, factor_id=f"rates.kr_{tenor:g}")
+
         elif inst == "cds":
             from instruments.credit import cds, cds_implied_hazard
 
@@ -433,6 +450,22 @@ class PortfolioService:
                 v, opt, curve=curve)["value"], p["sigma"]) * qt
             self._add_exposure(pos, "Rates", "swap_curve", pos.dv01, "DV01", 0.0001, factor_id="rates.swap_curve")
             self._add_exposure(pos, "Volatility", "rate_vol", pos.vega, "Vega", 0.01, factor_id="vol.rate")
+
+    def _price_fi_bond(self, inst: str, p: dict) -> dict:
+        """Route a bond-family position to its PricingService method (curve from r)."""
+        curve = p.get("curve") or self.market_data.flat_curve(p["r"])
+        md = self.pricing
+        if inst == "amortizing":
+            return md.price_amortizing_bond(p["face"], p["coupon"], p["T"], p.get("freq", 2),
+                                            p.get("amort_type", "linear"), curve=curve)
+        if inst == "step_bond":
+            return md.price_step_bond(p["face"], p["coupon1"], p["coupon2"], p["switch_year"],
+                                      p["T"], p.get("freq", 2), curve=curve)
+        if inst == "perpetual":
+            return md.price_perpetual_bond(p["face"], p["coupon"], p.get("freq", 1), curve=curve)
+        return md.price_inflation_linked_bond(
+            p["face"], p["real_coupon"], p["T"], p.get("freq", 2), p.get("base_cpi", 100.0),
+            p.get("current_cpi", 100.0), p.get("inflation_rate", 0.04), curve=curve)
 
     def _equity_exotic_pricer(self, inst: str, p: dict):
         """Return (value_fn(S, sigma) -> governed result, base_spot, base_vol) for an exotic."""

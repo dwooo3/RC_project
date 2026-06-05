@@ -121,3 +121,15 @@ def test_bond_position_has_key_rate_exposures():
     assert len(kr) >= 3
     headline = next(e for e in pos.exposures if e.unit == "DV01")
     assert sum(e.sensitivity for e in kr) == pytest.approx(headline.sensitivity, rel=0.1)
+
+
+def test_fi2_bonds_in_portfolio_with_key_rate():
+    pf = PortfolioService("T")
+    pf.add(_pos("amortizing", {"face": 1000, "coupon": 0.07, "T": 10, "freq": 2, "r": 0.10}))
+    pf.add(_pos("perpetual", {"face": 1000, "coupon": 0.08, "freq": 1, "r": 0.09}))
+    pf.add(_pos("inflation_linked", {"face": 1000, "real_coupon": 0.03, "T": 10, "freq": 2,
+                                     "base_cpi": 100, "current_cpi": 110, "inflation_rate": 0.04, "r": 0.12}))
+    pf.value()
+    amo = pf.positions[0]
+    assert amo.price > 0 and any(e.unit == "Key Rate DV01" for e in amo.exposures)
+    assert all(p.dv01 != 0 for p in pf.positions)

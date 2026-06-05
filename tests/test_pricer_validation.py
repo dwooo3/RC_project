@@ -149,3 +149,34 @@ def test_fra_zero_at_fair_and_sign(s):
     assert abs(at_fair) < 1.0                       # NPV ~ 0 at the fair forward
     # pay-fixed below fair -> positive NPV (receive higher floating)
     assert s.price_fra(1_000_000, fair - 0.01, 1, 1.5, curve=curve)["value"] > 0
+
+
+# ── FI-2: amortizing / step / perpetual / inflation-linked ──
+def test_amortizing_bond_shorter_duration_than_bullet(s):
+    curve = s.market_data.flat_curve(0.10)
+    amo = s.price_amortizing_bond(1000, 0.07, 10, 2, "linear", curve=curve)
+    bullet = s.price_bond(1000, 0.07, 10, 2, curve=curve)
+    assert amo["value"] > 0
+    assert amo["raw"]["effective_duration"] < bullet["raw"]["effective_duration"]
+
+
+def test_step_bond_prices_and_unified_metrics(s):
+    res = s.price_step_bond(1000, 0.05, 0.08, 3, 6, 2, curve=s.market_data.flat_curve(0.10))
+    assert res["value"] > 0
+    assert "key_rate_durations" in res["raw"] and res["raw"]["effective_duration"] > 0
+
+
+def test_perpetual_equals_coupon_over_yield(s):
+    curve = s.market_data.flat_curve(0.09)
+    res = s.price_perpetual_bond(1000, 0.08, 1, curve=curve)
+    y = curve.par_rate(30, 1)
+    assert res["value"] == pytest.approx(1000 * 0.08 / y, rel=1e-6)
+
+
+def test_inflation_linked_indexation_and_inflation_dv01(s):
+    res = s.price_inflation_linked_bond(1000, 0.03, 10, 2, base_cpi=100, current_cpi=110,
+                                        inflation_rate=0.04, curve=s.market_data.flat_curve(0.12))
+    raw = res["raw"]
+    assert raw["indexed_principal"] == pytest.approx(1100.0)   # face*110/100
+    assert "inflation_dv01" in raw and "real_yield" in raw
+    assert res["value"] > 0
