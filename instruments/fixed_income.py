@@ -405,6 +405,85 @@ def fra(notional: float, K: float, T1: float, T2: float, curve: YieldCurve) -> d
 
 
 # ─────────────────────────────────────────────────────────
+# Callable / putable bonds + OAS (FI-6) — BDT short-rate tree
+# ─────────────────────────────────────────────────────────
+
+def _bdt_tree(curve: YieldCurve, sigma: float, n: int, T: float):
+    """
+    Black-Derman-Toy short-rate binomial tree calibrated to the discount curve.
+    Returns r[i][j] (short rate at step i, state j) and dt. p = 0.5; up -> j+1.
+    """
+    dt = T / n
+    sq = np.sqrt(dt)
+    r = [[0.0] * (i + 1) for i in range(n)]
+    q = [1.0]                                   # Arrow-Debreu state prices at step 0
+    for i in range(n):
+        target = curve.discount((i + 1) * dt)
+
+        def df_for(rm, _i=i):
+            return sum(q[j] * np.exp(-rm * np.exp(2 * j * sigma * sq) * dt) for j in range(_i + 1))
+
+        rm = brentq(lambda x: df_for(x) - target, 1e-9, 5.0)
+        for j in range(i + 1):
+            r[i][j] = rm * np.exp(2 * j * sigma * sq)
+        qn = [0.0] * (i + 2)                     # propagate state prices forward
+        for j in range(i + 1):
+            d = np.exp(-r[i][j] * dt)
+            qn[j] += 0.5 * q[j] * d
+            qn[j + 1] += 0.5 * q[j] * d
+        q = qn
+    return r, dt
+
+
+def callable_bond(face: float, coupon: float, T: float, freq: int, curve: YieldCurve,
+                  sigma: float = 0.15, call_price: float | None = None, call_start: float = 0.0,
+                  put_price: float | None = None, put_start: float = 0.0,
+                  option: str = "callable", m: int = 2,
+                  market_price: float | None = None) -> dict:
+    """
+    Callable / putable bond via a BDT tree with optimal exercise and OAS.
+    OAS solves model(option) price == market_price (default: the straight value,
+    so a callable returns a negative OAS reflecting the embedded option cost).
+    """
+    periods = int(round(T * freq))
+    n = periods * m
+    r, dt = _bdt_tree(curve, sigma, n, T)
+    cpn = face * coupon / freq
+    cpn_steps = {p * m for p in range(1, periods + 1)}
+
+    def value(oas: float, exercise: bool) -> float:
+        V = [face + cpn] * (n + 1)
+        for k in range(n - 1, -1, -1):
+            add = cpn if k in cpn_steps else 0.0
+            t = k * dt
+            Vn = [0.0] * (k + 1)
+            for j in range(k + 1):
+                cont = np.exp(-(r[k][j] + oas) * dt) * 0.5 * (V[j] + V[j + 1])
+                v = cont + add
+                if exercise and k > 0:
+                    if option == "callable" and call_price is not None and t >= call_start - 1e-9:
+                        v = min(v, call_price + add)
+                    elif option == "putable" and put_price is not None and t >= put_start - 1e-9:
+                        v = max(v, put_price + add)
+                Vn[j] = v
+            V = Vn
+        return V[0]
+
+    straight = value(0.0, exercise=False)
+    optioned = value(0.0, exercise=True)
+    mkt = market_price if market_price is not None else straight
+    try:
+        oas = brentq(lambda s: value(s, exercise=True) - mkt, -0.5, 0.5)
+    except ValueError:
+        oas = float("nan")
+    return dict(price=optioned, clean_price=optioned, dirty_price=optioned, accrued_interest=0.0,
+                straight_value=straight, option_value=abs(straight - optioned), oas=oas,
+                sigma=sigma, market_price=mkt,
+                callable_value=optioned if option == "callable" else None,
+                putable_value=optioned if option == "putable" else None)
+
+
+# ─────────────────────────────────────────────────────────
 # Interest rate futures (FI-5)
 # ─────────────────────────────────────────────────────────
 

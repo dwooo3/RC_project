@@ -266,6 +266,25 @@ class PortfolioService:
                 self._add_exposure(pos, "Rates", f"kr_{tenor:g}y", kr_dv01, "Key Rate DV01",
                                    0.0001, factor_id=f"rates.kr_{tenor:g}")
 
+        elif inst in ("callable", "putable"):
+            option = "callable" if inst == "callable" else "putable"
+            def _cb(rr, _opt=option):
+                return self.pricing.price_callable_bond(
+                    p["face"], p["coupon"], p["T"], p.get("freq", 2), p.get("sigma", 0.15),
+                    p.get("call_price"), p.get("call_start", 0.0), p.get("put_price"),
+                    p.get("put_start", 0.0), _opt, curve=self.market_data.flat_curve(rr))["value"]
+            res = self.pricing.price_callable_bond(
+                p["face"], p["coupon"], p["T"], p.get("freq", 2), p.get("sigma", 0.15),
+                p.get("call_price"), p.get("call_start", 0.0), p.get("put_price"),
+                p.get("put_start", 0.0), option, curve=self.market_data.flat_curve(p["r"]))
+            if res["errors"]:
+                raise ValueError("; ".join(res["errors"]))
+            self._attach_service_metadata(pos, res)
+            pos.price = res["value"]
+            pos.market_value = pos.price * qt / p["face"]
+            pos.dv01 = self._fd_rates_dv01(_cb, p["r"]) * qt / p["face"]
+            self._add_exposure(pos, "Rates", "yield_curve", pos.dv01, "DV01", 0.0001, factor_id="rates.yield_curve")
+
         elif inst == "bond_future":
             deliverables = [{"name": "CTD", "clean_price": p["clean_price"],
                              "accrued": p.get("accrued", 0.0),

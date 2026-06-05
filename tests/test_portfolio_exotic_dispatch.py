@@ -160,3 +160,13 @@ def test_futures_in_portfolio():
     pf.add(_pos("stir_future", {"forward_rate": 0.10, "notional": 1_000_000, "tenor": 0.25}))
     pf.value()
     assert all(p.dv01 != 0 for p in pf.positions)
+
+
+def test_callable_putable_in_portfolio():
+    pf = PortfolioService("T")
+    pf.add(_pos("callable", {"face": 1000, "coupon": 0.08, "T": 5, "freq": 2, "sigma": 0.15,
+                             "call_price": 1000, "call_start": 2, "r": 0.07}))
+    pf.add(_pos("putable", {"face": 1000, "coupon": 0.06, "T": 5, "freq": 2, "sigma": 0.15,
+                            "put_price": 1000, "put_start": 2, "r": 0.07}))
+    pf.value()
+    assert all(p.price > 0 and p.dv01 != 0 for p in pf.positions)

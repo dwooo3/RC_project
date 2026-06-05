@@ -293,6 +293,21 @@ class PricingService:
             inputs={"face": face, "spread": spread, "T": T, "freq": freq, "curve_id": curve_id},
             snapshot=snapshot, user_action="Price FRN")
 
+    def price_callable_bond(self, face, coupon, T, freq, sigma=0.15, call_price=None,
+                            call_start=0.0, put_price=None, put_start=0.0, option="callable",
+                            market_price=None, curve=None, snapshot=None, curve_id="flat_rub") -> dict:
+        from instruments.fixed_income import callable_bond
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="callable_bond", calculation_type="callable_bond_pricing",
+            engine=lambda: callable_bond(face, coupon, T, int(freq), curve, sigma, call_price,
+                                         call_start, put_price, put_start, option,
+                                         market_price=market_price),
+            inputs={"face": face, "coupon": coupon, "T": T, "freq": int(freq), "sigma": sigma,
+                    "call_price": call_price, "call_start": call_start, "put_price": put_price,
+                    "put_start": put_start, "option": option, "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price callable/putable bond")
+
     def price_bond_future(self, deliverables, futures_price, repo_rate, T_delivery,
                           target_bpv=None, snapshot=None) -> dict:
         from instruments.fixed_income import bond_future

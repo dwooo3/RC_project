@@ -32,6 +32,7 @@ _GREEK_KEYS = [
     ("implied_repo", "Implied Repo"), ("futures_dv01", "Futures DV01"),
     ("hedge_ratio", "Hedge Ratio"), ("conversion_factor", "Conv Factor"),
     ("implied_rate", "Implied Rate"),
+    ("oas", "OAS"), ("straight_value", "Straight"), ("option_value", "Option Value"),
     ("fair_spread", "Fair spread"), ("npv", "NPV"), ("delta_S", "Delta"), ("annuity", "Annuity"),
 ]
 

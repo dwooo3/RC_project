@@ -158,6 +158,13 @@ MODEL_REGISTRY: dict[str, dict] = {
             "no callable/putable features, and no inflation-linked bond mechanics."
         ),
     },
+    "callable_bond": {
+        "name": "Callable / Putable Bond (OAS)",
+        "status": ModelStatus.PROTOTYPE,
+        "domain": "Pricing",
+        "tests": [],
+        "notes": "BDT short-rate tree with optimal exercise; option value and OAS. Flat rate vol; no vol term structure calibration.",
+    },
     "bond_future": {
         "name": "Bond Future (CTD)",
         "status": ModelStatus.APPROXIMATION,

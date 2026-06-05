@@ -251,3 +251,29 @@ def test_stir_future_price_and_dv01(s):
     res = s.price_stir_future(0.10, 1_000_000, 0.25)
     assert res["value"] == pytest.approx(90.0)        # 100 - 10
     assert res["raw"]["dv01"] == pytest.approx(25.0)  # 1e6*0.25*1bp
+
+
+# ── FI-6: callable / putable + OAS ───────────────────────
+def test_callable_below_straight_and_oas_negative(s):
+    res = s.price_callable_bond(1000, 0.08, 5, 2, sigma=0.15, call_price=1000, call_start=2,
+                                option="callable", curve=s.market_data.flat_curve(0.07))
+    raw = res["raw"]
+    assert raw["callable_value"] < raw["straight_value"]    # option costs the holder
+    assert raw["option_value"] > 0
+    assert raw["oas"] < 1e-6                                 # OAS to straight price is <= 0
+
+
+def test_putable_above_straight_and_oas_positive(s):
+    res = s.price_callable_bond(1000, 0.06, 5, 2, sigma=0.15, put_price=1000, put_start=2,
+                                option="putable", curve=s.market_data.flat_curve(0.07))
+    raw = res["raw"]
+    assert raw["putable_value"] > raw["straight_value"]     # put benefits the holder
+    assert raw["oas"] > -1e-6
+
+
+def test_bdt_tree_reprices_straight_bond(s):
+    curve = s.market_data.flat_curve(0.07)
+    cb = s.price_callable_bond(1000, 0.08, 5, 2, sigma=0.15, call_price=1000, call_start=2,
+                               option="callable", curve=curve)["raw"]
+    bullet = s.price_bond(1000, 0.08, 5, 2, curve=curve)["value"]
+    assert cb["straight_value"] == pytest.approx(bullet, rel=0.02)   # tree ~ DCF
