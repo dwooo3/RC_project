@@ -202,3 +202,19 @@ def test_commercial_paper_price_below_face(s):
     res = s.price_commercial_paper(1000, 0.11, 0.25)
     assert 0 < res["value"] < 1000
     assert res["raw"]["money_market_yield"] > 0
+
+
+# ── FI-4: repo / reverse repo ────────────────────────────
+def test_repo_forward_carry_funding(s):
+    res = s.price_repo(1000, 0.10, 0.25, coupon_income=0.0, direction="repo")
+    raw = res["raw"]
+    assert res["value"] == pytest.approx(1000 * (1 + 0.10 * 0.25))   # forward price
+    assert raw["financing_cost"] == pytest.approx(25.0)
+    assert raw["carry"] < 0                                          # no coupon -> negative carry
+    assert raw["funding_dv01"] > 0
+
+
+def test_reverse_repo_flips_carry_sign(s):
+    rp = s.price_repo(1000, 0.10, 0.25, 0.0, "repo")["raw"]["carry"]
+    rev = s.price_repo(1000, 0.10, 0.25, 0.0, "reverse")["raw"]["carry"]
+    assert rev == pytest.approx(-rp)

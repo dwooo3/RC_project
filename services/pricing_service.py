@@ -293,6 +293,16 @@ class PricingService:
             inputs={"face": face, "spread": spread, "T": T, "freq": freq, "curve_id": curve_id},
             snapshot=snapshot, user_action="Price FRN")
 
+    def price_repo(self, spot, repo_rate, T, coupon_income=0.0, direction="repo",
+                   snapshot=None) -> dict:
+        from instruments.fixed_income import repo
+        return self._priced(
+            model_id="repo", calculation_type="repo_pricing", value_key="forward_price",
+            engine=lambda: repo(spot, repo_rate, T, coupon_income, direction),
+            inputs={"spot": spot, "repo_rate": repo_rate, "T": T,
+                    "coupon_income": coupon_income, "direction": direction},
+            snapshot=snapshot, user_action="Price repo")
+
     def price_deposit(self, notional, rate, T, curve=None, snapshot=None,
                       curve_id="flat_rub") -> dict:
         from instruments.fixed_income import mm_deposit

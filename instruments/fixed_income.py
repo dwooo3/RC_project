@@ -405,6 +405,28 @@ def fra(notional: float, K: float, T1: float, T2: float, curve: YieldCurve) -> d
 
 
 # ─────────────────────────────────────────────────────────
+# Repo / reverse repo (FI-4)
+# ─────────────────────────────────────────────────────────
+
+def repo(spot: float, repo_rate: float, T: float, coupon_income: float = 0.0,
+         direction: str = "repo") -> dict:
+    """
+    Repo / reverse repo on bond collateral (cash-and-carry).
+    spot: dirty price (cash exchanged at start). repo_rate: financing rate (simple).
+    T: term in years. coupon_income: collateral coupons paid during the term.
+    direction: 'repo' (finance a long) | 'reverse' (lend cash vs collateral).
+    """
+    financing_cost = spot * repo_rate * T
+    forward_price = spot * (1 + repo_rate * T) - coupon_income
+    carry = coupon_income - financing_cost            # net carry of financing the bond
+    funding_dv01 = spot * T / 10000                    # sensitivity to the repo rate
+    sign = 1 if direction == "repo" else -1
+    return dict(price=forward_price, forward_price=forward_price, npv=sign * carry,
+                repo_rate=repo_rate, financing_cost=financing_cost, carry=sign * carry,
+                funding_dv01=funding_dv01, term=T, direction=direction)
+
+
+# ─────────────────────────────────────────────────────────
 # Money market (FI-3): deposit, commercial paper, treasury bill
 # ─────────────────────────────────────────────────────────
 

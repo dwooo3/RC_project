@@ -266,6 +266,18 @@ class PortfolioService:
                 self._add_exposure(pos, "Rates", f"kr_{tenor:g}y", kr_dv01, "Key Rate DV01",
                                    0.0001, factor_id=f"rates.kr_{tenor:g}")
 
+        elif inst == "repo":
+            res = self.pricing.price_repo(p["spot"], p["repo_rate"], p["T"],
+                                          p.get("coupon_income", 0.0), p.get("direction", "repo"))
+            if res["errors"]:
+                raise ValueError("; ".join(res["errors"]))
+            raw = res["raw"] or {}
+            self._attach_service_metadata(pos, res)
+            pos.price = raw.get("forward_price", res["value"])
+            pos.market_value = raw.get("carry", 0.0) * qt
+            pos.dv01 = raw.get("funding_dv01", 0.0) * qt
+            self._add_exposure(pos, "Rates", "repo_rate", pos.dv01, "DV01", 0.0001, factor_id="rates.repo")
+
         elif inst in ("deposit", "treasury_bill", "commercial_paper"):
             res = self._price_mm(inst, p)
             if res["errors"]:

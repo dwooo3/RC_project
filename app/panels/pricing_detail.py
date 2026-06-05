@@ -25,6 +25,8 @@ _GREEK_KEYS = [
     ("discount_yield", "Disc Yield"), ("money_market_yield", "MM Yield"), ("bey", "BEY"),
     ("maturity_value", "Maturity Val"), ("real_yield", "Real Yield"),
     ("indexed_principal", "Indexed Prin"), ("inflation_dv01", "Infl DV01"),
+    ("forward_price", "Forward"), ("carry", "Carry"), ("funding_dv01", "Funding DV01"),
+    ("financing_cost", "Financing"), ("repo_rate", "Repo Rate"),
     ("fair_spread", "Fair spread"), ("npv", "NPV"), ("delta_S", "Delta"), ("annuity", "Annuity"),
 ]
 

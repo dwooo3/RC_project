@@ -158,6 +158,13 @@ MODEL_REGISTRY: dict[str, dict] = {
             "no callable/putable features, and no inflation-linked bond mechanics."
         ),
     },
+    "repo": {
+        "name": "Repo / Reverse Repo",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": [],
+        "notes": "Cash-and-carry forward price, net carry and funding DV01. Simple repo rate; no haircut/margin schedule.",
+    },
     "mm_deposit": {
         "name": "Money Market Deposit",
         "status": ModelStatus.APPROXIMATION,

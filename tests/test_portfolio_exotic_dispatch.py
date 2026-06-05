@@ -143,3 +143,10 @@ def test_money_market_in_portfolio():
     pf.value()
     assert all(p.price > 0 for p in pf.positions)
     assert all(any(e.unit == "DV01" for e in p.exposures) for p in pf.positions)
+
+
+def test_repo_in_portfolio_funding_dv01():
+    pf = PortfolioService("T")
+    pos = _priced(pf, _pos("repo", {"spot": 1000, "repo_rate": 0.10, "T": 0.25,
+                                    "coupon_income": 0.0, "direction": "repo"}))
+    assert pos.dv01 != 0 and any(e.factor_id == "rates.repo" for e in pos.exposures)
