@@ -1,0 +1,166 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', Helvetica, Arial, sans-serif">
+  <!-- ===== base ===== -->
+  <rect width="1280" height="800" fill="#14171C"/>
+
+  <!-- ===== topbar ===== -->
+  <rect x="0" y="0" width="1280" height="44" fill="#0F1216"/>
+  <rect x="0" y="43" width="1280" height="1" fill="#252C34"/>
+  <text x="20" y="28" fill="#F2F4F7" font-size="15" font-weight="700">RiskCalc</text>
+  <!-- status chips -->
+  <rect x="930" y="13" width="78" height="20" rx="4" fill="#14231B" stroke="#246030"/>
+  <text x="969" y="27" fill="#30D158" font-size="11" text-anchor="middle">■ MOEX</text>
+  <rect x="1016" y="13" width="128" height="20" rx="4" fill="#202630" stroke="#2A313A"/>
+  <text x="1080" y="27" fill="#B8C0CC" font-size="11" text-anchor="middle">EOD 2026-06-02</text>
+  <text x="1162" y="28" fill="#7C8796" font-size="13">⌘K</text>
+  <text x="1200" y="28" fill="#7C8796" font-size="13">◐</text>
+  <text x="1238" y="28" fill="#7C8796" font-size="13">⚙</text>
+
+  <!-- ===== sidebar ===== -->
+  <rect x="0" y="44" width="190" height="756" fill="#0F1216"/>
+  <rect x="189" y="44" width="1" height="756" fill="#252C34"/>
+  <!-- nav items -->
+  <g font-size="13">
+    <text x="24" y="86"  fill="#B8C0CC">Dashboard</text>
+    <text x="24" y="120" fill="#B8C0CC">Market</text>
+    <!-- active: Pricing -->
+    <rect x="8" y="132" width="174" height="30" rx="5" fill="#3A251C"/>
+    <rect x="8" y="132" width="3" height="30" rx="1.5" fill="#D97757"/>
+    <text x="24" y="152" fill="#F2F4F7" font-weight="600">Pricing</text>
+    <text x="24" y="188" fill="#B8C0CC">Portfolio</text>
+    <text x="24" y="222" fill="#B8C0CC">Risk</text>
+    <text x="24" y="256" fill="#B8C0CC">Governance</text>
+    <text x="24" y="290" fill="#B8C0CC">Analytics</text>
+    <text x="24" y="324" fill="#B8C0CC">Settings</text>
+  </g>
+
+  <!-- ===== workspace header ===== -->
+  <text x="210" y="80" fill="#F2F4F7" font-size="20" font-weight="700">Pricing</text>
+  <text x="210" y="102" fill="#7C8796" font-size="12">Value any instrument, view sensitivities, add it to the portfolio</text>
+  <rect x="1180" y="64" width="64" height="22" rx="4" fill="#2A2115" stroke="#604820"/>
+  <text x="1212" y="79" fill="#FFD60A" font-size="11" text-anchor="middle">■ DEMO</text>
+
+  <!-- ===== category tabs ===== -->
+  <g font-size="12">
+    <rect x="210" y="118" width="100" height="28" rx="4" fill="#1D2229" stroke="#D06A44"/>
+    <text x="260" y="136" fill="#F2F4F7" text-anchor="middle">Fixed Income</text>
+    <text x="338" y="136" fill="#7C8796" text-anchor="middle">Option</text>
+    <text x="408" y="136" fill="#7C8796" text-anchor="middle">Equity</text>
+    <text x="462" y="136" fill="#7C8796" text-anchor="middle">FX</text>
+    <text x="520" y="136" fill="#7C8796" text-anchor="middle">Swaps</text>
+    <text x="600" y="136" fill="#7C8796" text-anchor="middle">Structured</text>
+    <text x="676" y="136" fill="#7C8796" text-anchor="middle">Credit</text>
+  </g>
+  <rect x="210" y="154" width="1054" height="1" fill="#252C34"/>
+
+  <!-- ===== instrument dropdown ===== -->
+  <text x="210" y="186" fill="#7C8796" font-size="11">INSTRUMENT</text>
+  <rect x="294" y="172" width="280" height="28" rx="4" fill="#1D2229" stroke="#2A313A"/>
+  <text x="308" y="190" fill="#F2F4F7" font-size="12">Bond / OFZ</text>
+  <text x="556" y="190" fill="#7C8796" font-size="11">▼</text>
+
+  <!-- ===== inputs panel ===== -->
+  <rect x="210" y="214" width="330" height="540" rx="6" fill="#181C22" stroke="#20262E"/>
+  <text x="228" y="240" fill="#7C8796" font-size="11" letter-spacing="1">INPUTS</text>
+  <g font-size="12">
+    <!-- rows: label + field -->
+    <g>
+      <text x="228" y="276" fill="#B8C0CC">Face</text>
+      <rect x="360" y="262" width="160" height="24" rx="4" fill="#1D2229" stroke="#2A313A"/>
+      <text x="372" y="279" fill="#F2F4F7">1000</text>
+    </g>
+    <g>
+      <text x="228" y="312" fill="#B8C0CC">Coupon</text>
+      <rect x="360" y="298" width="160" height="24" rx="4" fill="#1D2229" stroke="#2A313A"/>
+      <text x="372" y="315" fill="#F2F4F7">0.07</text>
+    </g>
+    <g>
+      <text x="228" y="348" fill="#B8C0CC">Maturity (y)</text>
+      <rect x="360" y="334" width="160" height="24" rx="4" fill="#1D2229" stroke="#2A313A"/>
+      <text x="372" y="351" fill="#F2F4F7">10</text>
+    </g>
+    <g>
+      <text x="228" y="384" fill="#B8C0CC">Freq / year</text>
+      <rect x="360" y="370" width="160" height="24" rx="4" fill="#1D2229" stroke="#2A313A"/>
+      <text x="372" y="387" fill="#F2F4F7">2</text>
+    </g>
+    <g>
+      <text x="228" y="420" fill="#B8C0CC">Flat rate</text>
+      <rect x="360" y="406" width="160" height="24" rx="4" fill="#1D2229" stroke="#2A313A"/>
+      <text x="372" y="423" fill="#F2F4F7">0.12</text>
+    </g>
+    <g>
+      <text x="228" y="456" fill="#B8C0CC">Day count</text>
+      <rect x="360" y="442" width="160" height="24" rx="4" fill="#1D2229" stroke="#2A313A"/>
+      <text x="372" y="459" fill="#F2F4F7">act365</text>
+      <text x="504" y="459" fill="#7C8796">▼</text>
+    </g>
+    <g>
+      <text x="228" y="492" fill="#B8C0CC">Discount curve</text>
+      <rect x="360" y="478" width="160" height="24" rx="4" fill="#1D2229" stroke="#2A313A"/>
+      <text x="372" y="495" fill="#F2F4F7">flat(rate)</text>
+      <text x="504" y="495" fill="#7C8796">▼</text>
+    </g>
+  </g>
+  <!-- calculate button (accent) -->
+  <rect x="228" y="700" width="292" height="36" rx="5" fill="#D97757"/>
+  <text x="374" y="723" fill="#14171C" font-size="13" font-weight="700" text-anchor="middle">Calculate</text>
+
+  <!-- ===== result panel ===== -->
+  <rect x="556" y="214" width="708" height="540" rx="6" fill="#181C22" stroke="#20262E"/>
+  <text x="576" y="240" fill="#7C8796" font-size="11" letter-spacing="1">RESULT</text>
+  <!-- price -->
+  <text x="576" y="290" fill="#F2F4F7" font-size="40" font-weight="700" font-family="'SF Mono','Menlo',monospace">799.39</text>
+  <!-- provenance chips -->
+  <rect x="800" y="260" width="118" height="22" rx="4" fill="#2A2115" stroke="#604820"/>
+  <text x="859" y="275" fill="#FFD60A" font-size="11" text-anchor="middle">■ Approximation</text>
+  <rect x="928" y="260" width="86" height="22" rx="4" fill="#14231B" stroke="#246030"/>
+  <text x="971" y="275" fill="#30D158" font-size="11" text-anchor="middle">■ MOEX / OK</text>
+  <text x="800" y="300" fill="#7C8796" font-size="11" font-family="'SF Mono','Menlo',monospace">model fixed_bond v0.1 · snap moex-2026-06-02</text>
+  <rect x="576" y="318" width="664" height="1" fill="#252C34"/>
+
+  <!-- sensitivities (left half) -->
+  <text x="576" y="346" fill="#7C8796" font-size="11" letter-spacing="1">SENSITIVITIES</text>
+  <g font-size="12.5" font-family="'SF Mono','Menlo',monospace">
+    <text x="576" y="378" fill="#B8C0CC">YTM</text>        <text x="816" y="378" fill="#F2F4F7" text-anchor="end">0.1163</text>
+    <text x="576" y="406" fill="#B8C0CC">Mod duration</text><text x="816" y="406" fill="#F2F4F7" text-anchor="end">6.42</text>
+    <text x="576" y="434" fill="#B8C0CC">Eff duration</text><text x="816" y="434" fill="#F2F4F7" text-anchor="end">6.40</text>
+    <text x="576" y="462" fill="#B8C0CC">Convexity</text>  <text x="816" y="462" fill="#F2F4F7" text-anchor="end">51.2</text>
+    <text x="576" y="490" fill="#B8C0CC">DV01</text>       <text x="816" y="490" fill="#F2F4F7" text-anchor="end">0.62</text>
+    <text x="576" y="518" fill="#B8C0CC">Z-spread</text>   <text x="816" y="518" fill="#F2F4F7" text-anchor="end">142 bp</text>
+  </g>
+  <!-- key-rate mini bars -->
+  <text x="576" y="552" fill="#7C8796" font-size="11">Key-rate DV01</text>
+  <g>
+    <rect x="576" y="562" width="40" height="10" fill="#D97757"/><text x="576" y="588" fill="#7C8796" font-size="9">1y</text>
+    <rect x="624" y="562" width="64" height="10" fill="#D97757"/><text x="624" y="588" fill="#7C8796" font-size="9">2y</text>
+    <rect x="696" y="562" width="88" height="10" fill="#D06A44"/><text x="696" y="588" fill="#7C8796" font-size="9">5y</text>
+    <rect x="792" y="562" width="26" height="10" fill="#D97757"/><text x="792" y="588" fill="#7C8796" font-size="9">10y</text>
+  </g>
+
+  <!-- cashflows (right half) -->
+  <rect x="848" y="332" width="1" height="260" fill="#252C34"/>
+  <text x="872" y="346" fill="#7C8796" font-size="11" letter-spacing="1">CASHFLOW SCHEDULE</text>
+  <rect x="872" y="356" width="352" height="24" fill="#202630"/>
+  <g font-size="11.5" font-family="'SF Mono','Menlo',monospace">
+    <text x="884" y="372" fill="#7C8796">t</text>
+    <text x="1090" y="372" fill="#7C8796" text-anchor="end">amount</text>
+    <text x="884" y="398" fill="#B8C0CC">0.5</text> <text x="1090" y="398" fill="#F2F4F7" text-anchor="end">35.00</text>
+    <text x="884" y="422" fill="#B8C0CC">1.0</text> <text x="1090" y="422" fill="#F2F4F7" text-anchor="end">35.00</text>
+    <text x="884" y="446" fill="#B8C0CC">1.5</text> <text x="1090" y="446" fill="#F2F4F7" text-anchor="end">35.00</text>
+    <text x="884" y="470" fill="#B8C0CC">…</text>   <text x="1090" y="470" fill="#F2F4F7" text-anchor="end">…</text>
+    <text x="884" y="494" fill="#B8C0CC">9.5</text> <text x="1090" y="494" fill="#F2F4F7" text-anchor="end">35.00</text>
+    <text x="884" y="518" fill="#B8C0CC">10.0</text><text x="1090" y="518" fill="#F2F4F7" text-anchor="end">1035.00</text>
+  </g>
+
+  <!-- warning banner -->
+  <rect x="576" y="606" width="664" height="30" rx="4" fill="#2A2115" stroke="#604820"/>
+  <text x="592" y="625" fill="#FFD60A" font-size="11.5">⚠ Demo / manual market data — not production-validated.</text>
+
+  <!-- add to portfolio row -->
+  <text x="576" y="688" fill="#7C8796" font-size="11">QTY</text>
+  <rect x="612" y="674" width="70" height="28" rx="4" fill="#1D2229" stroke="#2A313A"/>
+  <text x="624" y="692" fill="#F2F4F7" font-size="12">1</text>
+  <rect x="700" y="674" width="180" height="28" rx="5" fill="#1D2229" stroke="#D06A44"/>
+  <text x="790" y="692" fill="#E08464" font-size="12" font-weight="600" text-anchor="middle">+ Add to portfolio</text>
+  <text x="900" y="692" fill="#30D158" font-size="12">✓ added</text>
+</svg>
