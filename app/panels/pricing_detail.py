@@ -97,6 +97,7 @@ class PricingDetailScreen(QWidget):
             f"border-radius:4px;padding:6px 14px;")
         calc.clicked.connect(self.calculate)
         form_panel.layout.addWidget(calc)
+        form_panel.layout.addStretch(1)        # pin inputs to the top (no leading gap)
         form_panel.setMaximumWidth(320)
 
         # result panel

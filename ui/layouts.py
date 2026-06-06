@@ -48,10 +48,14 @@ class WorkstationWorkspace(QWidget):
             right.setMinimumWidth(260)
             right.setMaximumWidth(360)
             main.addWidget(right)
-        context = ContextDrawer()
-        context.set_items(context_items or [])
-        main.addWidget(context)
-        self.context = context
+        # Context drawer is optional: only shown when context items are supplied.
+        if context_items:
+            context = ContextDrawer()
+            context.set_items(context_items)
+            main.addWidget(context)
+            self.context = context
+        else:
+            self.context = None
 
         root.addWidget(main, 1)
         if bottom is not None:

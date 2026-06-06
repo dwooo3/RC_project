@@ -9,7 +9,7 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from PySide6.QtWidgets import (
-    QHBoxLayout, QListWidget, QStackedWidget, QTabWidget, QWidget,
+    QComboBox, QStackedWidget, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from app.panels.pricing_catalogue import CATEGORIES, products_by_category
@@ -40,25 +40,24 @@ class PricingWorkspace(WorkstationWorkspace):
 
     def _category_page(self, category: str) -> QWidget:
         page = QWidget()
-        lay = QHBoxLayout(page)
-        lay.setContentsMargins(0, 0, 0, 0)
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 6, 0, 0)
         lay.setSpacing(6)
 
         products = products_by_category(category)
-        nav = QListWidget()
-        nav.setMaximumWidth(170)
-        nav.setStyleSheet(
-            f"QListWidget{{background:{PALETTE.bg_panel};color:{PALETTE.txt1};"
-            f"border:1px solid {PALETTE.border_soft};border-radius:4px;font-size:11px;}}"
-            f"QListWidget::item:selected{{background:{PALETTE.bg_selected};color:{PALETTE.txt0};}}")
+        selector = QComboBox()
+        selector.setMaximumWidth(280)
+        selector.setStyleSheet(
+            f"QComboBox{{background:{PALETTE.bg_panel_elevated};color:{PALETTE.txt0};"
+            f"border:1px solid {PALETTE.border_default};border-radius:4px;padding:4px 8px;font-size:12px;}}")
         stack = QStackedWidget()
         for product in products:
-            nav.addItem(product.label)
+            selector.addItem(product.label)
             stack.addWidget(PricingDetailScreen(product, self.pricing))
-        nav.currentRowChanged.connect(stack.setCurrentIndex)
+        selector.currentIndexChanged.connect(stack.setCurrentIndex)
         if products:
-            nav.setCurrentRow(0)
+            selector.setCurrentIndex(0)
 
-        lay.addWidget(nav)
+        lay.addWidget(selector)
         lay.addWidget(stack, 1)
         return page
