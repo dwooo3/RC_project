@@ -1,4 +1,12 @@
-"""Qt stylesheet — dark macOS / Claude-style."""
+"""Qt stylesheet — dark macOS / Claude-style.
+
+DEPRECATED (design migration v1): the active workstation uses the light theme in
+``ui.theme`` (``WORKSTATION_STYLE`` built from ``PALETTE = LIGHT``). This module is
+retained only for the orphaned pre-workstation single-instrument calculator panels
+(``app/panels/*_panel.py`` other than dashboard/portfolio), which are superseded by
+the Pricing hub and are not reachable from the workstation shell. Do not use in new
+UI — import design tokens from ``ui.theme`` instead.
+"""
 
 # ── Palette ───────────────────────────────────────────────────────────────
 # bg0   = #0f0f11  window root (near-black)
