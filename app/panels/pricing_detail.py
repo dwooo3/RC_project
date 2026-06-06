@@ -9,8 +9,8 @@ import uuid
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QScrollArea, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.panels.pricing_catalogue import Product
@@ -191,18 +191,42 @@ class PricingDetailScreen(QWidget):
         card.setFixedWidth(384)
         lay = QVBoxLayout(card)
         lay.setContentsMargins(18, 16, 18, 16)
-        lay.setSpacing(8)
+        lay.setSpacing(10)
         lay.addWidget(SectionLabel("PARAMETERS"))
 
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignLeft)
-        form.setSpacing(8)
-        form.setHorizontalSpacing(14)
+        # Scroll only when the parameter grid overflows the card height.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        scroll.viewport().setStyleSheet("background:transparent;")
 
-        def _label(text: str) -> QLabel:
-            lab = QLabel(text)
-            lab.setStyleSheet(f"color:{PALETTE.txt2};font-size:11px;background:transparent;")
-            return lab
+        inner = QWidget()
+        inner.setStyleSheet("background:transparent;")
+        outer = QVBoxLayout(inner)
+        outer.setContentsMargins(0, 0, 6, 0)
+        outer.setSpacing(0)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(10)
+
+        cursor = {"row": 0, "col": 0}
+
+        def _place(cell: QWidget, wide: bool):
+            if wide:
+                if cursor["col"] != 0:
+                    cursor["row"] += 1
+                    cursor["col"] = 0
+                grid.addWidget(cell, cursor["row"], 0, 1, 2)
+                cursor["row"] += 1
+            else:
+                grid.addWidget(cell, cursor["row"], cursor["col"])
+                cursor["col"] += 1
+                if cursor["col"] >= 2:
+                    cursor["col"] = 0
+                    cursor["row"] += 1
 
         for f in self.product.fields:
             if f.choices is not None:
@@ -212,7 +236,7 @@ class PricingDetailScreen(QWidget):
             else:
                 w = QLineEdit(str(f.default))
             self._inputs[f.key] = w
-            form.addRow(_label(f.label), w)
+            _place(self._field_cell(f.label, w), wide=f.wide)
 
         self._disc_combo = None
         self._proj_combo = None
@@ -220,15 +244,32 @@ class PricingDetailScreen(QWidget):
             names = ["flat(r)"] + self._curve_names()
             self._disc_combo = QComboBox()
             self._disc_combo.addItems(names)
-            form.addRow(_label("Discount curve"), self._disc_combo)
+            _place(self._field_cell("Discount curve", self._disc_combo), wide=True)
             if "proj" in self.product.curve_roles:
                 self._proj_combo = QComboBox()
                 self._proj_combo.addItems(names)
-                form.addRow(_label("Projection curve"), self._proj_combo)
+                _place(self._field_cell("Projection curve", self._proj_combo), wide=True)
 
-        lay.addLayout(form)
-        lay.addStretch(1)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        outer.addLayout(grid)
+        outer.addStretch(1)
+        scroll.setWidget(inner)
+        lay.addWidget(scroll, 1)
+        self._param_grid = grid
+        self._param_scroll = scroll
         return card
+
+    def _field_cell(self, label_text: str, widget: QWidget) -> QWidget:
+        cell = QWidget()
+        col = QVBoxLayout(cell)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(3)
+        lab = QLabel(label_text)
+        lab.setStyleSheet(f"color:{PALETTE.txt2};font-size:11px;background:transparent;")
+        col.addWidget(lab)
+        col.addWidget(widget)
+        return cell
 
     def _divider(self) -> QWidget:
         line = QWidget()

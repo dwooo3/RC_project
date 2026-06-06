@@ -18,6 +18,7 @@ class Field:
     label: str
     default: float | str
     choices: list[str] | None = None
+    wide: bool = False        # render full-width in the Parameters grid (e.g. schedules)
 
     @property
     def is_text(self) -> bool:
@@ -50,8 +51,8 @@ def _proj(v):
 
 
 # ── field shortcuts ───────────────────────────────────────
-def F(key, label, default, choices=None):
-    return Field(key, label, default, choices)
+def F(key, label, default, choices=None, wide=False):
+    return Field(key, label, default, choices, wide)
 
 
 _OPT = ["call", "put"]
@@ -102,7 +103,7 @@ PRODUCTS: list[Product] = [
             lambda v: ("frn", dict(face=v["face"], spread=v["spread"], T=v["T"],
                                    freq=int(v["freq"]), r=v["r"]), "FRN")),
     Product("custom_bond", "Custom Cashflow Bond", "Fixed Income",
-            [F("cashflows", "Cashflows t:amt", "1:35,2:35,3:1035"), F("freq", "Freq/y", 2),
+            [F("cashflows", "Cashflows t:amt", "1:35,2:35,3:1035", wide=True), F("freq", "Freq/y", 2),
              F("r", "Flat rate", 0.10)],
             lambda s, v: s.price_custom_bond(parse_cashflows(v["cashflows"]), int(v["freq"]),
                                              curve=_disc(s, v)),
