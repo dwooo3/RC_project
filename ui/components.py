@@ -102,7 +102,7 @@ class WorkstationPanel(WorkspaceCard):
     """Dense bordered panel used in workstation multi-panel layouts."""
 
     def __init__(self, title: str = "", parent=None):
-        super().__init__(parent, object_name="workstation_panel")
+        super().__init__(parent, object_name="workstation_panel", elevated=True)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(9, 7, 9, 8)
         self.layout.setSpacing(6)
@@ -126,6 +126,7 @@ class KpiCard(WorkspaceCard):
         super().__init__(
             parent,
             object_name="metric_card_highlight" if highlight else "metric_card",
+            elevated=True,
         )
         self.setMinimumHeight(64)
 
@@ -430,20 +431,24 @@ class WorkspaceHeader(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
 
-        title_col = QVBoxLayout()
-        title_col.setSpacing(1)
-        title_label = QLabel(title)
-        title_label.setStyleSheet(
-            f"color:{PALETTE.txt0};font-size:18px;font-weight:700;background:transparent;"
-        )
-        title_col.addWidget(title_label)
-        if subtitle:
-            subtitle_label = QLabel(subtitle)
-            subtitle_label.setStyleSheet(
-                f"color:{PALETTE.txt2};font-size:11px;background:transparent;"
-            )
-            title_col.addWidget(subtitle_label)
-        row.addLayout(title_col, 1)
+        if title or subtitle:
+            title_col = QVBoxLayout()
+            title_col.setSpacing(1)
+            if title:
+                title_label = QLabel(title)
+                title_label.setStyleSheet(
+                    f"color:{PALETTE.txt0};font-size:18px;font-weight:700;background:transparent;"
+                )
+                title_col.addWidget(title_label)
+            if subtitle:
+                subtitle_label = QLabel(subtitle)
+                subtitle_label.setStyleSheet(
+                    f"color:{PALETTE.txt2};font-size:11px;background:transparent;"
+                )
+                title_col.addWidget(subtitle_label)
+            row.addLayout(title_col, 1)
+        else:
+            row.addStretch(1)        # right-align chips/actions when there is no title
 
         for chip in chips or []:
             row.addWidget(chip, alignment=Qt.AlignVCenter)

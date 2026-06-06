@@ -28,10 +28,13 @@ class WorkstationWorkspace(QWidget):
         super().__init__(parent)
         self.setStyleSheet(f"background:{PALETTE.bg_workspace};")
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 8, 10, 8)
-        root.setSpacing(6)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(10)
 
-        root.addWidget(WorkspaceHeader(title, subtitle, chips=chips, actions=actions))
+        # The shell toolbar owns the page title; the workspace only shows a slim
+        # right-aligned chips/actions row when it has any (no duplicate title).
+        if chips or actions:
+            root.addWidget(WorkspaceHeader("", "", chips=chips, actions=actions))
         if kpi_strip is not None:
             root.addWidget(kpi_strip)
 
