@@ -19,9 +19,13 @@ def test_shared_ui_component_library_exports_required_components():
 
 
 def test_theme_ownership_lives_under_ui_theme():
-    assert theme.PALETTE.bg0 == "#0B0D10"
-    assert theme.PALETTE.bg_topbar == "#0F1216"
-    assert theme.PALETTE.accent == "#D97757"
+    # Active palette is the new light theme (design migration v1); the historical
+    # dark values are preserved on the DARK palette.
+    assert theme.PALETTE is theme.LIGHT
+    assert theme.DARK.bg0 == "#0B0D10"
+    assert theme.DARK.bg_topbar == "#0F1216"
+    assert theme.DARK.accent == "#D97757"
+    assert theme.PALETTE.accent == "#D9633F"
     assert isinstance(theme.APP_STYLE, str)
     assert isinstance(theme.LIGHT_STYLE, str)
     assert isinstance(theme.WORKSTATION_STYLE, str)

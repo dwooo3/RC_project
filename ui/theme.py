@@ -1,10 +1,18 @@
-"""Theme ownership for RiskCalc workstation UI."""
+"""Theme ownership for RiskCalc workstation UI.
 
-from dataclasses import dataclass
+Two palettes share one set of token names so screens never branch on theme:
+``DARK`` keeps the historical values, ``LIGHT`` is the new macOS-2026 design
+language (source of truth: design/pricing_v6_light.svg). ``PALETTE`` is the
+active palette — currently ``LIGHT``. Token *names* are stable across themes;
+only their values differ, which keeps the diff across ui/ and app/panels small.
+"""
+
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
 class ThemePalette:
+    # Defaults below are the DARK palette (DARK = ThemePalette()).
     bg0: str = "#0B0D10"
     bg1: str = "#111418"
     bg1_alt: str = "#14171C"
@@ -55,13 +63,108 @@ class ThemePalette:
     status_placeholder_border: str = "#505A66"
     status_broken_bg: str = "#2A1518"
     status_broken_border: str = "#6A2820"
+    # --- new design tokens (v6) ; defaults = dark ---
+    bg_window: str = "#1B1B1D"          # window surface under the cards
+    bg_card: str = "#212123"            # card surface (sidebar / valuation / params)
+    bg_field: str = "#1D2229"           # input field surface
+    bg_footer: str = "#1C1C1E"          # fixed footer surface
+    card_border: str = "rgba(255,255,255,0.06)"
+    txt_table: str = "#C9C9CE"          # tabular data
+    txt_nav: str = "#C9C9CE"            # sidebar item label
+    accent_pressed: str = "#C4502E"
+    accent_on: str = "#FFFFFF"          # text/icon on accent fill
+    positive: str = "#3FB984"
+    positive_soft: str = "rgba(63,185,132,0.14)"
+    warn_text: str = "#E0B341"
+    warn_dot: str = "#E0B341"
+    warn_soft: str = "rgba(224,179,65,0.14)"
+    scroll_track: str = "rgba(255,255,255,0.04)"
+    scroll_thumb: str = "rgba(255,255,255,0.18)"
+    shadow_color: str = "#000000"
+    shadow_alpha: int = 100             # 0..255 for QGraphicsDropShadowEffect
 
 
-PALETTE = ThemePalette()
+DARK = ThemePalette()
+
+LIGHT = replace(
+    DARK,
+    bg0="#E1E6EF",
+    bg1="#EBEEF4",
+    bg1_alt="#E5E9F1",
+    bg2="#F3F5F9",
+    bg2_alt="#F5F7FA",
+    bg3="#E2E6EE",
+    bg4="#CAD2DE",
+    bg5="#AEB8C6",
+    bg_topbar="#FBFBFD",
+    bg_workspace="#EBEEF4",
+    bg_panel="#FFFFFF",
+    bg_panel_elevated="#F3F5F9",
+    bg_table_header="#F5F7FA",
+    bg_table_row="#FFFFFF",
+    bg_table_row_alt="#F7F9FC",
+    bg_selected="#FBEEE8",
+    bg_warning="#FBF3DE",
+    bg_error="#FCE9E7",
+    bg_success="#E4F4EC",
+    border_strong="rgba(42,47,58,0.18)",
+    border_default="rgba(42,47,58,0.12)",
+    border_soft="rgba(42,47,58,0.08)",
+    divider="rgba(42,47,58,0.08)",
+    txt0="#1C2026",
+    txt1="#4A5260",
+    txt2="#8A91A0",
+    text_disabled="#B0B6C0",
+    accent="#D9633F",
+    accent_hi="#E0805C",
+    accent_lo="#C4502E",
+    accent_soft="rgba(217,99,63,0.12)",
+    green="#0E8A5A",
+    red="#D23B30",
+    red_text="#C4332A",
+    amber="#9A7300",
+    blue="#3E7BD6",
+    cyan="#1796A6",
+    purple="#7A5CC0",
+    status_valid_bg="rgba(18,160,106,0.14)",
+    status_valid_border="rgba(14,138,90,0.45)",
+    status_approx_bg="rgba(224,168,0,0.16)",
+    status_approx_border="rgba(181,134,11,0.45)",
+    status_prototype_bg="rgba(122,92,192,0.14)",
+    status_prototype_text="#6A4FB0",
+    status_prototype_border="rgba(122,92,192,0.40)",
+    status_placeholder_bg="rgba(42,47,58,0.06)",
+    status_placeholder_border="rgba(42,47,58,0.30)",
+    status_broken_bg="rgba(210,59,48,0.14)",
+    status_broken_border="rgba(210,59,48,0.45)",
+    # new design tokens
+    bg_window="#FBFBFD",
+    bg_card="#FFFFFF",
+    bg_field="#F3F5F9",
+    bg_footer="#F5F7FA",
+    card_border="rgba(42,47,58,0.08)",
+    txt_table="#3A414C",
+    txt_nav="#4A5260",
+    accent_pressed="#C4502E",
+    accent_on="#FFFFFF",
+    positive="#0E8A5A",
+    positive_soft="rgba(18,160,106,0.14)",
+    warn_text="#9A7300",
+    warn_dot="#B5860B",
+    warn_soft="rgba(224,168,0,0.16)",
+    scroll_track="rgba(42,47,58,0.06)",
+    scroll_thumb="rgba(42,47,58,0.22)",
+    shadow_color="#5A6378",
+    shadow_alpha=46,
+)
+
+# Active palette. v1 of the design migration ships light as the single theme;
+# a runtime theme switch (ThemeManager + themeChanged) is a separate future task.
+PALETTE = LIGHT
 
 
 def color(name: str) -> str:
-    """Return a named theme color."""
+    """Return a named theme color from the active palette."""
     return getattr(PALETTE, name)
 
 
@@ -74,7 +177,7 @@ def status_style(status_value: str) -> tuple[str, str]:
             "VALIDATED",
         ),
         "Approximation": (
-            f"background:{PALETTE.status_approx_bg};color:{PALETTE.amber};"
+            f"background:{PALETTE.status_approx_bg};color:{PALETTE.warn_text};"
             f"border:1px solid {PALETTE.status_approx_border};",
             "APPROX",
         ),
@@ -118,27 +221,27 @@ except Exception:  # pragma: no cover - allows docs/static imports without Qt ap
 
 WORKSTATION_STYLE = f"""
 * {{
-    font-family: "Inter", ".AppleSystemUIFont", "Segoe UI", Arial;
+    font-family: "SF Pro Text", "Inter", ".AppleSystemUIFont", "Segoe UI", Arial;
     font-size: 12px;
     color: {PALETTE.txt0};
 }}
 QWidget {{
-    background-color: {PALETTE.bg0};
+    background-color: {PALETTE.bg_workspace};
 }}
 QMainWindow {{
-    background-color: {PALETTE.bg0};
+    background-color: {PALETTE.bg_workspace};
 }}
 QFrame#workstation_panel,
 QFrame#workspace_card,
 QFrame#metric_card {{
-    background-color: {PALETTE.bg_panel};
-    border: 1px solid {PALETTE.border_soft};
-    border-radius: 4px;
+    background-color: {PALETTE.bg_card};
+    border: 1px solid {PALETTE.card_border};
+    border-radius: 14px;
 }}
 QFrame#metric_card_highlight {{
     background-color: {PALETTE.accent_soft};
     border: 1px solid {PALETTE.accent_lo};
-    border-radius: 4px;
+    border-radius: 14px;
 }}
 QLabel#metric_name {{
     color: {PALETTE.txt2};
@@ -156,39 +259,47 @@ QLabel#metric_sub {{
     font-size: 10px;
 }}
 QPushButton {{
-    background-color: {PALETTE.bg_panel_elevated};
-    border: 1px solid {PALETTE.border_soft};
-    border-radius: 4px;
+    background-color: {PALETTE.bg_field};
+    border: 1px solid {PALETTE.card_border};
+    border-radius: 9px;
     color: {PALETTE.txt1};
-    min-height: 24px;
-    padding: 2px 9px;
+    min-height: 26px;
+    padding: 2px 11px;
 }}
 QPushButton:hover {{
     border-color: {PALETTE.border_strong};
     color: {PALETTE.txt0};
 }}
 QPushButton#primary_action {{
-    background-color: {PALETTE.accent_soft};
-    border-color: {PALETTE.accent};
-    color: {PALETTE.accent};
+    background-color: {PALETTE.accent};
+    border: 1px solid {PALETTE.accent};
+    color: {PALETTE.accent_on};
     font-weight: 700;
 }}
+QPushButton#primary_action:hover {{
+    background-color: {PALETTE.accent_hi};
+    border-color: {PALETTE.accent_hi};
+}}
+QPushButton#primary_action:pressed {{
+    background-color: {PALETTE.accent_pressed};
+    border-color: {PALETTE.accent_pressed};
+}}
 QLineEdit, QComboBox {{
-    background-color: {PALETTE.bg_panel_elevated};
-    border: 1px solid {PALETTE.border_soft};
-    border-radius: 4px;
-    min-height: 24px;
-    padding: 2px 7px;
+    background-color: {PALETTE.bg_field};
+    border: 1px solid {PALETTE.card_border};
+    border-radius: 9px;
+    min-height: 26px;
+    padding: 2px 9px;
     color: {PALETTE.txt0};
 }}
 QLineEdit:focus, QComboBox:focus {{
     border-color: {PALETTE.accent};
 }}
 QTableWidget {{
-    background-color: {PALETTE.bg_table_row};
+    background-color: {PALETTE.bg_card};
     alternate-background-color: {PALETTE.bg_table_row_alt};
-    border: 1px solid {PALETTE.border_soft};
-    gridline-color: {PALETTE.bg_table_row_alt};
+    border: none;
+    gridline-color: {PALETTE.divider};
     selection-background-color: {PALETTE.bg_selected};
     selection-color: {PALETTE.txt0};
     font-size: 11px;
@@ -197,11 +308,26 @@ QHeaderView::section {{
     background-color: {PALETTE.bg_table_header};
     color: {PALETTE.txt2};
     border: none;
-    border-right: 1px solid {PALETTE.border_soft};
-    border-bottom: 1px solid {PALETTE.border_soft};
+    border-bottom: 1px solid {PALETTE.divider};
     padding: 3px 6px;
     font-size: 10px;
     font-weight: 700;
+}}
+QScrollBar:vertical {{
+    background: transparent;
+    width: 10px;
+    margin: 2px;
+}}
+QScrollBar::handle:vertical {{
+    background: {PALETTE.scroll_thumb};
+    border-radius: 4px;
+    min-height: 30px;
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0;
+}}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: transparent;
 }}
 QTabWidget::pane {{
     border: none;
@@ -216,7 +342,7 @@ QTabBar::tab {{
     min-height: 18px;
 }}
 QTabBar::tab:selected {{
-    background: {PALETTE.bg_panel};
+    background: {PALETTE.bg_card};
     color: {PALETTE.accent};
     border-bottom: 2px solid {PALETTE.accent};
 }}

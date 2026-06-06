@@ -3,11 +3,12 @@
 from enum import Enum
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QFrame,
+    QGraphicsDropShadowEffect,
     QGridLayout,
     QHeaderView,
     QHBoxLayout,
@@ -22,6 +23,24 @@ from PySide6.QtWidgets import (
 )
 
 from ui.theme import PALETTE, status_style, value_color
+
+
+def card_shadow(widget: QWidget, *, blur: int = 18, dy: int = 8, color: str | None = None,
+                alpha: int | None = None) -> QGraphicsDropShadowEffect:
+    """Apply the standard soft card elevation shadow to ``widget``.
+
+    Qt stylesheets cannot express shadows, so cards use a graphics effect. A
+    widget may hold only one graphics effect; calling this replaces any prior.
+    """
+    effect = QGraphicsDropShadowEffect(widget)
+    effect.setBlurRadius(blur)
+    effect.setXOffset(0)
+    effect.setYOffset(dy)
+    c = QColor(color or PALETTE.shadow_color)
+    c.setAlpha(PALETTE.shadow_alpha if alpha is None else alpha)
+    effect.setColor(c)
+    widget.setGraphicsEffect(effect)
+    return effect
 
 
 class ModelStatus(Enum):
@@ -42,18 +61,32 @@ class WorkspacePage(QWidget):
 
 
 class WorkspaceCard(QFrame):
-    """Shared elevated card surface."""
+    """Shared elevated card surface (white, rounded, hairline border)."""
 
-    def __init__(self, parent=None, *, object_name: str = "workspace_card", fixed_height: int | None = None):
+    def __init__(
+        self,
+        parent=None,
+        *,
+        object_name: str = "workspace_card",
+        fixed_height: int | None = None,
+        radius: int = 14,
+        elevated: bool = False,
+    ):
         super().__init__(parent)
         self.setObjectName(object_name)
         self.setFrameShape(QFrame.StyledPanel)
         if fixed_height is not None:
             self.setFixedHeight(fixed_height)
+        if object_name == "metric_card_highlight":
+            bg, border = PALETTE.accent_soft, PALETTE.accent_lo
+        else:
+            bg, border = PALETTE.bg_card, PALETTE.card_border
         self.setStyleSheet(
-            f"QFrame#{object_name}{{background:{PALETTE.bg_panel};"
-            f"border:1px solid {PALETTE.border_soft};border-radius:4px;}}"
+            f"QFrame#{object_name}{{background:{bg};"
+            f"border:1px solid {border};border-radius:{radius}px;}}"
         )
+        if elevated:
+            card_shadow(self)
 
 
 class WorkstationPanel(WorkspaceCard):
