@@ -295,6 +295,12 @@ QLineEdit, QComboBox {{
 QLineEdit:focus, QComboBox:focus {{
     border-color: {PALETTE.accent};
 }}
+QLineEdit:hover, QComboBox:hover {{
+    border-color: {PALETTE.border_strong};
+}}
+QLineEdit[invalid="true"], QComboBox[invalid="true"] {{
+    border-color: {PALETTE.red};
+}}
 QTableWidget {{
     background-color: {PALETTE.bg_card};
     alternate-background-color: {PALETTE.bg_table_row_alt};

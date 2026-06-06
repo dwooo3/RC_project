@@ -18,7 +18,7 @@ from app.panels.session import shared_portfolio
 from domain.portfolio import Position
 from ui.components import (
     DataSourceChip, DenseTable, KeyValueGrid, ScrollableCard, SectionLabel,
-    StatusChip, WorkspaceCard, fit_table_height,
+    StatusChip, WorkspaceCard, fit_table_height, mark_invalid,
 )
 from ui.theme import PALETTE
 
@@ -85,6 +85,7 @@ class PricingDetailScreen(QWidget):
         root.setSpacing(16)
         root.addWidget(self._build_valuation_card(), 1)
         root.addWidget(self._build_parameters_card())
+        self._set_idle()
 
     def _build_valuation_card(self) -> QWidget:
         card = ScrollableCard(elevated=True)
@@ -111,6 +112,23 @@ class PricingDetailScreen(QWidget):
         self._prov_sub.setStyleSheet(f"color:{PALETTE.txt2};font-size:11px;background:transparent;")
         body.addWidget(self._prov_sub)
 
+        # Input-validation error (red).
+        self._error_label = QLabel("")
+        self._error_label.setWordWrap(True)
+        self._error_label.setStyleSheet(f"color:{PALETTE.red_text};font-size:11px;background:transparent;")
+        self._error_label.setVisible(False)
+        body.addWidget(self._error_label)
+
+        # Demo / stale market-data banner (amber).
+        self._stale_label = QLabel("")
+        self._stale_label.setWordWrap(True)
+        self._stale_label.setStyleSheet(
+            f"color:{PALETTE.warn_text};background:{PALETTE.warn_soft};"
+            "border-radius:8px;padding:6px 10px;font-size:11px;")
+        self._stale_label.setVisible(False)
+        body.addWidget(self._stale_label)
+
+        # Model warnings (amber).
         self._warnings = QLabel("")
         self._warnings.setWordWrap(True)
         self._warnings.setStyleSheet(f"color:{PALETTE.warn_text};font-size:11px;background:transparent;")
@@ -333,14 +351,55 @@ class PricingDetailScreen(QWidget):
                 return lambda t, _r=float(rv): math.exp(-_r * t)
         return None
 
+    def _set_idle(self):
+        """Empty state shown before the first valuation."""
+        self._price_label.setText("—")
+        self._price_label.setStyleSheet(
+            f"color:{PALETTE.txt0};font-size:40px;font-weight:700;background:transparent;")
+        self._prov_sub.setText("Press Calculate to value this instrument.")
+        self._metrics.set_pairs([])
+        for lbl in (self._error_label, self._stale_label, self._warnings):
+            lbl.setVisible(False)
+        for tbl, lab in ((self._cf_table, self._cf_label), (self._curve_table, self._curve_label)):
+            tbl.setVisible(False)
+            lab.setVisible(False)
+        self._mv_value.setText("—")
+        self._add_btn.setEnabled(False)
+
+    def _validate(self) -> list[str]:
+        """Mark numeric fields that don't parse; return the labels that failed."""
+        errors = []
+        for f in self.product.fields:
+            w = self._inputs[f.key]
+            if isinstance(w, QLineEdit) and not isinstance(f.default, str):
+                ok = True
+                try:
+                    float(w.text().strip())
+                except ValueError:
+                    ok = False
+                mark_invalid(w, not ok)
+                if not ok:
+                    errors.append(f.label)
+            elif isinstance(w, QLineEdit):
+                mark_invalid(w, False)
+        return errors
+
     def calculate(self):
         self._confirm.setText("")
+        errors = self._validate()
+        if errors:
+            self._error_label.setText("Check these fields: " + ", ".join(errors))
+            self._error_label.setVisible(True)
+            self._price_label.setText("—")
+            self._add_btn.setEnabled(False)
+            return
+        self._error_label.setVisible(False)
         try:
             res = self.product.price(self.pricing, self._values())
         except Exception as exc:
             self._price_label.setText("error")
-            self._warnings.setText(str(exc))
-            self._warnings.setVisible(True)
+            self._error_label.setText(str(exc))
+            self._error_label.setVisible(True)
             self._add_btn.setEnabled(False)
             return
         self._last_result = res
@@ -349,6 +408,10 @@ class PricingDetailScreen(QWidget):
     def _render(self, res: dict):
         value = res.get("value")
         self._price_label.setText(f"{value:,.4f}" if isinstance(value, (int, float)) else "—")
+        status = res.get("model_status") or "Unknown"
+        price_color = PALETTE.red if status == "Broken" else PALETTE.txt0
+        self._price_label.setStyleSheet(
+            f"color:{price_color};font-size:40px;font-weight:700;background:transparent;")
         self._update_market_value()
 
         # status pills
@@ -356,8 +419,15 @@ class PricingDetailScreen(QWidget):
             item = self._pills.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self._pills.addWidget(StatusChip(res.get("model_status") or "Unknown"))
-        self._pills.addWidget(DataSourceChip(res.get("market_data_source") or "—"))
+        src = res.get("market_data_source") or "—"
+        self._pills.addWidget(StatusChip(status))
+        self._pills.addWidget(DataSourceChip(src))
+
+        # demo / stale market-data banner
+        snap_id = res.get("market_data_snapshot_id") or ""
+        stale = str(src).upper() in {"DEMO", "MANUAL"} or "demo" in snap_id.lower()
+        self._stale_label.setText("Demo / manual market data — not production-validated.")
+        self._stale_label.setVisible(stale)
 
         # provenance subline
         raw = res.get("raw") or {}

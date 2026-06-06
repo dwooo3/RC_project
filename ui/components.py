@@ -27,6 +27,13 @@ from PySide6.QtWidgets import (
 from ui.theme import PALETTE, status_style, value_color
 
 
+def mark_invalid(widget: QWidget, invalid: bool = True):
+    """Toggle the red invalid-field border (driven by the [invalid] QSS selector)."""
+    widget.setProperty("invalid", "true" if invalid else "false")
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
+
+
 def card_shadow(widget: QWidget, *, blur: int = 18, dy: int = 8, color: str | None = None,
                 alpha: int | None = None) -> QGraphicsDropShadowEffect:
     """Apply the standard soft card elevation shadow to ``widget``.
