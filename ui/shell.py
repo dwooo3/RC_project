@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.components import CommandBar
+from ui.components import CommandBar, card_shadow
 from ui.theme import PALETTE
 
 
@@ -62,91 +62,81 @@ WORKSPACE_META = {
 
 
 class GlobalNavigation(QWidget):
-    """Left navigation containing only approved product layers."""
+    """Left navigation as a floating rounded glass-card tile (no account row)."""
 
     def __init__(self, on_select: Callable[[str], None], parent=None):
         super().__init__(parent)
         self.setObjectName("sidebar")
-        self.setFixedWidth(196)
+        self.setFixedWidth(240)
         self._on_select = on_select
         self._buttons: dict[str, QPushButton] = {}
         self._build()
 
     def _build(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        logo = QWidget()
-        logo.setFixedHeight(56)
-        logo.setStyleSheet(
-            f"background:{PALETTE.bg_topbar};border-bottom:1px solid {PALETTE.border_soft};"
+        self.setStyleSheet(
+            f"QWidget#sidebar{{background:{PALETTE.bg_card};"
+            f"border:1px solid {PALETTE.card_border};border-radius:16px;}}"
         )
-        logo_layout = QVBoxLayout(logo)
-        logo_layout.setContentsMargins(14, 10, 14, 8)
-        logo_layout.setSpacing(2)
+        card_shadow(self)
 
-        title = QLabel("RiskCalc")
-        title.setStyleSheet(
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 16, 14, 16)
+        root.setSpacing(4)
+
+        brand = QHBoxLayout()
+        brand.setSpacing(8)
+        logo = QLabel("R")
+        logo.setFixedSize(24, 24)
+        logo.setAlignment(Qt.AlignCenter)
+        logo.setStyleSheet(
+            f"background:{PALETTE.accent};color:{PALETTE.accent_on};border-radius:7px;"
+            "font-size:14px;font-weight:800;"
+        )
+        name = QLabel("RiskCalc")
+        name.setStyleSheet(
             f"color:{PALETTE.txt0};font-size:15px;font-weight:700;background:transparent;"
         )
-        subtitle = QLabel("Market Risk Workstation")
-        subtitle.setStyleSheet(
-            f"color:{PALETTE.accent};font-size:10px;font-weight:700;background:transparent;"
-        )
-        logo_layout.addWidget(title)
-        logo_layout.addWidget(subtitle)
-        root.addWidget(logo)
-
-        body = QWidget()
-        body.setStyleSheet(f"background:{PALETTE.bg_topbar};")
-        nav_layout = QVBoxLayout(body)
-        nav_layout.setContentsMargins(6, 8, 6, 6)
-        nav_layout.setSpacing(1)
+        brand.addWidget(logo)
+        brand.addWidget(name)
+        brand.addStretch()
+        root.addLayout(brand)
+        root.addSpacing(12)
 
         for idx, (display, key) in enumerate(NAV_ITEMS, 1):
             button = QPushButton(display)
             button.setCheckable(True)
             button.setObjectName("nav_btn")
-            button.setFixedHeight(32)
+            button.setFixedHeight(38)
+            button.setCursor(Qt.PointingHandCursor)
             button.setToolTip(f"Ctrl+{idx}")
             button.setStyleSheet(
                 f"""
                 QPushButton#nav_btn {{
                     background: transparent;
-                    color: {PALETTE.txt1};
+                    color: {PALETTE.txt_nav};
                     border: none;
-                    border-radius: 3px;
-                    font-size: 12px;
-                    font-weight: 600;
+                    border-radius: 10px;
+                    font-size: 13px;
+                    font-weight: 500;
                     text-align: left;
-                    padding: 0 10px;
+                    padding: 0 12px;
                 }}
                 QPushButton#nav_btn:hover {{
-                    background: {PALETTE.bg_panel_elevated};
+                    background: {PALETTE.bg_field};
                     color: {PALETTE.txt0};
                 }}
                 QPushButton#nav_btn:checked {{
                     background: {PALETTE.accent_soft};
-                    color: {PALETTE.accent};
-                    font-weight: 700;
-                    border-left: 3px solid {PALETTE.accent};
+                    color: {PALETTE.accent_lo};
+                    font-weight: 600;
                 }}
                 """
             )
             button.toggled.connect(lambda checked, k=key: checked and self.select_key(k))
             self._buttons[key] = button
-            nav_layout.addWidget(button)
+            root.addWidget(button)
 
-        nav_layout.addStretch()
-        root.addWidget(body, 1)
-
-        footer = QLabel("DEMO data · Ctrl+K")
-        footer.setStyleSheet(
-            f"color:{PALETTE.txt2};font-size:10px;padding:6px 14px;"
-            f"background:{PALETTE.bg_topbar};border-top:1px solid {PALETTE.border_soft};"
-        )
-        root.addWidget(footer)
+        root.addStretch()
 
     def select_key(self, key: str):
         for item_key, button in self._buttons.items():
@@ -160,43 +150,61 @@ class GlobalNavigation(QWidget):
 
 
 class WorkspaceHeaderBar(QWidget):
-    """Shell-level workspace header shared by all workspaces."""
+    """Shell-level toolbar: page title + per-workspace controls slot + scope chip.
+
+    The subtitle under the title was removed in the v6 design; ``self.subtitle``
+    is kept (hidden) for backward compatibility. Workspaces inject their own
+    controls (e.g. a SegmentedControl) into the right-of-title slot via
+    :meth:`set_controls`.
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(48)
-        self.setStyleSheet(
-            f"background:{PALETTE.bg_workspace};border-bottom:1px solid {PALETTE.border_soft};"
-        )
+        self.setFixedHeight(56)
+        self.setStyleSheet(f"background:{PALETTE.bg_workspace};")
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 5, 10, 5)
-        layout.setSpacing(6)
+        layout.setContentsMargins(4, 8, 16, 8)
+        layout.setSpacing(14)
 
-        text_col = QVBoxLayout()
-        text_col.setSpacing(1)
         self.title = QLabel("")
         self.title.setStyleSheet(
-            f"color:{PALETTE.txt0};font-size:16px;font-weight:700;background:transparent;"
+            f"color:{PALETTE.txt0};font-size:22px;font-weight:700;background:transparent;"
         )
-        self.subtitle = QLabel("")
-        self.subtitle.setStyleSheet(
-            f"color:{PALETTE.txt2};font-size:11px;background:transparent;"
-        )
-        text_col.addWidget(self.title)
-        text_col.addWidget(self.subtitle)
-        layout.addLayout(text_col, 1)
+        layout.addWidget(self.title)
 
-        self.scope = QLabel("Scope: Main Portfolio / Trading / DEMO")
+        # Per-workspace controls slot (right of the title).
+        self._controls = QHBoxLayout()
+        self._controls.setSpacing(8)
+        self._controls.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(self._controls)
+
+        layout.addStretch()
+
+        self.scope = QLabel("Main Portfolio · Trading · DEMO")
         self.scope.setStyleSheet(
-            f"color:{PALETTE.txt1};font-size:11px;background:{PALETTE.bg_panel};"
-            f"border:1px solid {PALETTE.border_soft};border-radius:3px;padding:2px 7px;"
+            f"color:{PALETTE.txt1};font-size:11px;background:{PALETTE.bg_card};"
+            f"border:1px solid {PALETTE.card_border};border-radius:8px;padding:3px 9px;"
         )
         layout.addWidget(self.scope)
+
+        # Kept for compatibility; not displayed in the v6 toolbar.
+        self.subtitle = QLabel("")
+        self.subtitle.hide()
 
     def set_workspace(self, key: str):
         title, subtitle = WORKSPACE_META.get(key, (key.title(), ""))
         self.title.setText(title)
         self.subtitle.setText(subtitle)
+
+    def set_controls(self, widget: QWidget | None):
+        """Replace the controls-slot content with ``widget`` (or clear it)."""
+        while self._controls.count():
+            item = self._controls.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+        if widget is not None:
+            self._controls.addWidget(widget)
 
 
 class ShellStatusBar(QWidget):
@@ -249,22 +257,19 @@ class WorkspaceShell(QWidget):
         root.addWidget(self.context_bar)
 
         body = QWidget()
+        body.setStyleSheet(f"background:{PALETTE.bg_workspace};")
         body_layout = QHBoxLayout(body)
-        body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(0)
+        body_layout.setContentsMargins(16, 12, 16, 12)
+        body_layout.setSpacing(16)
 
         self.global_navigation = GlobalNavigation(self.show_workspace)
         body_layout.addWidget(self.global_navigation)
 
-        divider = QFrame()
-        divider.setFrameShape(QFrame.VLine)
-        divider.setStyleSheet(f"color:{PALETTE.border_soft};max-width:1px;")
-        body_layout.addWidget(divider)
-
         workspace_column = QWidget()
+        workspace_column.setStyleSheet(f"background:{PALETTE.bg_workspace};")
         workspace_layout = QVBoxLayout(workspace_column)
         workspace_layout.setContentsMargins(0, 0, 0, 0)
-        workspace_layout.setSpacing(0)
+        workspace_layout.setSpacing(8)
 
         self.workspace_header = WorkspaceHeaderBar()
         workspace_layout.addWidget(self.workspace_header)

@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QComboBox,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -256,6 +257,62 @@ class SectionLabel(QLabel):
             f"color:{PALETTE.txt2};font-size:9px;font-weight:700;"
             "letter-spacing:0.6px;background:transparent;"
         )
+
+
+class SegmentedControl(QWidget):
+    """Rounded segmented control (macOS-style) with an accent-filled active pill."""
+
+    def __init__(self, items: list[str], parent=None, *, on_change=None):
+        super().__init__(parent)
+        self.setObjectName("segmented")
+        self._on_change = on_change
+        self._buttons: list[QPushButton] = []
+        self.setStyleSheet(
+            f"QWidget#segmented{{background:{PALETTE.bg_field};"
+            f"border:1px solid {PALETTE.card_border};border-radius:16px;}}"
+        )
+        row = QHBoxLayout(self)
+        row.setContentsMargins(3, 3, 3, 3)
+        row.setSpacing(2)
+
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        for index, label in enumerate(items):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.setObjectName("seg_btn")
+            button.setCursor(Qt.PointingHandCursor)
+            button.setStyleSheet(
+                f"""
+                QPushButton#seg_btn {{
+                    background: transparent; border: none; border-radius: 13px;
+                    color: {PALETTE.txt2}; padding: 4px 14px;
+                    font-size: 12px; font-weight: 600;
+                }}
+                QPushButton#seg_btn:hover:!checked {{ color: {PALETTE.txt0}; }}
+                QPushButton#seg_btn:checked {{
+                    background: {PALETTE.accent}; color: {PALETTE.accent_on};
+                }}
+                """
+            )
+            self._group.addButton(button, index)
+            row.addWidget(button)
+            self._buttons.append(button)
+
+        if self._buttons:
+            self._buttons[0].setChecked(True)
+        self._group.idClicked.connect(self._emit)
+
+    def _emit(self, index: int):
+        if self._on_change is not None:
+            self._on_change(index)
+
+    def current_index(self) -> int:
+        return self._group.checkedId()
+
+    def set_current_index(self, index: int):
+        if 0 <= index < len(self._buttons):
+            self._buttons[index].setChecked(True)
 
 
 class WorkspaceHeader(QWidget):
