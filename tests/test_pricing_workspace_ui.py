@@ -86,3 +86,31 @@ def test_custom_bond_manual_schedule_prices(app):
     scr = PricingDetailScreen(cb, PricingService())
     scr.calculate()
     assert scr._last_result["value"] > 0
+
+
+def test_curve_selectors_present_by_role(app):
+    from app.panels.pricing_catalogue import PRODUCTS
+    from app.panels.pricing_detail import PricingDetailScreen
+    from services.pricing_service import PricingService
+    svc = PricingService()
+    fra = PricingDetailScreen(next(p for p in PRODUCTS if p.id == "fra"), svc)
+    assert fra._disc_combo is not None and fra._proj_combo is not None   # dual-curve
+    bond = PricingDetailScreen(next(p for p in PRODUCTS if p.id == "bond"), svc)
+    assert bond._disc_combo is not None and bond._proj_combo is None     # discount only
+    vanilla = PricingDetailScreen(next(p for p in PRODUCTS if p.id == "vanilla"), svc)
+    assert vanilla._disc_combo is None                                   # no curve
+
+
+def test_selecting_projection_curve_changes_fra(app):
+    from app.panels.pricing_catalogue import PRODUCTS
+    from app.panels.pricing_detail import PricingDetailScreen
+    from services.pricing_service import PricingService
+    scr = PricingDetailScreen(next(p for p in PRODUCTS if p.id == "fra"), PricingService())
+    scr.calculate()
+    base = scr._last_result["value"]
+    # pick a non-flat snapshot curve for projection
+    names = [scr._proj_combo.itemText(i) for i in range(scr._proj_combo.count())]
+    pick = next(n for n in names if n not in ("flat(r)",))
+    scr._proj_combo.setCurrentText(pick)
+    scr.calculate()
+    assert scr._last_result["value"] != base       # projection curve drives the forward

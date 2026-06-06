@@ -71,6 +71,23 @@ class PricingDetailScreen(QWidget):
             lab = QLabel(f.label)
             lab.setStyleSheet(f"color:{PALETTE.txt1};font-size:11px;")
             form.addRow(lab, w)
+
+        # curve selectors (discount / projection) for curve-based products
+        self._disc_combo = None
+        self._proj_combo = None
+        if self.product.curve_roles:
+            combo_css = (f"background:{PALETTE.bg_panel_elevated};color:{PALETTE.txt0};"
+                         f"border:1px solid {PALETTE.border_default};border-radius:3px;padding:3px 6px;")
+            names = ["flat(r)"] + self._curve_names()
+            self._disc_combo = QComboBox(); self._disc_combo.addItems(names)
+            self._disc_combo.setStyleSheet(combo_css)
+            dl = QLabel("Discount curve"); dl.setStyleSheet(f"color:{PALETTE.txt1};font-size:11px;")
+            form.addRow(dl, self._disc_combo)
+            if "proj" in self.product.curve_roles:
+                self._proj_combo = QComboBox(); self._proj_combo.addItems(names)
+                self._proj_combo.setStyleSheet(combo_css)
+                pl = QLabel("Projection curve"); pl.setStyleSheet(f"color:{PALETTE.txt1};font-size:11px;")
+                form.addRow(pl, self._proj_combo)
         form_panel.layout.addLayout(form)
 
         calc = QPushButton("Calculate")
@@ -149,7 +166,28 @@ class PricingDetailScreen(QWidget):
                     out[f.key] = float(text)
                 except ValueError:
                     out[f.key] = text
+        # inject UI-selected discount/projection curves (None = flat(r) fallback)
+        if self._disc_combo is not None:
+            snap = self._snapshot()
+            dn = self._disc_combo.currentText()
+            if dn != "flat(r)":
+                out["__disc_curve"] = snap.curves.get(dn)
+            if self._proj_combo is not None:
+                pn = self._proj_combo.currentText()
+                if pn != "flat(r)":
+                    out["__proj_curve"] = snap.curves.get(pn)
         return out
+
+    def _snapshot(self):
+        if getattr(self, "_snap_cache", None) is None:
+            self._snap_cache = self.pricing.market_data.demo_snapshot()
+        return self._snap_cache
+
+    def _curve_names(self):
+        try:
+            return sorted(self._snapshot().curves.keys())
+        except Exception:
+            return []
 
     def calculate(self):
         self._confirm.setText("")
