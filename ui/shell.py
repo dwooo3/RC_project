@@ -304,6 +304,10 @@ class WorkspaceShell(QWidget):
         panel = self._get_panel(key)
         self.content_area.setCurrentWidget(panel)
         self.workspace_header.set_workspace(key)
+        # Workspaces may surface their own controls (e.g. Pricing's category
+        # selector) in the toolbar's controls slot.
+        controls = panel.header_controls() if hasattr(panel, "header_controls") else None
+        self.workspace_header.set_controls(controls)
         self.status_bar.set_workspace(key)
 
     @property

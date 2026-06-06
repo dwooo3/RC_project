@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -313,6 +314,97 @@ class SegmentedControl(QWidget):
     def set_current_index(self, index: int):
         if 0 <= index < len(self._buttons):
             self._buttons[index].setChecked(True)
+
+
+def fit_table_height(table: QTableWidget, *, max_rows: int | None = None):
+    """Lock a table to the height of its rows so it renders as a static block
+    inside an outer scroll area (no inner scrollbar)."""
+    table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    rows = table.rowCount() if max_rows is None else min(table.rowCount(), max_rows)
+    row_h = table.verticalHeader().defaultSectionSize()
+    header_h = table.horizontalHeader().height() or 22
+    table.setFixedHeight(header_h + rows * row_h + 4)
+
+
+class KeyValueGrid(QWidget):
+    """Compact two-column key→value metric grid (column-major fill)."""
+
+    def __init__(self, parent=None, *, columns: int = 2):
+        super().__init__(parent)
+        self._columns = columns
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setHorizontalSpacing(28)
+        self._grid.setVerticalSpacing(8)
+
+    def set_pairs(self, pairs: list[tuple[str, str]]):
+        import math
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        if not pairs:
+            return
+        rows = max(1, math.ceil(len(pairs) / self._columns))
+        for i, (label, value) in enumerate(pairs):
+            col, row = divmod(i, rows)
+            lbl = QLabel(str(label))
+            lbl.setStyleSheet(f"color:{PALETTE.txt2};font-size:13px;background:transparent;")
+            val = QLabel(str(value))
+            val.setStyleSheet(
+                f"color:{PALETTE.txt0};font-size:13px;font-weight:600;background:transparent;")
+            val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self._grid.addWidget(lbl, row, col * 2)
+            self._grid.addWidget(val, row, col * 2 + 1)
+        for c in range(self._columns):
+            self._grid.setColumnStretch(c * 2 + 1, 1)
+
+
+class ScrollableCard(QFrame):
+    """Rounded card with a scrollable body and an optional pinned footer.
+
+    The body scrolls; ``set_footer`` pins a footer below it (outside the scroll)
+    whose bottom corners are rounded to match the card.
+    """
+
+    def __init__(self, parent=None, *, radius: int = 16, elevated: bool = True):
+        super().__init__(parent)
+        self._radius = radius
+        self.setObjectName("scroll_card")
+        self.setStyleSheet(
+            f"QFrame#scroll_card{{background:{PALETTE.bg_card};"
+            f"border:1px solid {PALETTE.card_border};border-radius:{radius}px;}}")
+        if elevated:
+            card_shadow(self)
+        self._outer = QVBoxLayout(self)
+        self._outer.setContentsMargins(0, 0, 0, 0)
+        self._outer.setSpacing(0)
+
+        self._scroll = QScrollArea(self)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        self._scroll.viewport().setStyleSheet("background:transparent;")
+
+        self._body = QWidget()
+        self._body.setStyleSheet("background:transparent;")
+        self.body_layout = QVBoxLayout(self._body)
+        self.body_layout.setContentsMargins(20, 18, 20, 16)
+        self.body_layout.setSpacing(8)
+        self._scroll.setWidget(self._body)
+        self._outer.addWidget(self._scroll, 1)
+
+    def set_footer(self, widget: QWidget):
+        widget.setObjectName("card_footer")
+        widget.setStyleSheet(
+            f"QWidget#card_footer{{background:{PALETTE.bg_footer};"
+            f"border-top:1px solid {PALETTE.card_border};"
+            f"border-bottom-left-radius:{self._radius}px;"
+            f"border-bottom-right-radius:{self._radius}px;}}")
+        self._outer.addWidget(widget)
 
 
 class WorkspaceHeader(QWidget):
