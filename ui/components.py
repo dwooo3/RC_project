@@ -66,7 +66,7 @@ class WorkspacePage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("workspace_page")
-        self.setStyleSheet(f"background:{PALETTE.bg_workspace};")
+        self.setStyleSheet("background:transparent;")
 
 
 class WorkspaceCard(QFrame):

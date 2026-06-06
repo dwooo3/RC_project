@@ -463,7 +463,10 @@ class PricingDetailScreen(QWidget):
         self._render_curve()
 
         warnings = res.get("warnings") or []
-        self._warnings.setText("  ·  ".join(warnings[:4]))
+        text = "  ·  ".join(warnings[:4])
+        short = (text[:150].rstrip() + "…") if len(text) > 150 else text
+        self._warnings.setText(short)
+        self._warnings.setToolTip(text)
         self._warnings.setVisible(bool(warnings))
         self._add_btn.setEnabled(value is not None and not res.get("errors"))
 

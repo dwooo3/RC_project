@@ -226,10 +226,10 @@ WORKSTATION_STYLE = f"""
     color: {PALETTE.txt0};
 }}
 QWidget {{
-    background-color: {PALETTE.bg_workspace};
+    background-color: transparent;
 }}
 QMainWindow {{
-    background-color: {PALETTE.bg_workspace};
+    background-color: transparent;
 }}
 QFrame#workstation_panel,
 QFrame#workspace_card,

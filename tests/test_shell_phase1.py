@@ -79,5 +79,5 @@ def test_segmented_control_switches(app):
 def test_workspace_shell_regions_present(app):
     from ui.shell import WorkspaceShell
     shell = WorkspaceShell(lambda key: __import__("PySide6.QtWidgets", fromlist=["QWidget"]).QWidget())
-    for region in ("global_navigation", "workspace_header", "context_bar", "status_bar", "content_area"):
+    for region in ("global_navigation", "workspace_header", "content_area"):
         assert hasattr(shell, region)

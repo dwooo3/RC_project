@@ -26,7 +26,7 @@ class WorkstationWorkspace(QWidget):
         parent=None,
     ):
         super().__init__(parent)
-        self.setStyleSheet(f"background:{PALETTE.bg_workspace};")
+        self.setStyleSheet("background:transparent;")
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)

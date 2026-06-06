@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.components import CommandBar, card_shadow
+from ui.components import card_shadow
 from ui.theme import PALETTE
 
 
@@ -253,20 +253,17 @@ class WorkspaceShell(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self.context_bar = CommandBar()
-        root.addWidget(self.context_bar)
-
         body = QWidget()
-        body.setStyleSheet(f"background:{PALETTE.bg_workspace};")
+        body.setStyleSheet("background:transparent;")
         body_layout = QHBoxLayout(body)
-        body_layout.setContentsMargins(16, 12, 16, 12)
+        body_layout.setContentsMargins(16, 8, 16, 16)
         body_layout.setSpacing(16)
 
         self.global_navigation = GlobalNavigation(self.show_workspace)
         body_layout.addWidget(self.global_navigation)
 
         workspace_column = QWidget()
-        workspace_column.setStyleSheet(f"background:{PALETTE.bg_workspace};")
+        workspace_column.setStyleSheet("background:transparent;")
         workspace_layout = QVBoxLayout(workspace_column)
         workspace_layout.setContentsMargins(0, 0, 0, 0)
         workspace_layout.setSpacing(8)
@@ -275,20 +272,15 @@ class WorkspaceShell(QWidget):
         workspace_layout.addWidget(self.workspace_header)
 
         self.content_area = QStackedWidget()
-        self.content_area.setStyleSheet(f"background:{PALETTE.bg_workspace};")
+        self.content_area.setStyleSheet("background:transparent;")
         workspace_layout.addWidget(self.content_area, 1)
 
         body_layout.addWidget(workspace_column, 1)
         root.addWidget(body, 1)
 
-        self.status_bar = ShellStatusBar()
-        root.addWidget(self.status_bar)
-
     def _setup_shortcuts(self):
         for idx, (_display, key) in enumerate(NAV_ITEMS, 1):
             QShortcut(QKeySequence(f"Ctrl+{idx}"), self, lambda checked=False, k=key: self.select_workspace(k))
-        QShortcut(QKeySequence("Ctrl+K"), self, lambda: self.context_bar.search.setFocus())
-        QShortcut(QKeySequence("Ctrl+L"), self, lambda: self.status_bar.audit.setText("Warnings: 4 · Demo data · Approximation models active"))
 
     def _get_panel(self, key: str) -> QWidget:
         if key not in self._panels:
@@ -304,12 +296,8 @@ class WorkspaceShell(QWidget):
         panel = self._get_panel(key)
         self.content_area.setCurrentWidget(panel)
         self.workspace_header.set_workspace(key)
+        self.current_key = key
         # Workspaces may surface their own controls (e.g. Pricing's category
         # selector) in the toolbar's controls slot.
         controls = panel.header_controls() if hasattr(panel, "header_controls") else None
         self.workspace_header.set_controls(controls)
-        self.status_bar.set_workspace(key)
-
-    @property
-    def search(self):
-        return self.context_bar.search

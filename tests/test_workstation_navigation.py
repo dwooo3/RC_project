@@ -40,8 +40,6 @@ def test_workspace_shell_exports_required_shell_regions():
 
     assert "self.global_navigation" in source
     assert "self.workspace_header" in source
-    assert "self.context_bar" in source
-    assert "self.status_bar" in source
     assert "self.content_area" in source
 
 
