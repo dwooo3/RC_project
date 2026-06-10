@@ -40,14 +40,16 @@ def test_cap_floor_parity(s):
     notional, K, T, freq, vol = 1_000_000, 0.10, 3, 2, 0.20
     cap = s.price_cap_floor(notional, K, T, freq, vol, "cap", curve=curve)["value"]
     floor = s.price_cap_floor(notional, K, T, freq, vol, "floor", curve=curve)["value"]
-    # payer swap = sum tau*(fwd_i - K)*disc_i * notional
+    # payer swap = sum tau*(fwd_i - K)*disc_i * notional, with the SIMPLE forward
+    # (P(t1)/P(t2)-1)/tau — the caplet market convention (2026-06 audit fix; the
+    # old continuously-compounded curve.forward_rate broke this parity by ~12bp).
     dt = 1 / freq
     swap = 0.0
     for i in range(1, int(round(T * freq)) + 1):
         t1, t2 = (i - 1) * dt, i * dt
-        fwd = curve.forward_rate(t1, t2)
+        fwd = (curve.discount(t1) / curve.discount(t2) - 1.0) / dt
         swap += dt * (fwd - K) * curve.discount(t2) * notional
-    assert cap - floor == pytest.approx(swap, rel=0.05, abs=50)
+    assert cap - floor == pytest.approx(swap, abs=1e-4)
 
 
 # ── Swaption payer-receiver parity ───────────────────────

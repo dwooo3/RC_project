@@ -40,16 +40,17 @@ def variance_swap_fair_strike(r: float, q: float, T: float,
             else:
                 dK = (options[i+1][0] - options[i-1][0]) / 2
             # Log-contract replication uses a pure 1/K^2 weight per strike strip.
-            # The previous (1 - log(K/F)) factor double-counted the log-contract
-            # correction (already carried by the leading term below) and produced
-            # a systematic ~1% overestimate of the fair variance strike that did
-            # not vanish under grid refinement. See Demeterfi et al. (1999).
             total += 2/T * P * dK / K**2
         return total
 
-    var_strike = (2/T * (np.log(F/S0) - (F/S0 - 1))
-                  + integral_part(puts,  F, False)
-                  + integral_part(calls, F, True))
+    # K_var = (2/T)[(r-q)T - ln(S*/S0) - (F/S* - 1)] + e^{rT}(2/T) Σ OTM(K)/K² dK,
+    # with the put/call split point S* = F. The strip enters at its FORWARD value —
+    # spot option premia must be grown at e^{rT} (Demeterfi et al. 1999, eq. 26);
+    # omitting the growth factor understated K_var by exactly e^{rT} on the strip.
+    growth = np.exp(r*T)
+    var_strike = (2/T * ((r - q)*T - np.log(F/S0) - (F/F - 1))
+                  + growth * (integral_part(puts,  F, False)
+                              + integral_part(calls, F, True)))
     vol_strike = np.sqrt(var_strike)
     return dict(variance_strike=var_strike, vol_strike=vol_strike,
                 fair_variance=var_strike * T)

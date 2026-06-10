@@ -12,51 +12,36 @@ from models.monte_carlo import gbm_paths
 
 
 # ─────────────────────────────────────────────────────────
-# Single-barrier closed-form (Reiner & Rubinstein 1991)
+# Single-barrier closed-form (Reiner & Rubinstein 1991, Haug §4.17.1)
 # ─────────────────────────────────────────────────────────
-
-def _RR_phi(S, T, H, K, r, q, sigma, phi, eta, x1=None, x2=None, y1=None, y2=None):
-    """Reiner-Rubinstein building blocks."""
-    b  = r - q
-    mu = (b - sigma**2/2) / sigma**2
-    lam= np.sqrt(mu**2 + 2*r/sigma**2)
-    sv = sigma * np.sqrt(T)
-    d  = np.log(H**2/(S*K)) / sv + lam*sv if x2 is None else x2
-
-    def _M(d_): return norm.cdf(phi * d_)
-
-    x1_  = np.log(S/K)  / sv + (1+mu)*sv
-    x2_  = np.log(S/H)  / sv + (1+mu)*sv
-    y1_  = np.log(H**2/(S*K)) / sv + (1+mu)*sv
-    y2_  = np.log(H/S)  / sv + (1+mu)*sv
-    z    = np.log(H/S)  / sv + lam*sv
-
-    A  = phi * S * np.exp(-q*T) * _M(phi*x1_) - phi*K*np.exp(-r*T)*_M(phi*(x1_-sv))
-    B  = phi * S * np.exp(-q*T) * _M(phi*x2_) - phi*K*np.exp(-r*T)*_M(phi*(x2_-sv))
-    C  = phi * S * np.exp(-q*T) * (H/S)**(2*(mu+1)) * _M(eta*y1_) \
-       - phi * K * np.exp(-r*T) * (H/S)**(2*mu)     * _M(eta*(y1_-sv))
-    D  = phi * S * np.exp(-q*T) * (H/S)**(2*(mu+1)) * _M(eta*y2_) \
-       - phi * K * np.exp(-r*T) * (H/S)**(2*mu)     * _M(eta*(y2_-sv))
-    E  = 0  # rebate term (zero rebate here)
-    return A, B, C, D, E
-
 
 def single_barrier(S: float, K: float, H: float, T: float, r: float, sigma: float,
                    q: float = 0.0, opt: str = "call",
                    barrier_type: str = "down-out",
                    rebate: float = 0.0) -> dict:
     """
-    Exact closed-form for single-barrier European option.
+    Exact closed-form for single-barrier European option, continuous monitoring.
     barrier_type: down-out | down-in | up-out | up-in
+    Rebate: paid at touch for knock-out, at expiry for knock-in (market standard).
     """
+    from models.black_scholes import bsm
+    vanilla = bsm(S, K, T, r, sigma, q, opt).price
+
+    is_down = "down" in barrier_type
+    is_out  = "out" in barrier_type
+
+    # Already-knocked spot: out -> rebate now, in -> vanilla.
+    if (is_down and S <= H) or (not is_down and S >= H):
+        price = rebate if is_out else vanilla
+        return dict(price=price, barrier=H, barrier_type=barrier_type,
+                    vanilla=vanilla, rebate=rebate)
+
     b   = r - q
     phi = 1 if opt == "call" else -1
-    eta = 1 if "down" in barrier_type else -1
+    eta = 1 if is_down else -1
     sv  = sigma * np.sqrt(T)
     mu  = (b - sigma**2/2) / sigma**2
     lam = np.sqrt(mu**2 + 2*r/sigma**2)
-
-    def _m(d): return norm.cdf(phi * d)
 
     x1 = np.log(S/K)  / sv + (1+mu)*sv
     x2 = np.log(S/H)  / sv + (1+mu)*sv
@@ -64,33 +49,37 @@ def single_barrier(S: float, K: float, H: float, T: float, r: float, sigma: floa
     y2 = np.log(H/S)  / sv + (1+mu)*sv
     z  = np.log(H/S)  / sv + lam*sv
 
-    A  = phi*S*np.exp(-q*T)*_m(phi*x1) - phi*K*np.exp(-r*T)*_m(phi*(x1-sv))
-    B  = phi*S*np.exp(-q*T)*_m(phi*x2) - phi*K*np.exp(-r*T)*_m(phi*(x2-sv))
-    C  = phi*S*np.exp(-q*T)*(H/S)**(2*(mu+1))*_m(eta*y1) \
-       - phi*K*np.exp(-r*T)*(H/S)**(2*mu)    *_m(eta*(y1-sv))
-    D  = phi*S*np.exp(-q*T)*(H/S)**(2*(mu+1))*_m(eta*y2) \
-       - phi*K*np.exp(-r*T)*(H/S)**(2*mu)    *_m(eta*(y2-sv))
-    F  = rebate*((H/S)**(mu+lam)*norm.cdf(eta*z)
-                +(H/S)**(mu-lam)*norm.cdf(eta*(z-2*lam*sv)))
+    dq, dr = np.exp(-q*T), np.exp(-r*T)
+    # A/B carry phi inside N(.); C/D use eta alone — N(eta*y), shift eta*sv.
+    A = phi*S*dq*norm.cdf(phi*x1) - phi*K*dr*norm.cdf(phi*(x1-sv))
+    B = phi*S*dq*norm.cdf(phi*x2) - phi*K*dr*norm.cdf(phi*(x2-sv))
+    C = phi*S*dq*(H/S)**(2*(mu+1))*norm.cdf(eta*y1) \
+      - phi*K*dr*(H/S)**(2*mu)    *norm.cdf(eta*y1 - eta*sv)
+    D = phi*S*dq*(H/S)**(2*(mu+1))*norm.cdf(eta*y2) \
+      - phi*K*dr*(H/S)**(2*mu)    *norm.cdf(eta*y2 - eta*sv)
+    # E: knock-in rebate, paid at expiry if never knocked in.
+    E = rebate*dr*(norm.cdf(eta*x2 - eta*sv) - (H/S)**(2*mu)*norm.cdf(eta*y2 - eta*sv))
+    # F: knock-out rebate, paid at first touch.
+    F = rebate*((H/S)**(mu+lam)*norm.cdf(eta*z)
+              + (H/S)**(mu-lam)*norm.cdf(eta*z - 2*eta*lam*sv))
 
-    # Reiner-Rubinstein KNOCK-OUT value; knock-in is taken via in-out parity below
-    # (computing the in-leg with a different formula AND subtracting broke parity).
-    if "down" in barrier_type:
+    above = K >= H
+    if is_down:
         if opt == "call":
-            out_val = (A - C + F) if K >= H else (A - B + C - D + F)
+            out_val = (A - C) if above else (B - D)
+            in_val  = C if above else (A - B + D)
         else:
-            out_val = (B - C + D + F) if K >= H else (A + F)
+            out_val = (A - B + C - D) if above else 0.0
+            in_val  = (B - C + D) if above else A
     else:  # up
         if opt == "call":
-            out_val = (B - D + F) if K >= H else F
+            out_val = 0.0 if above else (A - B + C - D)
+            in_val  = A if above else (B - C + D)
         else:
-            out_val = (A - B + C - D + F) if K >= H else (A - C + F)
+            out_val = (B - D) if above else (A - C)
+            in_val  = (A - B + D) if above else C
 
-    # knock-in + knock-out = vanilla (exact parity, no rebate double count)
-    from models.black_scholes import bsm
-    vanilla = bsm(S, K, T, r, sigma, q, opt).price
-    out_val = max(out_val, 0)
-    price = out_val if "out" in barrier_type else max(vanilla - out_val, 0)
+    price = max(out_val, 0.0) + F if is_out else max(in_val, 0.0) + E
 
     return dict(price=price, barrier=H, barrier_type=barrier_type,
                 vanilla=vanilla, rebate=rebate)

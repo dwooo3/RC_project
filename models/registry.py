@@ -253,15 +253,34 @@ MODEL_REGISTRY: dict[str, dict] = {
         "name": "Interest Rate Swap",
         "status": ModelStatus.APPROXIMATION,
         "domain": "Pricing",
-        "tests": [],
-        "notes": "Single-curve. No dual-curve OIS discounting. No fixing lag / schedule / day count.",
+        "tests": ["npv_zero_at_fair_rate", "single_curve_telescope"],
+        "notes": (
+            "Float leg = simple projected forwards discounted on the discount curve "
+            "(2026-06: replaced the P(0.001)-P(T) telescope hack); dual-curve via "
+            "proj_curve. No fixing lag / schedule / day count."
+        ),
     },
     "capfloor": {
         "name": "Cap / Floor / Swaption",
         "status": ModelStatus.APPROXIMATION,
         "domain": "Pricing",
-        "tests": [],
-        "notes": "Black-76. No vol surface by tenor/strike. T1=0 caplet degenerates.",
+        "tests": ["cap_floor_swap_parity"],
+        "notes": (
+            "Black-76 on the SIMPLE forward with vol at caplet expiry T1 (2026-06: was "
+            "continuous forward + vol at T2, which broke cap-floor=swap parity). "
+            "No vol surface by tenor/strike. First caplet (T1=0) prices at intrinsic."
+        ),
+    },
+    "basis_swap": {
+        "name": "Basis Swap",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["fair_spread_matches_curve_basis", "npv_zero_at_fair_spread"],
+        "notes": (
+            "Float vs float + spread from simple projected forwards on each index curve, "
+            "common discount curve (2026-06: previous FRN-par construction made "
+            "fair_spread identically zero). No reset schedule / day count."
+        ),
     },
     "swaption": {
         "name": "European Swaption (Black-76)",
@@ -304,16 +323,21 @@ MODEL_REGISTRY: dict[str, dict] = {
     # ── Exotics ───────────────────────────────────────────
     "barrier": {
         "name": "Barrier Options",
-        "status": ModelStatus.PROTOTYPE,
+        "status": ModelStatus.APPROXIMATION,
         "domain": "Pricing",
-        "tests": [],
-        "notes": "Analytical formulas for continuous monitoring. Discrete not supported.",
+        "tests": ["in_out_parity_all_branches", "haug_reference_value", "mc_bgk_cross_check"],
+        "notes": (
+            "Reiner-Rubinstein/Haug closed form, continuous monitoring. 2026-06 audit: "
+            "up-branch table and put-side C/D blocks were wrong and were rewritten; all 16 "
+            "type/strike branches now validated against BGK-adjusted MC and in-out parity. "
+            "Rebate paid at touch (out) / at expiry (in). Discrete monitoring not supported."
+        ),
     },
     "asian": {
         "name": "Asian Options",
         "status": ModelStatus.PROTOTYPE,
         "domain": "Pricing",
-        "tests": [],
+        "tests": ["geometric_n1_equals_bsm"],
         "notes": "Arithmetic approximation + MC. No geometric exact formula comparison.",
     },
     "digital": {
@@ -325,10 +349,15 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "lookback": {
         "name": "Lookback Options",
-        "status": ModelStatus.PROTOTYPE,
+        "status": ModelStatus.APPROXIMATION,
         "domain": "Pricing",
-        "tests": [],
-        "notes": "Analytical formulas require validation against MC.",
+        "tests": ["mc_richardson_all_variants", "float_put_fixed_call_identity"],
+        "notes": (
+            "Goldman-Sosin-Gatto (floating) / Conze-Viswanathan (fixed), continuous "
+            "monitoring. 2026-06 audit: floating put and both fixed-strike OTM branches "
+            "were mistranscribed and rewritten; all variants incl. seasoned contracts now "
+            "validated vs Richardson-extrapolated MC. b=0 handled by epsilon guard."
+        ),
     },
     "multi_asset": {
         "name": "Multi-Asset / Rainbow",
@@ -341,8 +370,13 @@ MODEL_REGISTRY: dict[str, dict] = {
         "name": "Variance Swap",
         "status": ModelStatus.APPROXIMATION,
         "domain": "Pricing",
-        "tests": [],
-        "notes": "Replication via log-contract. No discrete monitoring adjustment.",
+        "tests": ["flat_smile_recovers_sigma_squared"],
+        "notes": (
+            "Replication via log-contract (Demeterfi). 2026-06 audit: option strip now "
+            "entered at forward value (e^{rT} growth factor was missing, understating "
+            "K_var). Recovers sigma^2 exactly on a flat smile incl. dividends. "
+            "No discrete monitoring adjustment."
+        ),
     },
 
     # ── Credit ────────────────────────────────────────────

@@ -766,8 +766,12 @@ def irs(notional: float, fixed_rate: float, T: float, freq: int,
 
     # annuity (PV of fixed leg basis) on the discount curve
     annuity = sum(dt * curve.discount(t) for t in times)
-    # floating leg replicated as par FRN on the projection curve, discounted appropriately
-    float_pv = proj.discount(0.001) - proj.discount(T)  # approx
+    # floating leg: simple forwards from the projection curve, each coupon
+    # discounted on the discount curve. Single-curve this telescopes exactly to
+    # 1 - P(T) (replacing the old P(0.001)-P(T) approximation); dual-curve it is
+    # the correct projected-and-discounted sum rather than a proj-only telescope.
+    float_pv = sum((proj.discount((i-1)*dt) / proj.discount(i*dt) - 1.0)
+                   * curve.discount(i*dt) for i in range(1, periods+1))
 
     fair_rate = float_pv / annuity
     fixed_pv  = fixed_rate * annuity * notional
@@ -794,16 +798,33 @@ def ois(notional: float, fixed_rate: float, T: float,
 
 
 def basis_swap(notional: float, spread: float, T: float, freq: int,
-               curve1: YieldCurve, curve2: YieldCurve) -> dict:
-    """Basis swap: floating1 vs floating2 + spread. Pricing via two FRN legs."""
-    leg1 = frn(notional, 0,      T, freq, curve1)
-    leg2 = frn(notional, spread, T, freq, curve2)
-    npv  = leg2["price"] - leg1["price"]
-    # fair spread
-    ann2 = sum(1/freq * curve2.discount(i/freq) for i in range(1, int(T*freq)+1))
-    ann1 = sum(1/freq * curve1.discount(i/freq) for i in range(1, int(T*freq)+1))
-    fair_spread = (leg1["price"] - frn(notional, 0, T, freq, curve2)["price"]) / (notional * ann2)
-    return dict(npv=npv, fair_spread=fair_spread)
+               curve1: YieldCurve, curve2: YieldCurve,
+               disc_curve: YieldCurve | None = None) -> dict:
+    """
+    Basis swap: receive floating(curve2) + spread, pay floating(curve1).
+    Legs are built from simple projected forwards on each index curve and BOTH
+    discounted on a common discount curve (default curve1). The old FRN-based
+    construction collapsed both legs to par (face) regardless of the curves,
+    so npv ignored the basis and fair_spread was identically zero.
+    """
+    disc = disc_curve or curve1
+    dt = 1.0 / freq
+    periods = int(round(T * freq))
+    pv1 = pv2 = annuity = 0.0
+    for i in range(1, periods + 1):
+        t0, t1 = (i - 1) * dt, i * dt
+        df = disc.discount(t1)
+        f1 = (curve1.discount(t0) / curve1.discount(t1) - 1.0) / dt
+        f2 = (curve2.discount(t0) / curve2.discount(t1) - 1.0) / dt
+        pv1 += f1 * dt * df
+        pv2 += (f2 + spread) * dt * df
+        annuity += dt * df
+    npv = notional * (pv2 - pv1)
+    # spread on leg2 that sets npv = 0 (negative when curve2 projects above curve1)
+    fair_spread = (pv1 - (pv2 - spread * annuity)) / annuity if annuity > 0 else float("nan")
+    return dict(npv=npv, fair_spread=fair_spread,
+                leg1_pv=notional * pv1, leg2_pv=notional * pv2,
+                annuity=annuity, dv01=notional * annuity / 10000)
 
 
 # ─────────────────────────────────────────────────────────
@@ -843,9 +864,14 @@ def cap_floor(notional: float, K: float, T: float, freq: int,
     caplets = []
     for i in range(1, int(round(T*freq))+1):
         T1 = (i-1)*dt; T2 = i*dt
-        fwd  = proj.forward_rate(T1, T2)
+        # Market convention prices the caplet on the SIMPLE forward
+        # (P(T1)/P(T2)-1)/tau, not the continuously-compounded forward
+        # (curve.forward_rate default) — at 10% rates the gap is ~12bp on the
+        # forward and made ATM cap == floor identically, breaking
+        # cap - floor = swap parity. Vol is looked up at the caplet EXPIRY T1.
+        fwd  = (proj.discount(T1) / proj.discount(T2) - 1.0) / (T2 - T1)
         disc = curve.discount(T2)
-        sigma = vol_curve(T2) if callable(vol_curve) else vol_curve
+        sigma = vol_curve(T1) if callable(vol_curve) else vol_curve
         cl   = caplet(notional, K, T1, T2, fwd, sigma, disc, opt)
         total       += cl["price"]
         total_delta += cl["delta"]

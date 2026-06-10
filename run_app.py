@@ -4,6 +4,10 @@
 import sys
 import os
 
+if sys.version_info < (3, 10):
+    sys.exit(f"RiskCalc requires Python 3.10+ (running {sys.version.split()[0]}). "
+             "On this machine use /usr/local/bin/python3.14.")
+
 # Make sure the engine is importable from any CWD
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

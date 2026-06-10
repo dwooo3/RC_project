@@ -14,85 +14,93 @@ from models.monte_carlo import gbm_paths
 # Floating-strike lookback (Goldman-Sosin-Gatto 1979)
 # ─────────────────────────────────────────────────────────
 
+def _carry(b: float) -> float:
+    """Cost of carry guarded away from the b=0 singularity of the σ²/(2b) term."""
+    return b if abs(b) > 1e-6 else (1e-6 if b >= 0 else -1e-6)
+
+
 def floating_lookback(S: float, T: float, r: float, sigma: float,
                       q: float = 0.0, opt: str = "call",
                       S_min: float = None, S_max: float = None) -> dict:
     """
-    Floating-strike lookback.
-    Call: max(S_T - S_min, 0)  — pays S_T minus minimum
-    Put:  max(S_max - S_T, 0)  — pays maximum minus S_T
-    S_min/S_max: running min/max so far (for path-dependent seasoning).
+    Floating-strike lookback (Goldman-Sosin-Gatto / Haug §4.15.1).
+    Call: pays S_T - min   Put: pays max - S_T
+    S_min/S_max: running extreme so far (seasoned contracts).
     """
-    b  = r - q
+    b  = _carry(r - q)
     sv = sigma*np.sqrt(T)
+    k  = sigma**2 / (2*b)
+    dq, dr = np.exp(-q*T), np.exp(-r*T)
 
     if opt == "call":
         M = S_min if S_min is not None else S
         a1 = (np.log(S/M) + (b + sigma**2/2)*T) / sv
         a2 = a1 - sv
-        a3 = (np.log(S/M) + (-b + sigma**2/2)*T) / sv
-        price = (S*np.exp(-q*T)*norm.cdf(a1) - M*np.exp(-r*T)*norm.cdf(a2)
-                 + S*np.exp(-r*T)*(sigma**2/(2*b))
-                 * ((S/M)**(-2*b/sigma**2)*norm.cdf(-a3) - np.exp(b*T)*norm.cdf(-a1)))
+        price = (S*dq*norm.cdf(a1) - M*dr*norm.cdf(a2)
+                 + S*dr*k*((S/M)**(-1/k)*norm.cdf(-a1 + 2*b*np.sqrt(T)/sigma)
+                           - np.exp(b*T)*norm.cdf(-a1)))
     else:
+        # Exact identity: floating put = fixed-strike call(K=M) + M e^{-rT} - S e^{-qT}
+        # (payoff M_T - S_T with M_T = max(M, future max) >= M always), which pins the
+        # correction-term arguments to e1, not the b1 of the often-mistranscribed GSG form.
         M = S_max if S_max is not None else S
-        b1 = (np.log(M/S) + (-b + sigma**2/2)*T) / sv
-        b2 = b1 - sv
-        b3 = (np.log(M/S) + (b + sigma**2/2)*T) / sv  # corrected sign
-        price = (M*np.exp(-r*T)*norm.cdf(b1) - S*np.exp(-q*T)*norm.cdf(b1-sv)
-                 + S*np.exp(-r*T)*(sigma**2/(2*b))
-                 * (-(S/M)**(-2*b/sigma**2)*norm.cdf(b3) + np.exp(b*T)*norm.cdf(b1)))
+        e1 = (np.log(S/M) + (b + sigma**2/2)*T) / sv
+        e2 = e1 - sv
+        price = (M*dr*norm.cdf(-e2) - S*dq*norm.cdf(-e1)
+                 + S*dr*k*(-(S/M)**(-1/k)*norm.cdf(e1 - 2*b*np.sqrt(T)/sigma)
+                           + np.exp(b*T)*norm.cdf(e1)))
 
     price = max(price, 0)
     return dict(price=price, type=f"floating_lookback_{opt}", S_extreme=M)
 
 
 # ─────────────────────────────────────────────────────────
-# Fixed-strike lookback
+# Fixed-strike lookback (Conze-Viswanathan 1991)
 # ─────────────────────────────────────────────────────────
 
 def fixed_lookback(S: float, K: float, T: float, r: float, sigma: float,
                    q: float = 0.0, opt: str = "call",
                    S_min: float = None, S_max: float = None) -> dict:
     """
-    Fixed-strike lookback.
-    Call: max(S_max - K, 0)   — call on maximum
-    Put:  max(K - S_min, 0)   — put on minimum
+    Fixed-strike lookback (Conze-Viswanathan / Haug §4.15.2).
+    Call: pays max(S_max - K, 0)   Put: pays max(K - S_min, 0)
     """
-    b  = r - q
+    b  = _carry(r - q)
     sv = sigma*np.sqrt(T)
+    k  = sigma**2 / (2*b)
+    dq, dr = np.exp(-q*T), np.exp(-r*T)
+    two_b = 2*b*np.sqrt(T)/sigma
 
     if opt == "call":
-        M = S_min if S_min is not None else S  # for call we track max, but start at S
-        # Actually fixed call = call on maximum, track S_max
         M = S_max if S_max is not None else S
-        if S >= K:
+        if K > M:
             d1 = (np.log(S/K) + (b + sigma**2/2)*T) / sv
             d2 = d1 - sv
-            e1 = (np.log(S/M) + (b + sigma**2/2)*T) / sv if M > 0 else d1
-            e2 = e1 - sv
-            price = (S*np.exp(-q*T)*norm.cdf(d1) - K*np.exp(-r*T)*norm.cdf(d2)
-                     + S*np.exp(-r*T)*(sigma**2/(2*b))
-                     * ((S/M)**(-2*b/sigma**2)*norm.cdf(-e1+2*b*np.sqrt(T)/sigma)
-                        - np.exp(b*T)*norm.cdf(-e1)))
+            price = (S*dq*norm.cdf(d1) - K*dr*norm.cdf(d2)
+                     + S*dr*k*(-(S/K)**(-1/k)*norm.cdf(d1 - two_b)
+                               + np.exp(b*T)*norm.cdf(d1)))
         else:
-            d1 = (np.log(S/K) + (b + sigma**2/2)*T) / sv
-            price = S*np.exp(-q*T)*norm.cdf(d1) + S*np.exp(-r*T)*(sigma**2/(2*b)) * (
-                    np.exp(b*T)*norm.cdf(d1) - (sigma**2/(2*b))*np.exp(-r*T)*norm.cdf(d1-sv))
-        price = max(price, max(M - K, 0))
+            e1 = (np.log(S/M) + (b + sigma**2/2)*T) / sv
+            e2 = e1 - sv
+            price = ((M - K)*dr + S*dq*norm.cdf(e1) - M*dr*norm.cdf(e2)
+                     + S*dr*k*(-(S/M)**(-1/k)*norm.cdf(e1 - two_b)
+                               + np.exp(b*T)*norm.cdf(e1)))
     else:
         M = S_min if S_min is not None else S
-        if S <= K:
-            d1 = (np.log(K/S) + (-b + sigma**2/2)*T) / sv
-            d2 = d1 - sv
-            e1 = (np.log(M/S) + (-b + sigma**2/2)*T) / sv if M > 0 else d1
-            price = (K*np.exp(-r*T)*norm.cdf(d1) - S*np.exp(-q*T)*norm.cdf(d2)
-                     + S*np.exp(-r*T)*(sigma**2/(2*b))
-                     * (norm.cdf(-e1) - (S/M)**(-2*b/sigma**2)*norm.cdf(-e1+2*b*np.sqrt(T)/sigma)))
+        if K < M:
+            f1 = (np.log(S/K) + (b + sigma**2/2)*T) / sv
+            f2 = f1 - sv
+            price = (K*dr*norm.cdf(-f2) - S*dq*norm.cdf(-f1)
+                     + S*dr*k*((S/K)**(-1/k)*norm.cdf(-f1 + two_b)
+                               - np.exp(b*T)*norm.cdf(-f1)))
         else:
-            price = max(K - M, 0) * np.exp(-r*T)
-        price = max(price, max(K - M, 0))
+            g1 = (np.log(S/M) + (b + sigma**2/2)*T) / sv
+            g2 = g1 - sv
+            price = ((K - M)*dr + M*dr*norm.cdf(-g2) - S*dq*norm.cdf(-g1)
+                     + S*dr*k*((S/M)**(-1/k)*norm.cdf(-g1 + two_b)
+                               - np.exp(b*T)*norm.cdf(-g1)))
 
+    price = max(price, 0)
     return dict(price=price, type=f"fixed_lookback_{opt}", strike=K)
 
 
