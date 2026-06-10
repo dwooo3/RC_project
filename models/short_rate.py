@@ -306,6 +306,145 @@ class HoLee:
 
 
 # ─────────────────────────────────────────────────────────
+# Hull-White trinomial tree (Hull-White 1994) + Bermudan swaption (Phase 2)
+# ─────────────────────────────────────────────────────────
+
+class HullWhiteTree:
+    """
+    Two-stage Hull-White trinomial tree: OU process x with mean-reversion kappa
+    and vol sigma on a clamped trinomial lattice (j_max), then time-dependent
+    shifts alpha_i fitted to the initial discount curve via Arrow-Debreu prices.
+    Node short rate r_ij = alpha_i + j*dx (the Δt-period rate).
+    """
+
+    def __init__(self, kappa: float, sigma: float, curve, T: float, steps: int = 200):
+        self.kappa, self.sigma, self.curve = kappa, sigma, curve
+        self.T, self.steps = float(T), int(steps)
+        self.dt = self.T / self.steps
+        self.dx = sigma * np.sqrt(3 * self.dt)
+        self.j_max = max(1, int(np.ceil(0.184 / (kappa * self.dt))))
+        self._build()
+
+    def _branch_probs(self, j: int):
+        """(moves, probs) at level j; clamped branching at ±j_max."""
+        eta = self.kappa * j * self.dt
+        if abs(j) < self.j_max:
+            pu = 1/6 + (eta*eta - eta) / 2
+            pm = 2/3 - eta*eta
+            pd = 1/6 + (eta*eta + eta) / 2
+            return (1, 0, -1), (pu, pm, pd)
+        if j >= self.j_max:                      # downward branching: 0, -1, -2
+            p0 = 7/6 + (eta*eta - 3*eta) / 2
+            p1 = -1/3 + 2*eta - eta*eta
+            p2 = 1/6 + (eta*eta - eta) / 2
+            return (0, -1, -2), (p0, p1, p2)
+        # j <= -j_max: upward branching: 0, +1, +2
+        p0 = 7/6 + (eta*eta + 3*eta) / 2
+        p1 = -1/3 - 2*eta - eta*eta
+        p2 = 1/6 + (eta*eta + eta) / 2
+        return (0, 1, 2), (p0, p1, p2)
+
+    def _build(self):
+        """Fit alpha_i so the tree reprices P(0, t_i) exactly (Arrow-Debreu).
+
+        Calibrates one step PAST self.steps so short_rate(i, j) is defined at
+        i == steps (needed when an exercise date sits on the tree horizon).
+        """
+        n, jm = self.steps + 1, self.j_max
+        width = 2 * jm + 1                       # node index = j + jm
+        self.alphas = np.zeros(n)
+        Q = np.zeros(width)
+        Q[jm] = 1.0                              # root
+        self.Q = [Q.copy()]
+        for i in range(n):
+            P_next = self.curve.discount((i + 1) * self.dt)
+            js = np.arange(-jm, jm + 1)
+            mask = Q > 0
+            denom = np.sum(Q[mask] * np.exp(-js[mask] * self.dx * self.dt))
+            self.alphas[i] = (np.log(denom) - np.log(P_next)) / self.dt
+            Q_next = np.zeros(width)
+            for idx in np.where(mask)[0]:
+                j = idx - jm
+                r = self.alphas[i] + j * self.dx
+                d = np.exp(-r * self.dt)
+                moves, probs = self._branch_probs(j)
+                for m, p in zip(moves, probs):
+                    Q_next[idx + m] += Q[idx] * p * d
+            Q = Q_next
+            self.Q.append(Q.copy())
+
+    def short_rate(self, i: int, j: int) -> float:
+        return self.alphas[i] + j * self.dx
+
+    def bond_price_at_node(self, i: int, j: int, T_bond: float) -> float:
+        """Analytic HW zero-coupon bond P(t_i, T_bond) at the node's short rate."""
+        hw = HullWhite(self.kappa, self.sigma, self.curve)
+        return hw.bond_price(self.short_rate(i, j), i * self.dt, T_bond)
+
+    def bermudan_swaption(self, notional: float, K: float, exercise_dates: list,
+                          T_end: float, freq: int = 2, opt: str = "payer") -> dict:
+        """
+        Bermudan swaption: at each exercise date t_e the holder may enter a swap
+        over [t_e, T_end] at fixed K. Swap value at a node uses the analytic HW
+        reconstitution P(t, T; r). Exercise dates snap to the tree grid.
+        A single exercise date reproduces the European (Jamshidian) price.
+        """
+        jm = self.j_max
+        width = 2 * jm + 1
+        dt_pay = 1.0 / freq
+        ex_steps = sorted({min(self.steps, max(0, int(round(t / self.dt))))
+                           for t in exercise_dates})
+        last = max(ex_steps)
+        hw = HullWhite(self.kappa, self.sigma, self.curve)
+        sign = 1.0 if opt == "payer" else -1.0
+
+        def intrinsic(i: int, j: int) -> float:
+            t = i * self.dt
+            r = self.short_rate(i, j)
+            pay_times = []
+            k = 1
+            while t + k * dt_pay <= T_end + 1e-9:
+                pay_times.append(t + k * dt_pay)
+                k += 1
+            if not pay_times:
+                return 0.0
+            annuity = sum(dt_pay * hw.bond_price(r, t, s) for s in pay_times)
+            float_pv = 1.0 - hw.bond_price(r, t, pay_times[-1])
+            swap = sign * (float_pv - K * annuity)
+            return max(swap * notional, 0.0)
+
+        V = np.zeros(width)
+        for j in range(-jm, jm + 1):
+            V[j + jm] = intrinsic(last, j)
+        for i in range(last - 1, -1, -1):
+            V_new = np.zeros(width)
+            for j in range(-jm, jm + 1):
+                moves, probs = self._branch_probs(j)
+                cont = sum(p * V[j + jm + m] for m, p in zip(moves, probs))
+                cont *= np.exp(-self.short_rate(i, j) * self.dt)
+                V_new[j + jm] = max(cont, intrinsic(i, j)) if i in ex_steps else cont
+            V = V_new
+        return dict(price=V[jm], exercise_steps=ex_steps, opt=opt,
+                    steps=self.steps, j_max=jm)
+
+
+def bermudan_swaption_hw(notional: float, K: float, exercise_dates: list,
+                         T_end: float, freq: int, curve,
+                         kappa: float = 0.1, sigma: float = 0.012,
+                         opt: str = "payer", steps: int = 200) -> dict:
+    """Bermudan swaption via the Hull-White trinomial tree (Phase 2)."""
+    tree = HullWhiteTree(kappa, sigma, curve, max(exercise_dates), steps)
+    res = tree.bermudan_swaption(notional, K, exercise_dates, T_end, freq, opt)
+    # European lower bound at the LAST exercise date via Jamshidian (analytic)
+    hw = HullWhite(kappa, sigma, curve)
+    t_last = max(exercise_dates)
+    eu = hw.swaption(notional, K, t_last, T_end - t_last, freq)
+    res["european_lower_bound"] = eu["payer"] if opt == "payer" else eu["receiver"]
+    res["kappa"], res["sigma"] = kappa, sigma
+    return res
+
+
+# ─────────────────────────────────────────────────────────
 # Calibration helper
 # ─────────────────────────────────────────────────────────
 

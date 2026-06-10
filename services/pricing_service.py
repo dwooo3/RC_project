@@ -877,6 +877,125 @@ class PricingService:
                 inputs={"S": S, "K": K, "T": T, "r_d": r_d, "r_f": r_f, "sigma": sigma, "notional": notional, "opt": opt, "quote": quote},
             )
 
+    # ── Phase 2: new instrument classes ───────────────────────────────
+    def price_ndf(self, S, K, T, r_d, r_f, notional_fgn=1_000_000,
+                  settle="foreign", position="long", snapshot=None) -> dict:
+        """Non-deliverable forward (cash-settled FX forward)."""
+        from instruments.fx import ndf
+        return self._priced(
+            model_id="ndf", calculation_type="ndf_pricing", value_key="npv",
+            engine=lambda: ndf(S, K, T, r_d, r_f, notional_fgn, settle, position),
+            inputs={"S": S, "K": K, "T": T, "r_d": r_d, "r_f": r_f,
+                    "notional_fgn": notional_fgn, "settle": settle, "position": position},
+            snapshot=snapshot, user_action="Price NDF")
+
+    def price_xccy_swap(self, notional_dom, S, T, freq, basis_spread=0.0,
+                        leg_dom="float", leg_fgn="float",
+                        fixed_rate_dom=0.0, fixed_rate_fgn=0.0,
+                        disc_dom=None, disc_fgn=None, proj_dom=None, proj_fgn=None,
+                        dom_curve_id="cbr_key_demo", fgn_rate=0.05,
+                        exchange_notionals=True, receive_domestic=True,
+                        snapshot=None) -> dict:
+        """Cross-currency swap; foreign curve defaults to a flat curve at fgn_rate."""
+        from instruments.xccy import xccy_swap
+        disc_dom, snapshot = self._resolve_curve(disc_dom, snapshot, dom_curve_id)
+        if disc_fgn is None:
+            disc_fgn = self.market_data.flat_curve(fgn_rate, label="Foreign flat")
+        return self._priced(
+            model_id="xccy_swap", calculation_type="xccy_swap_pricing", value_key="npv",
+            engine=lambda: xccy_swap(notional_dom, S, T, freq, disc_dom, disc_fgn,
+                                     proj_dom, proj_fgn, basis_spread,
+                                     leg_dom, leg_fgn, fixed_rate_dom, fixed_rate_fgn,
+                                     exchange_notionals, receive_domestic),
+            inputs={"notional_dom": notional_dom, "S": S, "T": T, "freq": freq,
+                    "basis_spread": basis_spread, "leg_dom": leg_dom, "leg_fgn": leg_fgn,
+                    "fixed_rate_dom": fixed_rate_dom, "fixed_rate_fgn": fixed_rate_fgn,
+                    "dom_curve_id": dom_curve_id, "fgn_rate": fgn_rate,
+                    "exchange_notionals": exchange_notionals,
+                    "receive_domestic": receive_domestic},
+            snapshot=snapshot, user_action="Price XCCY swap")
+
+    def price_zc_inflation_swap(self, notional, K, T, pay_fixed=True,
+                                nominal_curve=None, real_curve=None,
+                                nominal_curve_id="ofz_demo",
+                                real_curve_id="ofzin_real_demo", snapshot=None) -> dict:
+        """Zero-coupon inflation swap off the (nominal, real) curve pair."""
+        from instruments.inflation_swaps import zc_inflation_swap
+        nominal_curve, snapshot = self._resolve_curve(nominal_curve, snapshot, nominal_curve_id)
+        real_curve, snapshot = self._resolve_curve(real_curve, snapshot, real_curve_id)
+        return self._priced(
+            model_id="inflation_swap", calculation_type="zciis_pricing", value_key="npv",
+            engine=lambda: zc_inflation_swap(notional, K, T, nominal_curve, real_curve, pay_fixed),
+            inputs={"notional": notional, "K": K, "T": T, "pay_fixed": pay_fixed,
+                    "nominal_curve_id": nominal_curve_id, "real_curve_id": real_curve_id},
+            snapshot=snapshot, user_action="Price ZC inflation swap")
+
+    def price_yoy_inflation_swap(self, notional, K, T, freq=1, pay_fixed=True,
+                                 nominal_curve=None, real_curve=None,
+                                 nominal_curve_id="ofz_demo",
+                                 real_curve_id="ofzin_real_demo", snapshot=None) -> dict:
+        """Year-on-year inflation swap (no YoY convexity adjustment)."""
+        from instruments.inflation_swaps import yoy_inflation_swap
+        nominal_curve, snapshot = self._resolve_curve(nominal_curve, snapshot, nominal_curve_id)
+        real_curve, snapshot = self._resolve_curve(real_curve, snapshot, real_curve_id)
+        return self._priced(
+            model_id="inflation_swap", calculation_type="yoyiis_pricing", value_key="npv",
+            engine=lambda: yoy_inflation_swap(notional, K, T, int(freq),
+                                              nominal_curve, real_curve, pay_fixed),
+            inputs={"notional": notional, "K": K, "T": T, "freq": int(freq),
+                    "pay_fixed": pay_fixed, "nominal_curve_id": nominal_curve_id,
+                    "real_curve_id": real_curve_id},
+            snapshot=snapshot, user_action="Price YoY inflation swap")
+
+    def price_bermudan_swaption(self, notional, K, exercise_dates, T_end, freq=2,
+                                kappa=0.1, sigma=0.012, opt="payer", steps=200,
+                                curve=None, snapshot=None, curve_id="flat_rub") -> dict:
+        """Bermudan swaption on the Hull-White trinomial tree."""
+        from models.short_rate import bermudan_swaption_hw
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="bermudan_swaption", calculation_type="bermudan_swaption_pricing",
+            engine=lambda: bermudan_swaption_hw(notional, K, list(exercise_dates), T_end,
+                                                int(freq), curve, kappa, sigma, opt, steps),
+            inputs={"notional": notional, "K": K, "exercise_dates": list(exercise_dates),
+                    "T_end": T_end, "freq": int(freq), "kappa": kappa, "sigma": sigma,
+                    "opt": opt, "steps": steps, "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price Bermudan swaption")
+
+    def price_cms_swap(self, notional, K, T, freq, swap_tenor, sigma, pay_fixed=True,
+                       curve=None, snapshot=None, curve_id="flat_rub") -> dict:
+        """CMS swap with per-fixing convexity adjustment (Hull bond-yield model)."""
+        from instruments.fixed_income import cms_swap
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="cms_swap", calculation_type="cms_swap_pricing", value_key="npv",
+            engine=lambda: cms_swap(notional, K, T, int(freq), swap_tenor, curve,
+                                    sigma, pay_fixed),
+            inputs={"notional": notional, "K": K, "T": T, "freq": int(freq),
+                    "swap_tenor": swap_tenor, "sigma": sigma, "pay_fixed": pay_fixed,
+                    "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price CMS swap")
+
+    def price_convertible_bond(self, S, sigma, q, face, coupon, freq, T, conv_ratio,
+                               credit_spread=0.02, call_price=None, call_start=0.0,
+                               put_price=None, put_start=0.0, N=400,
+                               curve=None, snapshot=None, curve_id="flat_rub") -> dict:
+        """Convertible bond via Tsiveriotis-Fernandes on a CRR tree."""
+        from instruments.convertible import convertible_bond
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="convertible_bond", calculation_type="convertible_bond_pricing",
+            engine=lambda: convertible_bond(S, sigma, q, face, coupon, int(freq), T,
+                                            conv_ratio, curve, credit_spread,
+                                            call_price, call_start, put_price, put_start,
+                                            int(N)),
+            inputs={"S": S, "sigma": sigma, "q": q, "face": face, "coupon": coupon,
+                    "freq": int(freq), "T": T, "conv_ratio": conv_ratio,
+                    "credit_spread": credit_spread, "call_price": call_price,
+                    "call_start": call_start, "put_price": put_price,
+                    "put_start": put_start, "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price convertible bond")
+
     def price_fx_option_smile(
         self,
         S: float,

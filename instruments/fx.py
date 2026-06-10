@@ -52,6 +52,45 @@ def fx_swap(S: float, r_d: float, r_f: float,
                 net_swap_points=net_swap_points, T_near=T_near, T_far=T_far)
 
 
+def ndf(S: float, K: float, T: float, r_d: float, r_f: float,
+        notional_fgn: float = 1_000_000, settle: str = "foreign",
+        position: str = "long") -> dict:
+    """
+    Non-deliverable forward on S = domestic per foreign (e.g. RUB per USD),
+    notional in the foreign (deliverable) currency, cash-settled at fixing.
+
+    settle="foreign" (market standard, e.g. USD-settled USD/RUB NDF):
+        payoff_T = N_fgn * (S_fix - K) / S_fix  in foreign ccy.
+        Under the foreign risk-neutral measure E_f[1/S_T] = 1/F exactly
+        (change of numeraire kills the convexity), so
+        NPV_fgn = df_f(T) * N * (F - K)/F  — no vol input needed.
+    settle="domestic": payoff_T = N_fgn * (S_fix - K) in domestic ccy,
+        NPV_dom = df_d(T) * N * (F - K)  (deliverable-forward equivalent).
+    position: long = long foreign currency (gains when S rises).
+    """
+    F = S * np.exp((r_d - r_f) * T)
+    sign = 1 if position == "long" else -1
+    if settle == "foreign":
+        npv_fgn = sign * np.exp(-r_f * T) * notional_fgn * (F - K) / F
+        npv_dom = npv_fgn * S
+    elif settle == "domestic":
+        npv_dom = sign * np.exp(-r_d * T) * notional_fgn * (F - K)
+        npv_fgn = npv_dom / S
+    else:
+        raise ValueError("settle must be 'foreign' or 'domestic'")
+    # FX delta: dNPV_dom/dS (bump-and-reprice on spot, forward re-derived)
+    eps = S * 1e-5
+    F_up = (S + eps) * np.exp((r_d - r_f) * T)
+    if settle == "foreign":
+        npv_up = sign * np.exp(-r_f * T) * notional_fgn * (F_up - K) / F_up * (S + eps)
+    else:
+        npv_up = sign * np.exp(-r_d * T) * notional_fgn * (F_up - K)
+    fx_delta = (npv_up - npv_dom) / eps
+    return dict(npv=npv_dom, npv_domestic=npv_dom, npv_foreign=npv_fgn,
+                forward=F, fixing_rate=K, fx_delta=fx_delta,
+                settle=settle, position=position, notional_foreign=notional_fgn)
+
+
 # ─────────────────────────────────────────────────────────
 # FX Option (Garman-Kohlhagen)
 # ─────────────────────────────────────────────────────────

@@ -308,6 +308,55 @@ MODEL_REGISTRY: dict[str, dict] = {
         "tests": [],
         "notes": "Calibration to term structure not validated.",
     },
+    "bermudan_swaption": {
+        "name": "Bermudan Swaption (Hull-White tree)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["tree_reprices_curve", "single_exercise_matches_jamshidian",
+                  "bermudan_geq_european"],
+        "notes": (
+            "Phase 2: Hull-White trinomial tree (exact curve fit via Arrow-Debreu), "
+            "analytic bond reconstitution at nodes for the underlying swap. Single "
+            "exercise matches Jamshidian to <0.3%. kappa/sigma are inputs — no "
+            "swaption-cube calibration yet."
+        ),
+    },
+    "cms_swap": {
+        "name": "CMS Swap (convexity-adjusted)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["zero_vol_no_adjustment", "adjustment_positive_increasing"],
+        "notes": (
+            "Phase 2: CMS coupons = forward swap rate + Hull bond-yield convexity "
+            "adjustment (-S²σ²T·G''/2G'). No payment-lag timing adjustment, no "
+            "smile (scalar swap-rate vol)."
+        ),
+    },
+    "inflation_swap": {
+        "name": "Inflation Swaps (ZCIIS / YoYIIS)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["zciis_fair_equals_breakeven", "npv_zero_at_fair"],
+        "notes": (
+            "Phase 2: priced off the (nominal, real) curve pair; ZCIIS fair rate "
+            "equals the curve breakeven by construction. YoY legs from forward "
+            "breakevens WITHOUT the YoY convexity adjustment (needs inflation vol)."
+        ),
+    },
+    "convertible_bond": {
+        "name": "Convertible Bond (Tsiveriotis-Fernandes)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["otm_equals_risky_floor", "itm_equals_parity",
+                  "riskless_limit", "call_put_bounds"],
+        "notes": (
+            "Phase 2: TF equity/debt split on a CRR tree with curve-consistent "
+            "step discounting; voluntary conversion, issuer call with forced "
+            "conversion, holder put, discrete coupons. Bond floor matches the "
+            "straight bond at r+cs exactly. No soft-call triggers, no stock "
+            "borrow cost, flat credit spread."
+        ),
+    },
 
     # ── FX ────────────────────────────────────────────────
     "fx_forward": {
@@ -316,6 +365,29 @@ MODEL_REGISTRY: dict[str, dict] = {
         "domain": "Pricing",
         "tests": [],
         "notes": "Interest rate parity. No bid/ask / settlement conventions.",
+    },
+    "ndf": {
+        "name": "Non-Deliverable Forward",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["domestic_settle_equals_deliverable", "npv_zero_at_forward"],
+        "notes": (
+            "Phase 2: cash-settled FX forward. Foreign settlement uses the exact "
+            "change-of-numeraire result E_f[1/S_T] = 1/F (no convexity, no vol "
+            "input). No fixing-source / settlement-lag conventions."
+        ),
+    },
+    "xccy_swap": {
+        "name": "Cross-Currency Swap",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["flat_same_curves_fair_basis_zero", "fair_basis_zeroes_npv"],
+        "notes": (
+            "Phase 2: constant-notional XCCY (float-float basis / fixed-fixed), "
+            "simple projected forwards per leg, notional exchange, basis spread on "
+            "the domestic leg. No mark-to-market notional resets, no XCCY basis "
+            "curve bootstrap (spread is an input)."
+        ),
     },
     "fx_smile": {
         "name": "FX Vol Smile (Malz ATM/RR/BF)",

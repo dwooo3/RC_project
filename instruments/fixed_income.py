@@ -937,7 +937,78 @@ def bond_option(bond_price: float, K: float, T_option: float,
 
 
 # ─────────────────────────────────────────────────────────
-# CMS (Constant Maturity Swap) spread option
+# CMS (Constant Maturity Swap) — convexity adjustment + swap (Phase 2)
+# ─────────────────────────────────────────────────────────
+
+def cms_convexity_adjustment(S0: float, sigma: float, T_fix: float,
+                             swap_tenor: float, freq: int = 2) -> float:
+    """
+    CMS convexity adjustment (Hull Ch. 30 bond-yield model):
+      adj = -0.5 · S0² · σ² · T_fix · G''(S0)/G'(S0),
+    where G(y) prices the underlying par swap's bond at flat yield y
+    (coupon = S0). G' < 0, G'' > 0, so the adjustment is positive: the CMS
+    rate paid at a single date exceeds the forward swap rate.
+    """
+    m = freq
+    n = int(round(swap_tenor * m))
+
+    def G(y: float) -> float:
+        return (sum((S0 / m) / (1 + y / m) ** i for i in range(1, n + 1))
+                + 1.0 / (1 + y / m) ** n)
+
+    h = max(1e-5, S0 * 1e-3)
+    g_p = (G(S0 + h) - G(S0 - h)) / (2 * h)
+    g_pp = (G(S0 + h) - 2 * G(S0) + G(S0 - h)) / (h * h)
+    return -0.5 * S0**2 * sigma**2 * T_fix * g_pp / g_p
+
+
+def cms_swaplet(notional: float, T_fix: float, T_pay: float, swap_tenor: float,
+                freq: int, curve: YieldCurve, sigma: float,
+                tau: float | None = None) -> dict:
+    """
+    Single CMS coupon: the swap_tenor-year swap rate observed at T_fix, paid at
+    T_pay on accrual tau. Expected rate = forward swap rate + convexity adj.
+    """
+    dt = 1.0 / freq
+    periods = int(round(swap_tenor * freq))
+    times = [T_fix + i * dt for i in range(1, periods + 1)]
+    annuity = sum(dt * curve.discount(t) for t in times)
+    S0 = ((curve.discount(T_fix) - curve.discount(T_fix + swap_tenor)) / annuity
+          if annuity > 0 else 0.0)
+    adj = cms_convexity_adjustment(S0, sigma, T_fix, swap_tenor, freq) if T_fix > 0 else 0.0
+    tau = dt if tau is None else tau
+    expected = S0 + adj
+    pv = notional * tau * expected * curve.discount(T_pay)
+    return dict(pv=pv, forward_swap_rate=S0, convexity_adjustment=adj,
+                expected_cms_rate=expected, T_fix=T_fix, T_pay=T_pay)
+
+
+def cms_swap(notional: float, K: float, T: float, freq: int, swap_tenor: float,
+             curve: YieldCurve, sigma: float, pay_fixed: bool = True) -> dict:
+    """
+    CMS swap: receive the swap_tenor-year CMS rate each period, pay fixed K.
+    Each CMS fixing carries its own convexity adjustment.
+    """
+    dt = 1.0 / freq
+    n = int(round(T * freq))
+    pv_cms, annuity = 0.0, 0.0
+    coupons = []
+    for i in range(1, n + 1):
+        t_fix, t_pay = (i - 1) * dt, i * dt
+        leg = cms_swaplet(notional, t_fix, t_pay, swap_tenor, freq, curve, sigma, tau=dt)
+        pv_cms += leg["pv"]
+        annuity += dt * curve.discount(t_pay)
+        coupons.append(leg)
+    pv_fixed = notional * K * annuity
+    npv = (pv_cms - pv_fixed) if pay_fixed else (pv_fixed - pv_cms)
+    fair = pv_cms / (notional * annuity) if annuity > 0 else float("nan")
+    total_adj = sum(c["convexity_adjustment"] for c in coupons) / max(len(coupons), 1)
+    return dict(npv=npv, fair_rate=fair, pv_cms_leg=pv_cms, pv_fixed_leg=pv_fixed,
+                annuity=annuity, avg_convexity_adjustment=total_adj, coupons=coupons)
+
+
+# ─────────────────────────────────────────────────────────
+# CMS spread option
 # ─────────────────────────────────────────────────────────
 
 def cms_spread_option(S1: float, S2: float, K: float, T: float, r: float,
