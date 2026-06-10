@@ -11,10 +11,15 @@ from domain.audit import AuditRecord, CalculationRecord
 
 
 class AuditService:
-    """Owns audit records and deterministic input hashing."""
+    """Owns audit records and deterministic input hashing.
 
-    def __init__(self):
+    Pass an AppDB (infra.db.app_db) as `db` to persist every record; in-memory
+    behaviour is unchanged when db is None (Phase 4).
+    """
+
+    def __init__(self, db=None):
         self._records: list[AuditRecord] = []
+        self.db = db
 
     @property
     def records(self) -> list[AuditRecord]:
@@ -47,6 +52,12 @@ class AuditService:
             details=details or {},
         )
         self._records.append(record)
+        if self.db is not None:
+            try:
+                self.db.save_audit_record(record)
+            except Exception:
+                record.details.setdefault("warnings", []).append(
+                    "Audit record could not be persisted to AppDB.")
         return record
 
     def hash_inputs(self, inputs: Any) -> str:

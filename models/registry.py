@@ -600,7 +600,31 @@ MODEL_REGISTRY: dict[str, dict] = {
         "status": ModelStatus.APPROXIMATION,
         "domain": "Risk",
         "tests": [],
-        "notes": "GBM returns. Full repricing not implemented.",
+        "notes": "GBM returns. For full repricing use var_full_reprice.",
+    },
+    "var_full_reprice": {
+        "name": "Full-Reprice Historical VaR",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Risk",
+        "tests": ["linear_position_matches_historical", "option_convexity_sign"],
+        "notes": (
+            "Phase 4: joint historical factor scenarios (equity, rates, vol, FX) "
+            "applied to position params with FULL repricing through the actual "
+            "pricers — option convexity enters the P&L distribution exactly. "
+            "4-factor parameter map; no per-name factor granularity yet."
+        ),
+    },
+    "cva_exposure": {
+        "name": "CVA from Simulated Exposure",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Risk",
+        "tests": ["par_swap_epe_hump", "cva_increasing_in_hazard"],
+        "notes": (
+            "Phase 4: Hull-White exposure simulation for IRS (analytic node "
+            "revaluation), GBM for FX forwards; EPE/ENE/PFE95/99 profiles; "
+            "CVA/DVA integrate the profile against Phase-1 hazard curves. "
+            "No netting sets, no collateral/CSA, no wrong-way risk."
+        ),
     },
     "evt_var": {
         "name": "EVT VaR (GPD tail)",

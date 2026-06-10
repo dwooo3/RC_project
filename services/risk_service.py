@@ -120,6 +120,121 @@ class RiskService:
             allow_analytics_lab=self.allow_analytics_lab,
         )
 
+    # ── Full-reprice VaR (Phase 4) ────────────────────────
+
+    def full_reprice_var(
+        self,
+        portfolio_service,
+        eq_returns,
+        rate_changes,
+        vol_changes=None,
+        fx_returns=None,
+        confidence: float = 0.99,
+        snapshot: MarketDataSnapshot | None = None,
+    ) -> dict:
+        """
+        Historical full-reprice portfolio VaR: every joint historical scenario
+        (equity return, absolute rate change, vol change, FX return) is applied
+        to position parameters and the whole book is REPRICED through its
+        actual pricers — no delta-gamma approximation, so option convexity and
+        exotic nonlinearity enter the P&L distribution exactly.
+        """
+        model_id = "var_full_reprice"
+        inputs = {
+            "n_scenarios": len(eq_returns),
+            "confidence": confidence,
+            "positions": len(portfolio_service.positions),
+        }
+        try:
+            self._enforce_model(model_id)
+            eq = np.asarray(eq_returns, dtype=float)
+            ir = np.asarray(rate_changes, dtype=float)
+            vol = (np.zeros_like(eq) if vol_changes is None
+                   else np.asarray(vol_changes, dtype=float))
+            fx = (np.zeros_like(eq) if fx_returns is None
+                  else np.asarray(fx_returns, dtype=float))
+            n = min(len(eq), len(ir), len(vol), len(fx))
+            if n < 30:
+                raise ValueError("full_reprice_var needs at least 30 joint scenarios")
+            pnl = np.empty(n)
+            reprice_errors: list[str] = []
+            for i in range(n):
+                res = portfolio_service.full_reprice_pnl(
+                    dS=eq[i], dr=ir[i], dvol=vol[i], dfx=fx[i])
+                pnl[i] = res["pnl"]
+                reprice_errors.extend(res["errors"])
+            losses = -pnl
+            var = float(np.quantile(losses, confidence))
+            tail = losses[losses >= var]
+            es = float(tail.mean()) if tail.size else var
+            raw = dict(var=var, expected_shortfall=es, confidence=confidence,
+                       n_scenarios=n, pnl_mean=float(pnl.mean()),
+                       pnl_std=float(pnl.std()), worst=float(pnl.min()),
+                       best=float(pnl.max()),
+                       reprice_errors=sorted(set(reprice_errors)))
+            warnings = ([f"{len(set(reprice_errors))} positions failed to reprice"]
+                        if reprice_errors else [])
+            return self._result(
+                value=var, model_id=model_id, raw=raw, snapshot=snapshot,
+                warnings=warnings, calculation_type="full_reprice_var",
+                inputs=inputs, user_action="Full-reprice portfolio VaR")
+        except Exception as exc:
+            return self._error_result(model_id=model_id, error=exc,
+                                      snapshot=snapshot,
+                                      calculation_type="full_reprice_var",
+                                      inputs=inputs)
+
+    # ── Counterparty exposure / CVA (Phase 4) ─────────────
+
+    def cva_irs(
+        self,
+        notional: float,
+        fixed_rate: float,
+        T: float,
+        freq: int,
+        hazard_id: str = "hazard_1t_demo",
+        curve_id: str = "ofz_demo",
+        kappa: float = 0.1,
+        sigma_r: float = 0.012,
+        pay_fixed: bool = True,
+        recovery: float | None = None,
+        n_sims: int = 4000,
+        n_grid: int = 24,
+        snapshot: MarketDataSnapshot | None = None,
+    ) -> dict:
+        """
+        IRS CVA from a simulated Hull-White exposure profile and a Phase-1
+        hazard curve: EPE/PFE grid plus CVA = (1-R)·∫EPE·df·dPD.
+        """
+        from risk.exposure import cva_from_profile, irs_exposure_profile
+
+        model_id = "cva_exposure"
+        inputs = {"notional": notional, "fixed_rate": fixed_rate, "T": T,
+                  "freq": freq, "hazard_id": hazard_id, "curve_id": curve_id,
+                  "kappa": kappa, "sigma_r": sigma_r, "pay_fixed": pay_fixed,
+                  "n_sims": n_sims, "n_grid": n_grid}
+        try:
+            self._enforce_model(model_id)
+            snapshot = snapshot or self.market_data.demo_snapshot()
+            curve = self.market_data.get_curve(curve_id, snapshot)
+            hazard = self.market_data.get_hazard_curve(hazard_id, snapshot)
+            profile = irs_exposure_profile(notional, fixed_rate, T, freq, curve,
+                                           kappa, sigma_r, pay_fixed,
+                                           n_sims, n_grid)
+            xva = cva_from_profile(profile["times"], profile["epe"], hazard,
+                                   curve, recovery, ene=profile["ene"],
+                                   own_hazard_curve=hazard)
+            raw = {**profile, **xva}
+            return self._result(
+                value=xva["cva"], model_id=model_id, raw=raw, snapshot=snapshot,
+                calculation_type="cva_exposure", inputs=inputs,
+                user_action="IRS CVA from simulated exposure")
+        except Exception as exc:
+            return self._error_result(model_id=model_id, error=exc,
+                                      snapshot=snapshot,
+                                      calculation_type="cva_exposure",
+                                      inputs=inputs)
+
     def var(
         self,
         returns: np.ndarray,

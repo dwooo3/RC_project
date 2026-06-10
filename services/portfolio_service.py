@@ -121,6 +121,67 @@ class PortfolioService:
     def remove(self, position_id: str):
         self.portfolio.remove(position_id)
 
+    # ── Persistence (Phase 4) ─────────────────────────────
+
+    def save_to_db(self, db) -> str:
+        """Persist the portfolio book (header + positions) to an AppDB."""
+        db.save_portfolio(self.portfolio)
+        return self.portfolio.portfolio_id
+
+    @classmethod
+    def load_from_db(cls, db, portfolio_id: str,
+                     market_data: MarketDataService | None = None,
+                     pricing: PricingService | None = None,
+                     audit: AuditService | None = None) -> "PortfolioService":
+        """Rehydrate a PortfolioService from a persisted portfolio."""
+        portfolio = db.load_portfolio(portfolio_id)
+        return cls(portfolio, market_data=market_data, pricing=pricing, audit=audit)
+
+    # ── Full-reprice scenario P&L (Phase 4) ───────────────
+
+    _SPOT_KEYS = ("S", "S0", "S1", "S2", "spot")
+    _RATE_KEYS = ("r", "r_d", "repo_rate", "rate", "discount_rate", "forward_rate")
+    _VOL_KEYS = ("sigma", "vol", "sigma1", "sigma2")
+
+    def full_reprice_pnl(self, dS: float = 0.0, dr: float = 0.0,
+                         dvol: float = 0.0, dfx: float = 0.0) -> dict:
+        """
+        FULL-REPRICE portfolio P&L under a joint factor shock — every position
+        is repriced through its actual pricer with shocked params, no
+        delta-gamma approximation. Shocks: dS relative equity/spot move, dr
+        absolute rate move, dvol absolute vol move, dfx relative FX move
+        (applied to spot-like params of FX instruments).
+        """
+        import copy
+
+        base_total = 0.0
+        shocked_total = 0.0
+        errors: list[str] = []
+        for pos in self.positions:
+            base = copy.deepcopy(pos)
+            shocked = copy.deepcopy(pos)
+            is_fx = pos.instrument.startswith(("fx", "ndf", "xccy"))
+            spot_shock = dfx if is_fx else dS
+            for key in self._SPOT_KEYS:
+                if key in shocked.params and isinstance(shocked.params[key], (int, float)):
+                    shocked.params[key] = shocked.params[key] * (1.0 + spot_shock)
+            for key in self._RATE_KEYS:
+                if key in shocked.params and isinstance(shocked.params[key], (int, float)):
+                    shocked.params[key] = shocked.params[key] + dr
+            for key in self._VOL_KEYS:
+                if key in shocked.params and isinstance(shocked.params[key], (int, float)):
+                    shocked.params[key] = max(shocked.params[key] + dvol, 1e-4)
+            try:
+                self._price_position(base)
+                self._price_position(shocked)
+                base_total += base.market_value
+                shocked_total += shocked.market_value
+            except Exception as exc:
+                errors.append(f"{pos.id}: {exc}")
+        return dict(pnl=shocked_total - base_total, base_value=base_total,
+                    shocked_value=shocked_total, errors=errors,
+                    shocks=dict(dS=dS, dr=dr, dvol=dvol, dfx=dfx))
+
     def price_all(self):
         """Reprice all positions using their params."""
         errors = []
