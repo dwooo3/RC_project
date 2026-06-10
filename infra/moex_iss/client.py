@@ -39,9 +39,13 @@ def parse_iss_json(payload: dict) -> dict[str, list[dict]]:
 
 
 def _default_fetch(timeout: float) -> Callable[[str], str]:
+    from infra.certs import market_data_ssl_context
+
+    ctx = market_data_ssl_context()    # trusts the anti-DDoS proxy chain too
+
     def fetch(url: str) -> str:
         req = urllib.request.Request(url, headers={"User-Agent": "RiskCalc-ISS-Client/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (public API)
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310 (public API)
             return resp.read().decode("utf-8")
 
     return fetch

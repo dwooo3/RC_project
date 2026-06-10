@@ -24,9 +24,13 @@ CBR_BASE = "https://www.cbr.ru"
 
 
 def _default_fetch(timeout: float) -> Callable[[str], str]:
+    from infra.certs import market_data_ssl_context
+
+    ctx = market_data_ssl_context()    # trusts the anti-DDoS proxy chain too
+
     def fetch(url: str) -> str:
         req = urllib.request.Request(url, headers={"User-Agent": "RiskCalc-CBR-Client/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310
             return resp.read().decode("utf-8", errors="replace")
 
     return fetch
