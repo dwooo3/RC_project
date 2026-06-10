@@ -245,6 +245,8 @@ class MarketDataService:
             vol_surfaces={
                 "equity_flat_demo": {"type": "flat", "vol": 0.20},
                 "fx_usdrub_demo": {"type": "rr_bf", "atm": 0.18, "rr": -0.025, "bf": 0.008},
+                "swaption_cube_demo": self.swaption_cube_demo(curves["cbr_key_demo"]),
+                "caplet_strip_demo": self.caplet_strip_demo(curves["cbr_key_demo"]),
             },
             credit_spreads={"corp_1t": 0.0100, "corp_hy": 0.0300},
             credit_curves={
@@ -467,6 +469,76 @@ class MarketDataService:
         )
         MarketDataService._hazard_cache[key] = curve
         return curve
+
+    # Stage A: demo rates-vol structures (cached — SABR calibration per node)
+    _rates_vol_cache: dict = {}
+
+    def swaption_cube_demo(self, curve: YieldCurve):
+        """Demo RUB swaption cube: ATM matrix + SABR smiles at liquid nodes."""
+        from risk.vol_cube import SwaptionCube
+
+        key = ("cube", tuple(curve.tenors), tuple(curve.zero_rates))
+        cached = MarketDataService._rates_vol_cache.get(key)
+        if cached is not None:
+            return cached
+        expiries = [0.25, 0.5, 1.0, 2.0, 3.0, 5.0]
+        tenors = [1.0, 2.0, 5.0, 10.0]
+        # high-rate regime: short-expiry vols elevated, decaying with expiry/tenor
+        atm = [[0.42, 0.40, 0.36, 0.33],
+               [0.40, 0.38, 0.34, 0.31],
+               [0.37, 0.35, 0.32, 0.29],
+               [0.33, 0.31, 0.29, 0.27],
+               [0.30, 0.29, 0.27, 0.25],
+               [0.27, 0.26, 0.25, 0.23]]
+
+        from models.short_rate import _forward_swap_rate
+
+        def fwd(e, t):
+            return _forward_swap_rate(curve, e, t, 2)[0]
+
+        smile_quotes = {}
+        for (e, t, atm_v) in ((1.0, 5.0, 0.32), (2.0, 5.0, 0.29), (1.0, 1.0, 0.37)):
+            F = fwd(e, t)
+            # receiver skew typical for high-rate markets: low strikes richer
+            smile_quotes[(e, t)] = [(0.7 * F, atm_v + 0.045), (0.85 * F, atm_v + 0.02),
+                                    (F, atm_v), (1.15 * F, atm_v - 0.005),
+                                    (1.3 * F, atm_v + 0.005)]
+        cube = SwaptionCube.calibrate(expiries, tenors, atm, smile_quotes, fwd,
+                                      label="RUB swaption cube demo")
+        MarketDataService._rates_vol_cache[key] = cube
+        return cube
+
+    def caplet_strip_demo(self, curve: YieldCurve):
+        """Demo caplet ATM vol strip with one smile node."""
+        from risk.vol_cube import CapletVolStrip
+
+        key = ("strip", tuple(curve.tenors), tuple(curve.zero_rates))
+        cached = MarketDataService._rates_vol_cache.get(key)
+        if cached is not None:
+            return cached
+        expiries = [0.25, 0.5, 1.0, 2.0, 3.0, 5.0]
+        atm = [0.45, 0.42, 0.38, 0.33, 0.30, 0.27]
+
+        def fwd(e):
+            return (curve.discount(e) / curve.discount(e + 0.25) - 1.0) / 0.25
+
+        F1 = fwd(1.0)
+        smile = {1.0: [(0.7 * F1, 0.42), (F1, 0.38), (1.3 * F1, 0.375)]}
+        strip = CapletVolStrip.calibrate(expiries, atm, smile, fwd,
+                                         label="RUB caplet strip demo")
+        MarketDataService._rates_vol_cache[key] = strip
+        return strip
+
+    def get_swaption_cube(self, cube_id: str = "swaption_cube_demo",
+                          snapshot: MarketDataSnapshot | None = None):
+        """Resolve a SwaptionCube stored in snapshot.vol_surfaces."""
+        from risk.vol_cube import SwaptionCube
+
+        snapshot = snapshot or self.demo_snapshot()
+        obj = snapshot.vol_surfaces[cube_id]
+        if not isinstance(obj, SwaptionCube):
+            raise TypeError(f"vol surface {cube_id} is not a SwaptionCube")
+        return obj
 
     def get_hazard_curve(self, hazard_id: str, snapshot: MarketDataSnapshot | None = None):
         """Resolve a HazardCurve object stored in snapshot.credit_curves."""

@@ -485,38 +485,72 @@ class PricingService:
                     "proj_curve_id": proj_curve_id, "dual_curve": proj_curve is not None},
             snapshot=snapshot, user_action="Price FRA")
 
-    def price_cap_floor(self, notional, K, T, freq, vol, opt="cap", curve=None,
+    def price_cap_floor(self, notional, K, T, freq, vol=None, opt="cap", curve=None,
                         proj_curve=None, snapshot=None, curve_id="flat_rub",
-                        proj_curve_id=None) -> dict:
+                        proj_curve_id=None, vol_strip_id=None) -> dict:
         """
         Cap/Floor as a strip of Black-76 caplets/floorlets.
         vol: scalar, callable sigma(T), or [(tenor, vol), ...] term structure
-        (variance-flat interpolation). Dual-curve via proj_curve / proj_curve_id.
+        (variance-flat interpolation). With vol omitted and vol_strip_id set,
+        per-caplet strike-aware vols come from the CapletVolStrip (Stage A).
+        Dual-curve via proj_curve / proj_curve_id.
         """
         from instruments.fixed_income import cap_floor
         curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
         proj_curve, snapshot = self._resolve_proj_curve(proj_curve, proj_curve_id, snapshot)
+        try:
+            if vol is None:
+                if vol_strip_id is None:
+                    raise ValueError("Provide vol or vol_strip_id")
+                snapshot = snapshot or self.market_data.demo_snapshot()
+                strip = self.market_data.get_vol_surface(vol_strip_id, snapshot)
+                if not hasattr(strip, "vol"):
+                    raise TypeError(f"{vol_strip_id} is not a CapletVolStrip")
+                vol = lambda T1, _s=strip, _K=K: _s.vol(T1, _K)
+        except Exception as exc:
+            return self._error_result(model_id="capfloor", error=exc, snapshot=snapshot,
+                                      calculation_type="cap_floor_pricing",
+                                      inputs={"K": K, "vol_strip_id": vol_strip_id})
         vol_input = self._vol_term_structure(vol)
         return self._priced(
             model_id="capfloor", calculation_type="cap_floor_pricing",
             engine=lambda: cap_floor(notional, K, T, freq, curve, vol_input, opt,
                                      proj_curve=proj_curve),
             inputs={"notional": notional, "K": K, "T": T, "freq": freq,
-                    "vol": vol if isinstance(vol, (int, float)) else list(map(tuple, vol)) if not callable(vol) else "callable",
+                    "vol": vol if isinstance(vol, (int, float)) else f"strip:{vol_strip_id}" if vol_strip_id else "callable" if callable(vol) else list(map(tuple, vol)),
                     "opt": opt, "curve_id": curve_id, "proj_curve_id": proj_curve_id,
                     "dual_curve": proj_curve is not None},
             snapshot=snapshot, user_action="Price cap/floor")
 
-    def price_swaption(self, notional, K, T_option, T_swap, freq, sigma, opt="payer",
-                       curve=None, snapshot=None, curve_id="flat_rub") -> dict:
-        """European swaption via Black-76 on the forward swap rate."""
+    def price_swaption(self, notional, K, T_option, T_swap, freq, sigma=None, opt="payer",
+                       curve=None, snapshot=None, curve_id="flat_rub",
+                       cube_id=None) -> dict:
+        """
+        European swaption via Black-76 on the forward swap rate. sigma may be
+        omitted when cube_id names a SwaptionCube — the strike-aware node vol
+        (SABR smile recentred on the ATM matrix) is then used (Stage A).
+        """
         from instruments.fixed_income import swaption
         curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        try:
+            if sigma is None:
+                if cube_id is None:
+                    raise ValueError("Provide sigma or cube_id")
+                snapshot = snapshot or self.market_data.demo_snapshot()
+                cube = self.market_data.get_swaption_cube(cube_id, snapshot)
+                from models.short_rate import _forward_swap_rate
+                F = _forward_swap_rate(curve, T_option, T_swap, int(freq))[0]
+                sigma = cube.vol(T_option, T_swap, K, F)
+        except Exception as exc:
+            return self._error_result(model_id="swaption", error=exc, snapshot=snapshot,
+                                      calculation_type="swaption_pricing",
+                                      inputs={"K": K, "cube_id": cube_id})
         return self._priced(
             model_id="swaption", calculation_type="swaption_pricing",
             engine=lambda: swaption(notional, K, T_option, T_swap, freq, curve, sigma, opt),
             inputs={"notional": notional, "K": K, "T_option": T_option, "T_swap": T_swap,
-                    "freq": freq, "sigma": sigma, "opt": opt, "curve_id": curve_id},
+                    "freq": freq, "sigma": sigma, "opt": opt, "curve_id": curve_id,
+                    "cube_id": cube_id},
             snapshot=snapshot, user_action="Price swaption")
 
     # ── Credit ────────────────────────────────────────────────────────
@@ -1002,31 +1036,68 @@ class PricingService:
 
     def price_bermudan_swaption(self, notional, K, exercise_dates, T_end, freq=2,
                                 kappa=0.1, sigma=0.012, opt="payer", steps=200,
-                                curve=None, snapshot=None, curve_id="flat_rub") -> dict:
-        """Bermudan swaption on the Hull-White trinomial tree."""
-        from models.short_rate import bermudan_swaption_hw
+                                curve=None, snapshot=None, curve_id="flat_rub",
+                                calibrate_to_cube=False,
+                                cube_id="swaption_cube_demo") -> dict:
+        """
+        Bermudan swaption on the Hull-White trinomial tree. With
+        calibrate_to_cube=True, (kappa, sigma) are first calibrated to the
+        cube's co-terminal ATM swaptions (Stage A) and the manual kappa/sigma
+        inputs are ignored.
+        """
+        from models.short_rate import bermudan_swaption_calibrated, bermudan_swaption_hw
         curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        if calibrate_to_cube:
+            snapshot = snapshot or self.market_data.demo_snapshot()
+            cube = self.market_data.get_swaption_cube(cube_id, snapshot)
+            engine = lambda: bermudan_swaption_calibrated(
+                notional, K, list(exercise_dates), T_end, int(freq), curve, cube,
+                opt, steps)
+        else:
+            engine = lambda: bermudan_swaption_hw(
+                notional, K, list(exercise_dates), T_end, int(freq), curve,
+                kappa, sigma, opt, steps)
         return self._priced(
             model_id="bermudan_swaption", calculation_type="bermudan_swaption_pricing",
-            engine=lambda: bermudan_swaption_hw(notional, K, list(exercise_dates), T_end,
-                                                int(freq), curve, kappa, sigma, opt, steps),
+            engine=engine,
             inputs={"notional": notional, "K": K, "exercise_dates": list(exercise_dates),
                     "T_end": T_end, "freq": int(freq), "kappa": kappa, "sigma": sigma,
-                    "opt": opt, "steps": steps, "curve_id": curve_id},
+                    "opt": opt, "steps": steps, "curve_id": curve_id,
+                    "calibrate_to_cube": calibrate_to_cube,
+                    "cube_id": cube_id if calibrate_to_cube else None},
             snapshot=snapshot, user_action="Price Bermudan swaption")
 
-    def price_cms_swap(self, notional, K, T, freq, swap_tenor, sigma, pay_fixed=True,
-                       curve=None, snapshot=None, curve_id="flat_rub") -> dict:
-        """CMS swap with per-fixing convexity adjustment (Hull bond-yield model)."""
+    def price_cms_swap(self, notional, K, T, freq, swap_tenor, sigma=None,
+                       pay_fixed=True, curve=None, snapshot=None,
+                       curve_id="flat_rub", cube_id=None) -> dict:
+        """
+        CMS swap with per-fixing convexity + timing adjustments. sigma may be
+        omitted when cube_id names a SwaptionCube: each fixing then reads its
+        own (expiry, tenor) ATM node vol (Stage A).
+        """
         from instruments.fixed_income import cms_swap
         curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        try:
+            if sigma is None:
+                if cube_id is None:
+                    raise ValueError("Provide sigma or cube_id")
+                snapshot = snapshot or self.market_data.demo_snapshot()
+                cube = self.market_data.get_swaption_cube(cube_id, snapshot)
+                sigma_input = cube.atm_vol
+            else:
+                sigma_input = sigma
+        except Exception as exc:
+            return self._error_result(model_id="cms_swap", error=exc, snapshot=snapshot,
+                                      calculation_type="cms_swap_pricing",
+                                      inputs={"cube_id": cube_id})
         return self._priced(
             model_id="cms_swap", calculation_type="cms_swap_pricing", value_key="npv",
             engine=lambda: cms_swap(notional, K, T, int(freq), swap_tenor, curve,
-                                    sigma, pay_fixed),
+                                    sigma_input, pay_fixed),
             inputs={"notional": notional, "K": K, "T": T, "freq": int(freq),
-                    "swap_tenor": swap_tenor, "sigma": sigma, "pay_fixed": pay_fixed,
-                    "curve_id": curve_id},
+                    "swap_tenor": swap_tenor,
+                    "sigma": sigma if sigma is not None else f"cube:{cube_id}",
+                    "pay_fixed": pay_fixed, "curve_id": curve_id},
             snapshot=snapshot, user_action="Price CMS swap")
 
     def price_convertible_bond(self, S, sigma, q, face, coupon, freq, T, conv_ratio,

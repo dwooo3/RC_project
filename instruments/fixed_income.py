@@ -962,12 +962,30 @@ def cms_convexity_adjustment(S0: float, sigma: float, T_fix: float,
     return -0.5 * S0**2 * sigma**2 * T_fix * g_pp / g_p
 
 
+def cms_timing_adjustment(S0: float, sigma_S: float, F_lag: float,
+                          sigma_F: float, rho: float, T_fix: float,
+                          tau_lag: float) -> float:
+    """
+    Timing adjustment when the CMS rate observed at T_fix is paid at
+    T_pay = T_fix + tau_lag (Hull Ch. 30.3):
+      ΔS = -S0·σ_S·σ_F·ρ·T_fix·τ·F/(1 + τ·F).
+    Zero when there is no payment lag.
+    """
+    if tau_lag <= 0 or T_fix <= 0:
+        return 0.0
+    return (-S0 * sigma_S * sigma_F * rho * T_fix
+            * tau_lag * F_lag / (1.0 + tau_lag * F_lag))
+
+
 def cms_swaplet(notional: float, T_fix: float, T_pay: float, swap_tenor: float,
-                freq: int, curve: YieldCurve, sigma: float,
-                tau: float | None = None) -> dict:
+                freq: int, curve: YieldCurve, sigma, tau: float | None = None,
+                rho_timing: float = 1.0) -> dict:
     """
     Single CMS coupon: the swap_tenor-year swap rate observed at T_fix, paid at
-    T_pay on accrual tau. Expected rate = forward swap rate + convexity adj.
+    T_pay on accrual tau. Expected rate = forward swap rate + convexity adj
+    + timing adj for the T_fix -> T_pay payment lag (Stage A).
+    sigma: scalar swap-rate vol, or callable sigma(T_fix, swap_tenor) — e.g.
+    a SwaptionCube.atm_vol lookup.
     """
     dt = 1.0 / freq
     periods = int(round(swap_tenor * freq))
@@ -975,19 +993,32 @@ def cms_swaplet(notional: float, T_fix: float, T_pay: float, swap_tenor: float,
     annuity = sum(dt * curve.discount(t) for t in times)
     S0 = ((curve.discount(T_fix) - curve.discount(T_fix + swap_tenor)) / annuity
           if annuity > 0 else 0.0)
-    adj = cms_convexity_adjustment(S0, sigma, T_fix, swap_tenor, freq) if T_fix > 0 else 0.0
+    sigma_val = sigma(T_fix, swap_tenor) if callable(sigma) else float(sigma)
+    adj = (cms_convexity_adjustment(S0, sigma_val, T_fix, swap_tenor, freq)
+           if T_fix > 0 else 0.0)
     tau = dt if tau is None else tau
-    expected = S0 + adj
+    tau_lag = max(T_pay - T_fix, 0.0)
+    timing = 0.0
+    if tau_lag > 1e-12 and T_fix > 0:
+        F_lag = ((curve.discount(T_fix) / curve.discount(T_pay) - 1.0) / tau_lag
+                 if tau_lag > 0 else 0.0)
+        # forward-rate vol proxied by the swap-rate vol, rho_timing default 1
+        # (both driven by the same curve) — documented approximation
+        timing = cms_timing_adjustment(S0, sigma_val, F_lag, sigma_val,
+                                       rho_timing, T_fix, tau_lag)
+    expected = S0 + adj + timing
     pv = notional * tau * expected * curve.discount(T_pay)
     return dict(pv=pv, forward_swap_rate=S0, convexity_adjustment=adj,
-                expected_cms_rate=expected, T_fix=T_fix, T_pay=T_pay)
+                timing_adjustment=timing, expected_cms_rate=expected,
+                sigma=sigma_val, T_fix=T_fix, T_pay=T_pay)
 
 
 def cms_swap(notional: float, K: float, T: float, freq: int, swap_tenor: float,
-             curve: YieldCurve, sigma: float, pay_fixed: bool = True) -> dict:
+             curve: YieldCurve, sigma, pay_fixed: bool = True) -> dict:
     """
     CMS swap: receive the swap_tenor-year CMS rate each period, pay fixed K.
-    Each CMS fixing carries its own convexity adjustment.
+    Each fixing carries its own convexity + timing adjustment; sigma may be a
+    scalar or a callable sigma(T_fix, swap_tenor) backed by a SwaptionCube.
     """
     dt = 1.0 / freq
     n = int(round(T * freq))
@@ -1003,8 +1034,10 @@ def cms_swap(notional: float, K: float, T: float, freq: int, swap_tenor: float,
     npv = (pv_cms - pv_fixed) if pay_fixed else (pv_fixed - pv_cms)
     fair = pv_cms / (notional * annuity) if annuity > 0 else float("nan")
     total_adj = sum(c["convexity_adjustment"] for c in coupons) / max(len(coupons), 1)
+    total_timing = sum(c["timing_adjustment"] for c in coupons) / max(len(coupons), 1)
     return dict(npv=npv, fair_rate=fair, pv_cms_leg=pv_cms, pv_fixed_leg=pv_fixed,
-                annuity=annuity, avg_convexity_adjustment=total_adj, coupons=coupons)
+                annuity=annuity, avg_convexity_adjustment=total_adj,
+                avg_timing_adjustment=total_timing, coupons=coupons)
 
 
 # ─────────────────────────────────────────────────────────

@@ -370,6 +370,12 @@ class MarketWorkspace(WorkstationWorkspace):
         return getattr(item, key, "")
 
     def _vol_value(self, surface) -> str:
+        # rates-vol structures first (duck-typed; their .vol is a METHOD, so the
+        # generic _value lookup below must not see them)
+        if hasattr(surface, "atm_vol"):
+            return f"ATM(1y,5y) {self._pct(float(surface.atm_vol(1.0, 5.0)))}"
+        if hasattr(surface, "expiries") and callable(getattr(surface, "vol", None)):
+            return f"ATM(1y) {self._pct(float(surface.vol(1.0)))}"
         vol = self._value(surface, "vol")
         if vol in ("", None) and isinstance(surface, dict) and surface.get("type") == "rr_bf":
             atm, rr, bf = surface.get("atm"), surface.get("rr", 0), surface.get("bf", 0)
@@ -378,9 +384,14 @@ class MarketWorkspace(WorkstationWorkspace):
         return "" if vol in ("", None) else self._pct(float(vol))
 
     def _vol_validation(self, surface) -> str:
-        vol = self._value(surface, "vol")
-        if vol in ("", None) and isinstance(surface, dict) and surface.get("type") == "rr_bf":
-            vol = surface.get("atm")        # FX smile quote set: ATM anchors the level
+        if hasattr(surface, "atm_vol"):
+            vol = surface.atm_vol(1.0, 5.0)
+        elif hasattr(surface, "expiries") and callable(getattr(surface, "vol", None)):
+            vol = surface.vol(1.0)
+        else:
+            vol = self._value(surface, "vol")
+            if vol in ("", None) and isinstance(surface, dict) and surface.get("type") == "rr_bf":
+                vol = surface.get("atm")    # FX smile quote set: ATM anchors the level
         return "Pass" if self._positive_number(vol) else "Review"
 
     def _positive_number(self, value) -> bool:

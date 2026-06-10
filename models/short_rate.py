@@ -445,40 +445,87 @@ def bermudan_swaption_hw(notional: float, K: float, exercise_dates: list,
 
 
 # ─────────────────────────────────────────────────────────
-# Calibration helper
+# Calibration to the swaption cube (Stage A)
 # ─────────────────────────────────────────────────────────
 
-def calibrate_hull_white(curve, swaption_vols: list,
-                         swaption_specs: list) -> dict:
-    """
-    Calibrate Hull-White kappa and sigma to market swaption vols.
-    swaption_specs: list of (T_opt, T_swap, strike, vol_mkt).
-    """
-    def obj(params):
-        kappa, sigma = params
-        if kappa <= 0 or sigma <= 0:
-            return 1e10
-        hw = HullWhite(kappa, sigma, curve)
-        err = 0
-        for T_opt, T_swap, K, vol_mkt in swaption_specs:
-            try:
-                res = hw.swaption(1e6, K, T_opt, T_swap)
-                # rough implied vol from payer price
-                from models.black_scholes import black76
-                annuity = sum(0.5*curve.discount(T_opt+i*0.5)
-                              for i in range(1, int(T_swap*2)+1))
-                fwd_sw = (curve.discount(T_opt) - curve.discount(T_opt+T_swap)) / annuity
-                from models.implied_vol import implied_vol_black76
-                iv = implied_vol_black76(res["payer"]/1e6/annuity, fwd_sw, K, T_opt,
-                                         curve.rate(T_opt), "call")
-                if iv == iv:
-                    err += (iv - vol_mkt)**2
-            except Exception:
-                err += 1e4
-        return err
+def _forward_swap_rate(curve, T_opt: float, T_swap: float, freq: int = 2):
+    """(forward swap rate, annuity) for a swap starting at T_opt."""
+    dt = 1.0 / freq
+    times = [T_opt + i * dt for i in range(1, int(round(T_swap * freq)) + 1)]
+    annuity = sum(dt * curve.discount(t) for t in times)
+    S0 = (curve.discount(T_opt) - curve.discount(times[-1])) / annuity
+    return S0, annuity
 
-    from scipy.optimize import minimize
-    res = minimize(obj, [0.1, 0.01], bounds=[(0.001,5),(0.0001,0.5)],
-                   method="L-BFGS-B")
-    k, s = res.x
-    return dict(kappa=k, sigma=s, rmse=np.sqrt(res.fun/len(swaption_specs)))
+
+def black_swaption_price(notional: float, K: float, T_opt: float, T_swap: float,
+                         freq: int, curve, sigma: float, opt: str = "payer") -> float:
+    """Market-standard Black-76 swaption price (annuity numeraire)."""
+    from models.black_scholes import black76
+    S0, annuity = _forward_swap_rate(curve, T_opt, T_swap, freq)
+    g = black76(S0, K, T_opt, 0.0, sigma, "call" if opt == "payer" else "put")
+    return notional * annuity * g.price
+
+
+def calibrate_hull_white(curve, cube, instruments: list, freq: int = 2,
+                        notional: float = 1.0) -> dict:
+    """
+    Calibrate Hull-White (kappa, sigma) to ATM swaption prices off a
+    SwaptionCube: market price = Black-76 with the cube's ATM vol, model
+    price = Jamshidian payer at K = forward swap rate. Least squares on
+    relative price errors over the instrument set [(T_opt, T_swap), ...].
+    """
+    from scipy.optimize import least_squares
+
+    market = []
+    for T_opt, T_swap in instruments:
+        S0, _ = _forward_swap_rate(curve, T_opt, T_swap, freq)
+        sigma_mkt = cube.atm_vol(T_opt, T_swap)
+        market.append(black_swaption_price(notional, S0, T_opt, T_swap, freq,
+                                           curve, sigma_mkt))
+
+    def residuals(params):
+        kappa, sigma = params
+        if kappa <= 1e-4 or sigma <= 1e-6:
+            return [1e3] * len(instruments)
+        hw = HullWhite(kappa, sigma, curve)
+        out = []
+        for (T_opt, T_swap), mkt in zip(instruments, market):
+            S0, _ = _forward_swap_rate(curve, T_opt, T_swap, freq)
+            model = hw.swaption(notional, S0, T_opt, T_swap, freq)["payer"]
+            out.append((model - mkt) / max(mkt, 1e-12))
+        return out
+
+    res = least_squares(residuals, x0=[0.05, 0.01],
+                        bounds=([1e-4, 1e-6], [3.0, 0.5]))
+    kappa, sigma = res.x
+    table = []
+    hw = HullWhite(kappa, sigma, curve)
+    for (T_opt, T_swap), mkt in zip(instruments, market):
+        S0, annuity = _forward_swap_rate(curve, T_opt, T_swap, freq)
+        model = hw.swaption(notional, S0, T_opt, T_swap, freq)["payer"]
+        table.append(dict(T_opt=T_opt, T_swap=T_swap, forward=S0,
+                          market=mkt, model=model,
+                          rel_error=(model - mkt) / max(mkt, 1e-12)))
+    rmse = float(np.sqrt(np.mean([r["rel_error"] ** 2 for r in table])))
+    return dict(kappa=float(kappa), sigma=float(sigma), rmse=rmse,
+                instruments=table, converged=bool(res.success))
+
+
+def bermudan_swaption_calibrated(notional: float, K: float, exercise_dates: list,
+                                 T_end: float, freq: int, curve, cube,
+                                 opt: str = "payer", steps: int = 200,
+                                 calibration_instruments: list | None = None) -> dict:
+    """
+    Bermudan swaption with (kappa, sigma) calibrated to the cube's ATM
+    co-terminal swaptions (each exercise date paired with the residual swap
+    tenor) before pricing on the Hull-White tree — the market-standard
+    co-terminal calibration for Bermudans.
+    """
+    instruments = calibration_instruments or [
+        (t_e, T_end - t_e) for t_e in exercise_dates if T_end - t_e > 1e-9
+    ]
+    cal = calibrate_hull_white(curve, cube, instruments, freq)
+    res = bermudan_swaption_hw(notional, K, exercise_dates, T_end, freq, curve,
+                               cal["kappa"], cal["sigma"], opt, steps)
+    res["calibration"] = cal
+    return res

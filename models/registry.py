@@ -377,23 +377,40 @@ MODEL_REGISTRY: dict[str, dict] = {
         "status": ModelStatus.APPROXIMATION,
         "domain": "Pricing",
         "tests": ["tree_reprices_curve", "single_exercise_matches_jamshidian",
-                  "bermudan_geq_european"],
+                  "bermudan_geq_european", "cube_calibration_round_trip"],
         "notes": (
             "Phase 2: Hull-White trinomial tree (exact curve fit via Arrow-Debreu), "
-            "analytic bond reconstitution at nodes for the underlying swap. Single "
-            "exercise matches Jamshidian to <0.3%. kappa/sigma are inputs — no "
-            "swaption-cube calibration yet."
+            "analytic bond reconstitution at nodes. Single exercise matches "
+            "Jamshidian to <0.3%. Stage A: (kappa, sigma) calibrate to the "
+            "swaption cube's co-terminal ATM quotes (least squares on Jamshidian "
+            "vs Black prices; exact round-trip when quotes are HW-generated)."
         ),
     },
     "cms_swap": {
         "name": "CMS Swap (convexity-adjusted)",
         "status": ModelStatus.APPROXIMATION,
         "domain": "Pricing",
-        "tests": ["zero_vol_no_adjustment", "adjustment_positive_increasing"],
+        "tests": ["zero_vol_no_adjustment", "adjustment_positive_increasing",
+                  "timing_adjustment_sign"],
         "notes": (
             "Phase 2: CMS coupons = forward swap rate + Hull bond-yield convexity "
-            "adjustment (-S²σ²T·G''/2G'). No payment-lag timing adjustment, no "
-            "smile (scalar swap-rate vol)."
+            "adjustment. Stage A: payment-lag timing adjustment "
+            "(-S·σ_S·σ_F·ρ·T·τF/(1+τF), forward vol proxied by swap vol) and "
+            "per-fixing ATM vols from the swaption cube. Smile in CMS coupons "
+            "not yet used (ATM only)."
+        ),
+    },
+    "swaption_cube": {
+        "name": "Swaption Cube / Caplet Strip (SABR)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Market",
+        "tests": ["sabr_recalibration_round_trip", "atm_interpolation",
+                  "strike_query_matches_quotes"],
+        "notes": (
+            "Stage A: ATM matrix with bilinear (expiry, tenor) interpolation + "
+            "per-node SABR smiles (beta=0.5) recentred on the ATM level for "
+            "strike queries; caplet strip variance-flat in expiry. Demo quotes "
+            "manual — no market IRVOL source yet (roadmap D1)."
         ),
     },
     "inflation_swap": {
