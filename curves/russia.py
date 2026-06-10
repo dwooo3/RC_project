@@ -35,6 +35,23 @@ CORP_SPREAD_1T = [0.005, 0.007, 0.010, 0.015, 0.020, 0.025, 0.030, 0.035, 0.040,
 CORP_SPREAD_2T = [0.015, 0.020, 0.025, 0.035, 0.045, 0.055, 0.065, 0.075, 0.085, 0.095, 0.105]
 CORP_SPREAD_HY = [0.040, 0.055, 0.070, 0.090, 0.110, 0.130, 0.150, 0.170, 0.190, 0.210, 0.230]
 
+# OFZ-IN (inflation-linked) real zero rates — demo levels.
+# Implied breakeven vs the nominal OFZ demo curve ≈ 7.5-8.5%.
+OFZIN_REAL_TENORS_DEFAULT = [1.0, 2.0, 3.0, 5.0, 7.0, 10.0]
+OFZIN_REAL_RATES_DEFAULT  = [0.062, 0.060, 0.058, 0.055, 0.053, 0.051]
+
+
+def make_ofzin_real_curve(tenors=None, rates=None,
+                          label="OFZ-IN real curve") -> YieldCurve:
+    """Real (inflation-adjusted) zero curve from OFZ-IN linkers."""
+    tenors = tenors or OFZIN_REAL_TENORS_DEFAULT
+    rates  = rates  or OFZIN_REAL_RATES_DEFAULT
+    return YieldCurve(
+        tenors, rates, label=label,
+        source=MarketDataSource.DEMO, rate_type="real_zero_demo",
+        metadata={"source": MarketDataSource.DEMO.value},
+    )
+
 
 def make_ofz_curve(tenors=None, rates=None, method="cubic",
                    label="OFZ G-curve") -> YieldCurve:

@@ -105,6 +105,47 @@ def fx_vol_from_rr_str(atm: float, rr: float, strangle: float,
                 rr=rr, strangle=strangle, delta=delta)
 
 
+def fx_smile_vol_delta(atm: float, rr: float, bf: float, delta_call: float) -> float:
+    """
+    Malz (1997) smile: σ(Δ) = ATM − 2·RR·(Δ−0.5) + 16·BF·(Δ−0.5)², with Δ the
+    forward call delta. Reproduces the three market quotes exactly:
+    σ(0.5)=ATM, σ(0.25)=ATM+BF+RR/2 (25Δ call), σ(0.75)=ATM+BF−RR/2 (25Δ put).
+    """
+    x = delta_call - 0.5
+    return atm - 2.0*rr*x + 16.0*bf*x*x
+
+
+def fx_vol_for_strike(S: float, K: float, T: float, r_d: float, r_f: float,
+                      atm: float, rr: float, bf: float,
+                      tol: float = 1e-10, max_iter: int = 100) -> float:
+    """
+    Smile-consistent vol for a strike: fixed-point iteration between the
+    forward call delta Δ(K,σ)=N(d1) and the Malz smile σ(Δ). Replaces the
+    linear fx_smile placeholder (Phase 1).
+    """
+    from scipy.stats import norm
+    sigma = max(atm, 1e-6)
+    for _ in range(max_iter):
+        sv = sigma * np.sqrt(T)
+        d1 = (np.log(S/K) + (r_d - r_f + 0.5*sigma**2)*T) / sv
+        delta_call = float(norm.cdf(d1))            # forward delta
+        new_sigma = max(fx_smile_vol_delta(atm, rr, bf, delta_call), 1e-6)
+        if abs(new_sigma - sigma) < tol:
+            return new_sigma
+        sigma = new_sigma
+    return sigma
+
+
+def fx_option_smile(S: float, K: float, T: float, r_d: float, r_f: float,
+                    atm: float, rr: float, bf: float,
+                    notional: float = 1_000_000, opt: str = "call") -> dict:
+    """FX option priced with the Malz smile-consistent vol for its strike."""
+    sigma = fx_vol_for_strike(S, K, T, r_d, r_f, atm, rr, bf)
+    res = fx_option(S, K, T, r_d, r_f, sigma, notional, opt)
+    res.update(smile_vol=sigma, atm=atm, rr=rr, bf=bf, smile_model="malz")
+    return res
+
+
 def delta_to_strike(S: float, T: float, r_d: float, r_f: float,
                      sigma: float, delta: float, opt: str = "call") -> float:
     """Convert delta to strike (Garman-Kohlhagen inverse)."""

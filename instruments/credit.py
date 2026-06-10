@@ -30,21 +30,20 @@ def hazard_from_spread(spread: float, recovery: float = 0.4) -> float:
 
 def survival_curve_from_spreads(tenors: list, spreads: list,
                                  recovery: float = 0.4,
-                                 r_curve=None) -> dict:
+                                 r_curve=None, freq: int = 4) -> dict:
     """
-    Piecewise constant hazard rate curve bootstrapped from CDS spreads.
-    Returns dict with tenors and hazard rates.
+    Piecewise-constant hazard curve bootstrapped from CDS par spreads
+    (2026-06 Phase 1: real sequential bootstrap via curves.hazard — the old
+    body returned the s/(1-R) credit-triangle approximation per tenor).
+    Falls back to the credit triangle only when no discount curve is given.
     """
-    hazards = []
-    prev_T  = 0.0
-    prev_SP = 1.0
-
-    for T, s in zip(tenors, spreads):
-        h = s / (1 - recovery)  # first approximation per segment
-        hazards.append(h)
-
-    return dict(tenors=tenors, hazards=hazards,
-                survival=[np.exp(-h*t) for h, t in zip(hazards, tenors)])
+    from curves.hazard import bootstrap_hazard_curve, hazard_curve_from_corp_spreads
+    if r_curve is not None:
+        hc = bootstrap_hazard_curve(tenors, spreads, r_curve, recovery, freq)
+    else:
+        hc = hazard_curve_from_corp_spreads(tenors, spreads, recovery)
+    return dict(tenors=list(tenors), hazards=list(hc.hazards),
+                survival=[hc.survival(t) for t in tenors], curve=hc)
 
 
 # ─────────────────────────────────────────────────────────
@@ -84,6 +83,87 @@ def cds(notional: float, spread: float, T: float, freq: int,
     return dict(npv=npv, fair_spread=fair_spread, premium_pv=premium_pv,
                 protection_pv=prot_pv, risky_annuity=risky_annuity,
                 dv01=dv01, risky_duration=risky_dur)
+
+
+def cds_curve(notional: float, spread: float, T: float, freq: int,
+              hazard_curve, disc_curve, recovery: float | None = None,
+              buy_protection: bool = True) -> dict:
+    """
+    CDS priced off a bootstrapped HazardCurve and a YieldCurve (Phase 1).
+    Premium leg includes half-period accrual-on-default; protection leg
+    integrates (1-R)·P(t)·dQ(t). Same leg model as the bootstrap, so a CDS
+    quoted at its bootstrap spread reprices to zero NPV exactly.
+    """
+    from curves.hazard import cds_legs
+    legs = cds_legs(spread, T, freq, hazard_curve, disc_curve, recovery)
+    premium_pv = notional * legs["premium_pv"]
+    protection_pv = notional * legs["protection_pv"]
+    npv = (protection_pv - premium_pv) if buy_protection else (premium_pv - protection_pv)
+    dv01 = notional * legs["risky_annuity"] / 10000
+    return dict(npv=npv, fair_spread=legs["fair_spread"],
+                premium_pv=premium_pv, protection_pv=protection_pv,
+                risky_annuity=legs["risky_annuity"], dv01=dv01,
+                risky_duration=legs["risky_annuity"],
+                survival_at_maturity=hazard_curve.survival(T))
+
+
+def risky_bond(face: float, coupon: float, T: float, freq: int,
+               disc_curve, hazard_curve, recovery: float | None = None) -> dict:
+    """
+    Credit-risky fixed-coupon bond (Phase 1): coupons and principal weighted by
+    survival, plus recovery on face paid at default. Links the bond stack to the
+    credit stack — previously bonds were discounted with no default risk and
+    spreads existed only as output metrics.
+    """
+    recovery = hazard_curve.recovery if recovery is None else recovery
+    dt = 1.0 / freq
+    n = int(round(T * freq))
+    cpn = face * coupon / freq
+
+    pv_coupons = sum(cpn * disc_curve.discount(i * dt) * hazard_curve.survival(i * dt)
+                     for i in range(1, n + 1))
+    pv_principal = face * disc_curve.discount(T) * hazard_curve.survival(T)
+
+    m = max(1, int(round(T * 52)))
+    grid = np.linspace(0.0, T, m + 1)
+    pv_recovery = sum(recovery * face
+                      * disc_curve.discount(0.5 * (t0 + t1))
+                      * (hazard_curve.survival(t0) - hazard_curve.survival(t1))
+                      for t0, t1 in zip(grid[:-1], grid[1:]))
+
+    price = pv_coupons + pv_principal + pv_recovery
+
+    # risk-free reference and credit spread (flat z-spread over the curve)
+    riskless = (sum(cpn * disc_curve.discount(i * dt) for i in range(1, n + 1))
+                + face * disc_curve.discount(T))
+
+    def _pv_at_zspread(z: float) -> float:
+        return (sum(cpn * disc_curve.discount(i * dt) * np.exp(-z * i * dt)
+                    for i in range(1, n + 1))
+                + face * disc_curve.discount(T) * np.exp(-z * T))
+
+    try:
+        credit_zspread = brentq(lambda z: _pv_at_zspread(z) - price, -0.05, 5.0)
+    except ValueError:
+        credit_zspread = float("nan")
+
+    # CS01: reprice with all hazards bumped +1bp
+    from curves.hazard import HazardCurve as _HC
+    bumped = _HC(hazard_curve.tenors, hazard_curve.hazards + 1e-4,
+                 recovery=hazard_curve.recovery, label="bumped")
+    bumped_price = (sum(cpn * disc_curve.discount(i * dt) * bumped.survival(i * dt)
+                        for i in range(1, n + 1))
+                    + face * disc_curve.discount(T) * bumped.survival(T)
+                    + sum(recovery * face * disc_curve.discount(0.5 * (t0 + t1))
+                          * (bumped.survival(t0) - bumped.survival(t1))
+                          for t0, t1 in zip(grid[:-1], grid[1:])))
+
+    return dict(price=price, clean_price=price, dirty_price=price, accrued_interest=0.0,
+                pv_coupons=pv_coupons, pv_principal=pv_principal, pv_recovery=pv_recovery,
+                riskless_price=riskless, credit_spread=credit_zspread,
+                cs01=bumped_price - price,
+                survival_at_maturity=hazard_curve.survival(T),
+                expected_loss=riskless - price)
 
 
 def cds_implied_hazard(market_spread: float, T: float, freq: int,

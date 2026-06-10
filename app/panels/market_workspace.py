@@ -189,6 +189,24 @@ class MarketWorkspace(WorkstationWorkspace):
         panel.layout.addWidget(self._snapshot_context_table("Credit curves"))
         rows = []
         for curve_id, curve in sorted(self.snapshot.credit_curves.items()):
+            # Bootstrapped hazard curves are service-owned objects; detect them
+            # structurally to keep this workspace free of engine-layer imports.
+            if hasattr(curve, "hazards") and hasattr(curve, "survival"):
+                ok = all(self._non_negative_number(h) for h in curve.hazards)
+                rows.append(
+                    [
+                        curve_id,
+                        "hazard curve",
+                        f"λ(5y) {curve.hazard(5.0) * 100:.2f}% / Q(5y) {curve.survival(5.0):.2f}",
+                        self.snapshot.source_value,
+                        self.snapshot.quality,
+                        self._timestamp(),
+                        self.snapshot.snapshot_id,
+                        self._lineage_label(),
+                        "Pass" if ok and "infeasible_tenors" not in curve.metadata else "Review",
+                    ]
+                )
+                continue
             spread = self._value(curve, "spread")
             rows.append(
                 [
@@ -353,10 +371,16 @@ class MarketWorkspace(WorkstationWorkspace):
 
     def _vol_value(self, surface) -> str:
         vol = self._value(surface, "vol")
+        if vol in ("", None) and isinstance(surface, dict) and surface.get("type") == "rr_bf":
+            atm, rr, bf = surface.get("atm"), surface.get("rr", 0), surface.get("bf", 0)
+            if atm is not None:
+                return f"{self._pct(float(atm))} (RR {rr * 100:+.1f} / BF {bf * 100:.1f})"
         return "" if vol in ("", None) else self._pct(float(vol))
 
     def _vol_validation(self, surface) -> str:
         vol = self._value(surface, "vol")
+        if vol in ("", None) and isinstance(surface, dict) and surface.get("type") == "rr_bf":
+            vol = surface.get("atm")        # FX smile quote set: ATM anchors the level
         return "Pass" if self._positive_number(vol) else "Review"
 
     def _positive_number(self, value) -> bool:

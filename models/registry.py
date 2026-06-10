@@ -237,10 +237,15 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "inflation_linked_bond": {
         "name": "Inflation-Linked Bond",
-        "status": ModelStatus.PROTOTYPE,
+        "status": ModelStatus.APPROXIMATION,
         "domain": "Pricing",
-        "tests": [],
-        "notes": "CPI-indexed principal projected at an assumed inflation rate; nominal-curve discounting. Needs a real/inflation curve for production.",
+        "tests": ["curve_pair_matches_flat_when_breakeven_flat", "breakeven_round_trip"],
+        "notes": (
+            "Phase 1: priced off a (nominal, real) curve pair with curve-implied "
+            "breakeven index projection (OFZ-IN real curve); the legacy flat "
+            "assumed-inflation mode remains for back-compat. No seasonality, "
+            "no indexation lag."
+        ),
     },
     "frn": {
         "name": "Floating Rate Note",
@@ -313,11 +318,15 @@ MODEL_REGISTRY: dict[str, dict] = {
         "notes": "Interest rate parity. No bid/ask / settlement conventions.",
     },
     "fx_smile": {
-        "name": "FX Vol Smile",
-        "status": ModelStatus.PLACEHOLDER,
-        "domain": "Market",
-        "tests": [],
-        "notes": "Smile is a linear placeholder. Replace with ATM/RR/BF inputs.",
+        "name": "FX Vol Smile (Malz ATM/RR/BF)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["malz_quote_anchors", "atm_strike_recovers_atm_vol"],
+        "notes": (
+            "Malz quadratic smile in forward delta from ATM/RR/BF quotes with "
+            "fixed-point strike-vol resolution (Phase 1: replaced the linear "
+            "placeholder). Single-tenor quotes; no arbitrage-free constraint check."
+        ),
     },
 
     # ── Exotics ───────────────────────────────────────────
@@ -381,11 +390,35 @@ MODEL_REGISTRY: dict[str, dict] = {
 
     # ── Credit ────────────────────────────────────────────
     "cds": {
-        "name": "Credit Default Swap",
+        "name": "Credit Default Swap (flat hazard)",
         "status": ModelStatus.APPROXIMATION,
         "domain": "Pricing",
-        "tests": [],
-        "notes": "Flat hazard rate from spread/(1-R). No bootstrap from term structure.",
+        "tests": ["npv_zero_at_fair_spread", "implied_hazard_round_trip"],
+        "notes": "Flat hazard rate, flat discount rate. For term-structure pricing use cds_curve.",
+    },
+    "cds_curve": {
+        "name": "CDS on Hazard Curve",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["bootstrap_round_trip", "flat_curve_matches_flat_cds"],
+        "notes": (
+            "Phase 1: piecewise-constant hazard curve bootstrapped from CDS par "
+            "spreads (curves.hazard); premium leg with half-period accrual-on-default, "
+            "weekly protection-leg integration. Quoted CDS reprice to zero NPV exactly. "
+            "No ISDA standard-model conventions (IMM dates, fixed coupon + upfront)."
+        ),
+    },
+    "risky_bond": {
+        "name": "Credit-Risky Bond",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["zero_hazard_equals_riskless", "monotone_in_hazard"],
+        "notes": (
+            "Phase 1: survival-weighted coupons/principal + recovery on default "
+            "off the hazard curve; reports credit z-spread, CS01, expected loss. "
+            "Links the bond stack to the credit stack. Recovery on face only "
+            "(no accrued recovery), no settlement conventions."
+        ),
     },
     "cva_dva": {
         "name": "CVA / DVA",

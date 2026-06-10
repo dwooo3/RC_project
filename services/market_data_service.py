@@ -213,6 +213,28 @@ class MarketDataService:
             "cbr_key_demo": self.cbr_key_rate_curve(valuation_date=valuation_date),
             "corp_1t_demo": self.corporate_curve("1st", valuation_date=valuation_date),
             "corp_hy_demo": self.corporate_curve("HY", valuation_date=valuation_date),
+            "ofzin_real_demo": self.real_curve(valuation_date=valuation_date),
+        }
+        # Hazard curves bootstrapped from the demo corporate spread term structure
+        # over OFZ. Tenors capped at 10y: beyond that the steep demo z-spread grid
+        # is not a feasible par-CDS curve (the 15-20y quotes are arbitrageable
+        # against the shorter ones), so the long end is left to flat extrapolation.
+        hazard_curves = {
+            "hazard_1t_demo": self.hazard_curve_from_spreads(
+                russia.OFZ_TENORS_DEFAULT[3:9],           # 1y .. 10y
+                russia.CORP_SPREAD_1T[3:9],
+                disc_curve=curves["ofz_demo"], recovery=0.4,
+                label="Hazard 1st tier demo",
+            ),
+            # HY capped at 7y: the 10y demo quote (19%) is already infeasible
+            # against the shorter ones. clamp guards against future quote edits.
+            "hazard_hy_demo": self.hazard_curve_from_spreads(
+                russia.OFZ_TENORS_DEFAULT[3:8],           # 1y .. 7y
+                russia.CORP_SPREAD_HY[3:8],
+                disc_curve=curves["ofz_demo"], recovery=0.3,
+                label="Hazard HY demo",
+                on_infeasible="clamp",
+            ),
         }
         return self.create_snapshot(
             snapshot_id=f"demo-{valuation_date.isoformat()}",
@@ -220,11 +242,15 @@ class MarketDataService:
             source=MarketDataSource.DEMO,
             curves=curves,
             fx_rates={"USD/RUB": 90.0, "EUR/RUB": 98.0},
-            vol_surfaces={"equity_flat_demo": {"type": "flat", "vol": 0.20}},
+            vol_surfaces={
+                "equity_flat_demo": {"type": "flat", "vol": 0.20},
+                "fx_usdrub_demo": {"type": "rr_bf", "atm": 0.18, "rr": -0.025, "bf": 0.008},
+            },
             credit_spreads={"corp_1t": 0.0100, "corp_hy": 0.0300},
             credit_curves={
                 "corp_1t_demo": {"base_curve_id": "ofz_demo", "spread": 0.0100},
                 "corp_hy_demo": {"base_curve_id": "ofz_demo", "spread": 0.0300},
+                **hazard_curves,
             },
             source_details={"provider": "RiskCalc demo defaults"},
             metadata={"warning": "Demo/manual market data. Not production valuation."},
@@ -402,6 +428,55 @@ class MarketDataService:
             valuation_date=valuation_date,
             rate_type="policy_demo",
         )
+
+    def real_curve(self, valuation_date: date | None = None) -> YieldCurve:
+        """OFZ-IN real (inflation-adjusted) zero curve — demo levels."""
+        return self.curve_from_rates(
+            russia.OFZIN_REAL_TENORS_DEFAULT,
+            russia.OFZIN_REAL_RATES_DEFAULT,
+            label="OFZ-IN real demo",
+            source=MarketDataSource.DEMO,
+            valuation_date=valuation_date,
+            rate_type="real_zero_demo",
+        )
+
+    # Bootstraps are deterministic in their inputs; demo_snapshot() is called on
+    # every curve fallback, so cache by quote/curve fingerprint (process-wide).
+    _hazard_cache: dict = {}
+
+    def hazard_curve_from_spreads(
+        self,
+        tenors: list[float],
+        spreads: list[float],
+        disc_curve: YieldCurve,
+        recovery: float = 0.4,
+        label: str = "hazard curve",
+        on_infeasible: str = "raise",
+    ):
+        """Bootstrap a piecewise-constant hazard curve from CDS/z-spread quotes."""
+        from curves.hazard import bootstrap_hazard_curve
+
+        key = (tuple(tenors), tuple(spreads), recovery, on_infeasible,
+               tuple(disc_curve.tenors), tuple(disc_curve.zero_rates))
+        cached = MarketDataService._hazard_cache.get(key)
+        if cached is not None:
+            return cached
+        curve = bootstrap_hazard_curve(
+            list(tenors), list(spreads), disc_curve,
+            recovery=recovery, label=label, on_infeasible=on_infeasible,
+        )
+        MarketDataService._hazard_cache[key] = curve
+        return curve
+
+    def get_hazard_curve(self, hazard_id: str, snapshot: MarketDataSnapshot | None = None):
+        """Resolve a HazardCurve object stored in snapshot.credit_curves."""
+        from curves.hazard import HazardCurve
+
+        snapshot = snapshot or self.demo_snapshot()
+        obj = snapshot.credit_curves[hazard_id]
+        if not isinstance(obj, HazardCurve):
+            raise TypeError(f"credit curve {hazard_id} is not a HazardCurve (got {type(obj).__name__})")
+        return obj
 
     def corporate_curve(
         self,

@@ -165,13 +165,18 @@ class PricingService:
         K: float,
         T: float,
         r: float,
-        sigma: float,
+        sigma: float | None = None,
         q: float = 0.0,
         opt: str = "call",
         model: str = "bsm",
         snapshot: MarketDataSnapshot | None = None,
+        vol_surface_id: str | None = None,
     ) -> dict:
-        """Price a vanilla option through the existing engine."""
+        """
+        Price a vanilla option. sigma may be omitted when vol_surface_id names a
+        surface in the market snapshot — the strike/tenor vol is then resolved
+        from the surface (Phase 1: surface-aware pricing).
+        """
         from instruments.vanilla import european
 
         model_id = {
@@ -186,13 +191,27 @@ class PricingService:
         }.get(model, model)
         try:
             self._enforce_model(model_id)
+            vol_warnings = []
+            if sigma is None:
+                if vol_surface_id is None:
+                    raise ValueError("Provide sigma or vol_surface_id")
+                snapshot = snapshot or self.market_data.demo_snapshot()
+                surface = self.market_data.get_vol_surface(vol_surface_id, snapshot)
+                sigma, vol_warning = self._vol_from_surface(surface, K, T)
+                if vol_warning:
+                    vol_warnings.append(vol_warning)
             raw = european(S, K, T, r, sigma, q, opt, model)
-            inputs = {"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q, "opt": opt, "model": model}
+            if vol_surface_id is not None and isinstance(raw, dict):
+                raw["vol_surface_id"] = vol_surface_id
+                raw["sigma_used"] = sigma
+            inputs = {"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q, "opt": opt,
+                      "model": model, "vol_surface_id": vol_surface_id}
             return self._result(
                 value=raw.get("price"),
                 model_id=model_id,
                 raw=raw,
                 snapshot=snapshot,
+                warnings=vol_warnings,
                 calculation_type="vanilla_option_pricing",
                 inputs=inputs,
                 user_action="Price vanilla option",
@@ -280,6 +299,36 @@ class PricingService:
             return curve, snapshot
         snapshot = snapshot or self.market_data.demo_snapshot()
         return self.market_data.get_curve(curve_id, snapshot), snapshot
+
+    def _resolve_proj_curve(self, proj_curve, proj_curve_id, snapshot):
+        """Resolve an optional projection curve (dual-curve pricing)."""
+        if proj_curve is not None or proj_curve_id is None:
+            return proj_curve, snapshot
+        snapshot = snapshot or self.market_data.demo_snapshot()
+        return self.market_data.get_curve(proj_curve_id, snapshot), snapshot
+
+    @staticmethod
+    def _vol_from_surface(surface, K: float, T: float):
+        """Resolve a vol from a snapshot surface object (VolSurface | dict)."""
+        from risk.vol_surface import VolSurface
+        if isinstance(surface, VolSurface):
+            return surface.get_vol(K, T), None
+        if isinstance(surface, dict):
+            if surface.get("type") == "flat":
+                return float(surface["vol"]), None
+            if surface.get("median_vol") is not None:
+                return (float(surface["median_vol"]),
+                        "Vol surface has no strike/tenor interpolation; using median vol.")
+        raise ValueError(f"Unsupported vol surface object: {type(surface).__name__}")
+
+    @staticmethod
+    def _vol_term_structure(vol):
+        """Normalize a vol input: scalar stays scalar, [(T, vol), ...] -> callable."""
+        if isinstance(vol, (int, float)) or callable(vol):
+            return vol
+        from risk.vol_surface import vol_term_structure
+        pairs = sorted((float(t), float(v)) for t, v in vol)
+        return vol_term_structure([t for t, _ in pairs], [v for _, v in pairs])
 
     # ── Rates (curve-based) ───────────────────────────────────────────
     def price_frn(self, face, spread, T, freq, curve=None, snapshot=None,
@@ -423,27 +472,38 @@ class PricingService:
             snapshot=snapshot, user_action="Price inflation-linked bond")
 
     def price_fra(self, notional, K, T1, T2, curve=None, proj_curve=None, snapshot=None,
-                  curve_id="flat_rub") -> dict:
+                  curve_id="flat_rub", proj_curve_id=None) -> dict:
         """Forward Rate Agreement: forward on proj_curve, discount on the curve."""
         from instruments.fixed_income import fra
         curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        proj_curve, snapshot = self._resolve_proj_curve(proj_curve, proj_curve_id, snapshot)
         return self._priced(
             model_id="fra", calculation_type="fra_pricing", value_key="npv",
             engine=lambda: fra(notional, K, T1, T2, curve, proj_curve),
             inputs={"notional": notional, "K": K, "T1": T1, "T2": T2, "curve_id": curve_id,
-                    "dual_curve": proj_curve is not None},
+                    "proj_curve_id": proj_curve_id, "dual_curve": proj_curve is not None},
             snapshot=snapshot, user_action="Price FRA")
 
     def price_cap_floor(self, notional, K, T, freq, vol, opt="cap", curve=None,
-                        proj_curve=None, snapshot=None, curve_id="flat_rub") -> dict:
-        """Cap/Floor as a strip of Black-76 caplets/floorlets."""
+                        proj_curve=None, snapshot=None, curve_id="flat_rub",
+                        proj_curve_id=None) -> dict:
+        """
+        Cap/Floor as a strip of Black-76 caplets/floorlets.
+        vol: scalar, callable sigma(T), or [(tenor, vol), ...] term structure
+        (variance-flat interpolation). Dual-curve via proj_curve / proj_curve_id.
+        """
         from instruments.fixed_income import cap_floor
         curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        proj_curve, snapshot = self._resolve_proj_curve(proj_curve, proj_curve_id, snapshot)
+        vol_input = self._vol_term_structure(vol)
         return self._priced(
             model_id="capfloor", calculation_type="cap_floor_pricing",
-            engine=lambda: cap_floor(notional, K, T, freq, curve, vol, opt),
-            inputs={"notional": notional, "K": K, "T": T, "freq": freq, "vol": vol,
-                    "opt": opt, "curve_id": curve_id},
+            engine=lambda: cap_floor(notional, K, T, freq, curve, vol_input, opt,
+                                     proj_curve=proj_curve),
+            inputs={"notional": notional, "K": K, "T": T, "freq": freq,
+                    "vol": vol if isinstance(vol, (int, float)) else list(map(tuple, vol)) if not callable(vol) else "callable",
+                    "opt": opt, "curve_id": curve_id, "proj_curve_id": proj_curve_id,
+                    "dual_curve": proj_curve is not None},
             snapshot=snapshot, user_action="Price cap/floor")
 
     def price_swaption(self, notional, K, T_option, T_swap, freq, sigma, opt="payer",
@@ -461,7 +521,7 @@ class PricingService:
     # ── Credit ────────────────────────────────────────────────────────
     def price_cds(self, notional, spread, T, freq, hazard, r, recovery=0.4,
                   buy_protection=True, snapshot=None) -> dict:
-        """Credit default swap NPV / fair spread."""
+        """Credit default swap NPV / fair spread (flat hazard, flat rate)."""
         from instruments.credit import cds
         return self._priced(
             model_id="cds", calculation_type="cds_pricing", value_key="npv",
@@ -470,6 +530,61 @@ class PricingService:
                     "hazard": hazard, "r": r, "recovery": recovery,
                     "buy_protection": buy_protection},
             snapshot=snapshot, user_action="Price CDS")
+
+    def price_cds_curve(self, notional, spread, T, freq, hazard_curve=None,
+                        hazard_id="hazard_1t_demo", curve=None, curve_id="ofz_demo",
+                        recovery=None, buy_protection=True, snapshot=None) -> dict:
+        """CDS off a bootstrapped hazard curve + discount curve (Phase 1)."""
+        from instruments.credit import cds_curve
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        if hazard_curve is None:
+            snapshot = snapshot or self.market_data.demo_snapshot()
+            hazard_curve = self.market_data.get_hazard_curve(hazard_id, snapshot)
+        return self._priced(
+            model_id="cds_curve", calculation_type="cds_curve_pricing", value_key="npv",
+            engine=lambda: cds_curve(notional, spread, T, freq, hazard_curve, curve,
+                                     recovery, buy_protection),
+            inputs={"notional": notional, "spread": spread, "T": T, "freq": freq,
+                    "hazard_id": hazard_id, "curve_id": curve_id, "recovery": recovery,
+                    "buy_protection": buy_protection},
+            snapshot=snapshot, user_action="Price CDS on hazard curve")
+
+    def price_risky_bond(self, face, coupon, T, freq, hazard_curve=None,
+                         hazard_id="hazard_1t_demo", curve=None, curve_id="ofz_demo",
+                         recovery=None, snapshot=None) -> dict:
+        """Credit-risky bond: survival-weighted cashflows + recovery (Phase 1)."""
+        from instruments.credit import risky_bond
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        if hazard_curve is None:
+            snapshot = snapshot or self.market_data.demo_snapshot()
+            hazard_curve = self.market_data.get_hazard_curve(hazard_id, snapshot)
+        return self._priced(
+            model_id="risky_bond", calculation_type="risky_bond_pricing",
+            engine=lambda: risky_bond(face, coupon, T, freq, curve, hazard_curve, recovery),
+            inputs={"face": face, "coupon": coupon, "T": T, "freq": freq,
+                    "hazard_id": hazard_id, "curve_id": curve_id, "recovery": recovery},
+            snapshot=snapshot, user_action="Price risky bond")
+
+    def price_inflation_linked_bond_real(self, face, real_coupon, T, freq,
+                                         base_cpi=100.0, current_cpi=100.0,
+                                         nominal_curve=None, real_curve=None,
+                                         nominal_curve_id="ofz_demo",
+                                         real_curve_id="ofzin_real_demo",
+                                         day_count="act365", snapshot=None) -> dict:
+        """Linker off the (nominal, real) curve pair — curve-implied breakeven (Phase 1)."""
+        from curves.inflation import inflation_linked_bond_curve
+        nominal_curve, snapshot = self._resolve_curve(nominal_curve, snapshot, nominal_curve_id)
+        real_curve, snapshot = self._resolve_curve(real_curve, snapshot, real_curve_id)
+        return self._priced(
+            model_id="inflation_linked_bond", calculation_type="inflation_linked_bond_pricing",
+            engine=lambda: inflation_linked_bond_curve(face, real_coupon, T, int(freq),
+                                                       nominal_curve, real_curve,
+                                                       base_cpi, current_cpi, day_count),
+            inputs={"face": face, "real_coupon": real_coupon, "T": T, "freq": int(freq),
+                    "base_cpi": base_cpi, "current_cpi": current_cpi,
+                    "nominal_curve_id": nominal_curve_id, "real_curve_id": real_curve_id,
+                    "projection": "curve_pair"},
+            snapshot=snapshot, user_action="Price inflation-linked bond (real curve)")
 
     # ── Multi-asset ───────────────────────────────────────────────────
     def price_spread_option(self, S1, S2, K, T, r, sigma1, sigma2, rho,
@@ -649,15 +764,19 @@ class PricingService:
         snapshot: MarketDataSnapshot | None = None,
         curve_id: str = "flat_rub",
         proj_curve=None,
+        proj_curve_id: str | None = None,
     ) -> dict:
-        """Price an IRS: floating leg on proj_curve, discount on the curve."""
+        """
+        Price an IRS: floating leg projected on proj_curve (or the snapshot curve
+        named by proj_curve_id, e.g. 'ruonia_demo'), both legs discounted on the
+        discount curve.
+        """
         from instruments.fixed_income import irs
 
         try:
             self._enforce_model("irs")
-            if curve is None:
-                snapshot = snapshot or self.market_data.demo_snapshot()
-                curve = self.market_data.get_curve(curve_id, snapshot)
+            curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+            proj_curve, snapshot = self._resolve_proj_curve(proj_curve, proj_curve_id, snapshot)
             raw = irs(notional, fixed_rate, T, freq, curve, pay_fixed, proj_curve)
             return self._result(
                 value=raw.get("npv"),
@@ -672,6 +791,8 @@ class PricingService:
                     "freq": freq,
                     "pay_fixed": pay_fixed,
                     "curve_id": curve_id,
+                    "proj_curve_id": proj_curve_id,
+                    "dual_curve": proj_curve is not None,
                 },
                 user_action="Price IRS",
             )
@@ -755,6 +876,48 @@ class PricingService:
                 calculation_type="fx_option_pricing",
                 inputs={"S": S, "K": K, "T": T, "r_d": r_d, "r_f": r_f, "sigma": sigma, "notional": notional, "opt": opt, "quote": quote},
             )
+
+    def price_fx_option_smile(
+        self,
+        S: float,
+        K: float,
+        T: float,
+        r_d: float,
+        r_f: float,
+        atm: float | None = None,
+        rr: float | None = None,
+        bf: float | None = None,
+        notional: float = 1_000_000,
+        opt: str = "call",
+        snapshot: MarketDataSnapshot | None = None,
+        vol_surface_id: str | None = None,
+    ) -> dict:
+        """
+        FX option with a Malz smile-consistent vol. Quotes (atm, rr, bf) may be
+        passed directly or resolved from a snapshot surface of type 'rr_bf'
+        (e.g. 'fx_usdrub_demo').
+        """
+        from instruments.fx import fx_option_smile
+
+        def engine():
+            nonlocal atm, rr, bf
+            if atm is None:
+                if vol_surface_id is None:
+                    raise ValueError("Provide (atm, rr, bf) or vol_surface_id")
+                surface = self.market_data.get_vol_surface(
+                    vol_surface_id, snapshot or self.market_data.demo_snapshot())
+                if not (isinstance(surface, dict) and surface.get("type") == "rr_bf"):
+                    raise ValueError(f"Surface {vol_surface_id} is not an rr_bf quote set")
+                atm, rr, bf = surface["atm"], surface["rr"], surface["bf"]
+            return fx_option_smile(S, K, T, r_d, r_f, atm, rr, bf, notional, opt)
+
+        return self._priced(
+            model_id="fx_smile", calculation_type="fx_option_smile_pricing",
+            engine=engine,
+            inputs={"S": S, "K": K, "T": T, "r_d": r_d, "r_f": r_f, "atm": atm,
+                    "rr": rr, "bf": bf, "notional": notional, "opt": opt,
+                    "vol_surface_id": vol_surface_id},
+            snapshot=snapshot, user_action="Price FX option with smile")
 
     def shock_curve(self, curve, shock: ScenarioShock):
         """Apply supported scenario curve shocks to a yield curve."""
