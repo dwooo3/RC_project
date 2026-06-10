@@ -248,6 +248,65 @@ def lsm(S0: float, K: float, T: float, r: float, sigma: float,
     return dict(price=price, stderr=stderr, delta=delta, gamma=gamma)
 
 
+def heston_paths_qe(S0: float, v0: float, r: float, q: float,
+                    kappa: float, theta: float, xi: float, rho: float,
+                    T: float, steps: int, n_sims: int,
+                    seed: Optional[int] = None) -> tuple:
+    """
+    Andersen (2008) Quadratic-Exponential scheme for Heston (Phase 3).
+    Matches the conditional mean/variance of v exactly (quadratic branch for
+    psi<=1.5, exponential for the fat-zero regime), log-spot update with
+    gamma1=gamma2=1/2 weights. Far smaller discretization bias than
+    Euler-with-reflection at the same step count.
+    Returns (S_paths, v_paths) each shape (n_sims, steps+1).
+    """
+    rng = np.random.default_rng(seed)
+    dt = T / steps
+    E = np.exp(-kappa * dt)
+    psi_c = 1.5
+    g1 = g2 = 0.5
+    K0 = -rho * kappa * theta * dt / xi
+    K1 = g1 * dt * (kappa * rho / xi - 0.5) - rho / xi
+    K2 = g2 * dt * (kappa * rho / xi - 0.5) + rho / xi
+    K3 = g1 * dt * (1 - rho * rho)
+    K4 = g2 * dt * (1 - rho * rho)
+
+    S = np.empty((n_sims, steps + 1)); S[:, 0] = S0
+    v = np.empty((n_sims, steps + 1)); v[:, 0] = v0
+    x = np.full(n_sims, np.log(S0))
+
+    for i in range(steps):
+        vi = v[:, i]
+        m = theta + (vi - theta) * E
+        s2 = (vi * xi**2 * E * (1 - E) / kappa
+              + theta * xi**2 * (1 - E)**2 / (2 * kappa))
+        psi = s2 / np.maximum(m * m, 1e-300)
+
+        v_next = np.empty(n_sims)
+        quad_branch = psi <= psi_c
+        if quad_branch.any():
+            psi_q = psi[quad_branch]
+            b2 = 2.0 / psi_q - 1.0 + np.sqrt(np.maximum(2.0 / psi_q * (2.0 / psi_q - 1.0), 0.0))
+            a = m[quad_branch] / (1.0 + b2)
+            Zv = rng.standard_normal(quad_branch.sum())
+            v_next[quad_branch] = a * (np.sqrt(b2) + Zv) ** 2
+        exp_branch = ~quad_branch
+        if exp_branch.any():
+            psi_e = psi[exp_branch]
+            p = (psi_e - 1.0) / (psi_e + 1.0)
+            beta = (1.0 - p) / np.maximum(m[exp_branch], 1e-300)
+            U = rng.uniform(size=exp_branch.sum())
+            v_next[exp_branch] = np.where(U <= p, 0.0,
+                                          np.log((1.0 - p) / np.maximum(1.0 - U, 1e-300)) / beta)
+
+        Zx = rng.standard_normal(n_sims)
+        x = (x + (r - q) * dt + K0 + K1 * vi + K2 * v_next
+             + np.sqrt(np.maximum(K3 * vi + K4 * v_next, 0.0)) * Zx)
+        v[:, i + 1] = v_next
+        S[:, i + 1] = np.exp(x)
+    return S, v
+
+
 # ─────────────────────────────────────────────────────────
 # Heston MC pricer
 # ─────────────────────────────────────────────────────────
@@ -256,12 +315,13 @@ def heston_mc_price(payoff_fn: Callable,
                     S0: float, v0: float, r: float, q: float,
                     kappa: float, theta: float, xi: float, rho: float,
                     T: float, steps: int = 252, n_sims: int = 50_000,
-                    seed: int = 42) -> dict:
-    """MC pricer under Heston model."""
-    paths, _ = heston_paths(S0, v0, r, q, kappa, theta, xi, rho,
-                             T, steps, n_sims, seed=seed)
+                    seed: int = 42, scheme: str = "euler") -> dict:
+    """MC pricer under Heston. scheme: euler (reflection) | qe (Andersen QE)."""
+    gen = heston_paths_qe if scheme == "qe" else heston_paths
+    paths, _ = gen(S0, v0, r, q, kappa, theta, xi, rho,
+                   T, steps, n_sims, seed=seed)
     disc  = np.exp(-r * T)
     pv    = disc * payoff_fn(paths)
     price = pv.mean()
     stderr = pv.std() / np.sqrt(n_sims)
-    return dict(price=price, stderr=stderr, n_sims=n_sims)
+    return dict(price=price, stderr=stderr, n_sims=n_sims, scheme=scheme)

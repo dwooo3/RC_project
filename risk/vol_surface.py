@@ -57,13 +57,15 @@ class VolSurface:
 
     def get_vol(self, K: float, T: float) -> float:
         """Interpolated implied vol."""
-        K = np.clip(K, self.K.min(), self.K.max())
-        T = np.clip(T, self.T.min(), self.T.max())
+        K = float(np.clip(K, self.K.min(), self.K.max()))
+        T = float(np.clip(T, self.T.min(), self.T.max()))
+        # RectBivariateSpline returns a 1x1 array (float() of which raises on
+        # numpy >= 1.25); RegularGridInterpolator wants a point list instead.
         try:
-            v = float(self._interp(K, T))
-        except Exception:
-            v = float(self._interp([[K, T]]))
-        return max(v, 0.001)
+            v = np.asarray(self._interp(K, T)).reshape(-1)[0]
+        except TypeError:
+            v = np.asarray(self._interp([[K, T]])).reshape(-1)[0]
+        return max(float(v), 0.001)
 
     def get_vol_delta(self, delta: float, T: float, r: float = 0.05,
                       q: float = 0.0, opt: str = "call") -> float:

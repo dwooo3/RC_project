@@ -29,10 +29,13 @@ ANALYTICS_LAB_MODELS = {
     "mc_gbm",
     "mc_lsm",
     "mc_heston",
+    "mc_heston_qe",
     "heston_cf",
     "sabr",
     "garch",
     "short_rate",
+    "bates",
+    "local_vol_mc",
 }
 
 
@@ -90,7 +93,68 @@ MODEL_REGISTRY: dict[str, dict] = {
         "notes": "Useful for barrier options. Barrier placement not optimised.",
     },
 
+    # ── PDE ───────────────────────────────────────────────
+    "pde_cn": {
+        "name": "Crank-Nicolson PDE",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Analytics",
+        "tests": ["european_matches_bsm", "american_matches_crr",
+                  "barrier_matches_closed_form", "greeks_from_grid"],
+        "notes": (
+            "Phase 3: log-spot CN with Rannacher startup, barrier-aligned grids, "
+            "projection step for American exercise. European to ~1e-4 of BSM, "
+            "American put to ~5e-3 of CRR(2000), KO barriers to <2e-2 of closed "
+            "form. Uniform grid; no nonuniform refinement at strike/barrier."
+        ),
+    },
+
+    # ── Jump diffusion ────────────────────────────────────
+    "merton_jump": {
+        "name": "Merton Jump-Diffusion",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["lambda_zero_is_bsm", "put_call_parity", "series_matches_mc"],
+        "notes": (
+            "Phase 3: exact Poisson-mixture series of BSM prices (lognormal "
+            "jumps); Greeks as the weighted mixture. Series truncated at 60 "
+            "terms with mass check. Jump params are inputs — no calibration."
+        ),
+    },
+    "bates": {
+        "name": "Bates (Heston + Jumps)",
+        "status": ModelStatus.PROTOTYPE,
+        "domain": "Analytics",
+        "tests": ["lambda_zero_is_heston", "xi_zero_is_merton", "put_call_parity"],
+        "notes": (
+            "Phase 3: Gil-Pelaez inversion of the Heston CF times the "
+            "compensated jump factor. Degenerates exactly to Heston (λ=0) and "
+            "Merton (ξ→0). No calibration; Analytics Lab only."
+        ),
+    },
+
     # ── Monte Carlo ───────────────────────────────────────
+    "mc_heston_qe": {
+        "name": "Heston Monte Carlo (Andersen QE)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Analytics",
+        "tests": ["qe_bias_vs_cf_coarse_steps"],
+        "notes": (
+            "Phase 3: Andersen (2008) Quadratic-Exponential scheme; exact "
+            "conditional moments of v. ~6x smaller bias than Euler-reflection "
+            "at 32 steps in validation. No martingale correction term."
+        ),
+    },
+    "local_vol_mc": {
+        "name": "Local Vol MC (Dupire)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Analytics",
+        "tests": ["flat_surface_is_bsm", "smile_repricing"],
+        "notes": (
+            "Phase 3: Dupire local vol tabulated on a (spot, time) grid, "
+            "vectorized log-Euler MC. Reprices the input smile within MC noise "
+            "in validation. Quality depends on the implied-surface smoothness."
+        ),
+    },
     "mc_gbm": {
         "name": "Monte Carlo GBM",
         "status": ModelStatus.APPROXIMATION,

@@ -188,6 +188,7 @@ class PricingService:
             "binomial_lr": "binomial_lr",
             "trinomial": "trinomial",
             "mc": "mc_gbm",
+            "pde": "pde_cn",
         }.get(model, model)
         try:
             self._enforce_model(model_id)
@@ -876,6 +877,58 @@ class PricingService:
                 calculation_type="fx_option_pricing",
                 inputs={"S": S, "K": K, "T": T, "r_d": r_d, "r_f": r_f, "sigma": sigma, "notional": notional, "opt": opt, "quote": quote},
             )
+
+    # ── Phase 3: numerical engines ────────────────────────────────────
+    def price_american_option(self, S, K, T, r, sigma, q=0.0, opt="put",
+                              model="pde", snapshot=None) -> dict:
+        """American option. model: pde (Crank-Nicolson) | binomial | binomial_lr | trinomial | lsm."""
+        from instruments.vanilla import american
+        model_id = {"pde": "pde_cn", "binomial": "binomial_crr",
+                    "binomial_lr": "binomial_lr", "trinomial": "trinomial",
+                    "lsm": "mc_lsm"}.get(model, model)
+        return self._priced(
+            model_id=model_id, calculation_type="american_option_pricing",
+            engine=lambda: american(S, K, T, r, sigma, q, opt, model),
+            inputs={"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q,
+                    "opt": opt, "model": model},
+            snapshot=snapshot, user_action="Price American option")
+
+    def price_barrier_option_pde(self, S, K, H, T, r, sigma, q=0.0, opt="call",
+                                 barrier_type="down-out", rebate=0.0,
+                                 snapshot=None) -> dict:
+        """Barrier option via the Crank-Nicolson PDE (cross-check to closed form)."""
+        from models.pde import cn_barrier
+        return self._priced(
+            model_id="pde_cn", calculation_type="barrier_option_pde_pricing",
+            engine=lambda: cn_barrier(S, K, H, T, r, sigma, q, opt, barrier_type, rebate),
+            inputs={"S": S, "K": K, "H": H, "T": T, "r": r, "sigma": sigma, "q": q,
+                    "opt": opt, "barrier_type": barrier_type, "rebate": rebate},
+            snapshot=snapshot, user_action="Price barrier option (PDE)")
+
+    def price_merton_option(self, S, K, T, r, sigma, q=0.0, lam=0.1, mu_j=-0.1,
+                            delta_j=0.15, opt="call", snapshot=None) -> dict:
+        """European option under Merton lognormal jump-diffusion."""
+        from models.jump_diffusion import merton_price
+        return self._priced(
+            model_id="merton_jump", calculation_type="merton_option_pricing",
+            engine=lambda: merton_price(S, K, T, r, sigma, q, lam, mu_j, delta_j, opt),
+            inputs={"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q,
+                    "lam": lam, "mu_j": mu_j, "delta_j": delta_j, "opt": opt},
+            snapshot=snapshot, user_action="Price Merton jump option")
+
+    def price_bates_option(self, S, K, T, r, q, v0, kappa, theta, xi, rho,
+                           lam=0.1, mu_j=-0.1, delta_j=0.15, opt="call",
+                           snapshot=None) -> dict:
+        """European option under Bates (Heston + jumps); Analytics Lab model."""
+        from models.jump_diffusion import bates_price
+        return self._priced(
+            model_id="bates", calculation_type="bates_option_pricing",
+            engine=lambda: bates_price(S, K, T, r, q, v0, kappa, theta, xi, rho,
+                                       lam, mu_j, delta_j, opt),
+            inputs={"S": S, "K": K, "T": T, "r": r, "q": q, "v0": v0,
+                    "kappa": kappa, "theta": theta, "xi": xi, "rho": rho,
+                    "lam": lam, "mu_j": mu_j, "delta_j": delta_j, "opt": opt},
+            snapshot=snapshot, user_action="Price Bates option")
 
     # ── Phase 2: new instrument classes ───────────────────────────────
     def price_ndf(self, S, K, T, r_d, r_f, notional_fgn=1_000_000,

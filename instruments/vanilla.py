@@ -40,6 +40,9 @@ def european(S, K, T, r, sigma, q=0.0, opt="call", model="bsm") -> dict:
         else:
             pf = lambda paths: np.maximum(K - paths[:, -1], 0)
         return mc_price(pf, S, r, q, sigma, T)
+    elif model == "pde":
+        from models.pde import cn_vanilla
+        return cn_vanilla(S, K, T, r, sigma, q, opt, "european")
     else:
         raise ValueError(f"Unknown model: {model}")
 
@@ -57,6 +60,9 @@ def american(S, K, T, r, sigma, q=0.0, opt="call", model="binomial") -> dict:
         return trinomial(S, K, T, r, sigma, q, N=300, opt=opt, exercise="american")
     elif model == "lsm":
         return lsm(S, K, T, r, sigma, q, opt=opt)
+    elif model == "pde":
+        from models.pde import cn_vanilla
+        return cn_vanilla(S, K, T, r, sigma, q, opt, "american")
     else:
         raise ValueError(f"Unknown model: {model}")
 
