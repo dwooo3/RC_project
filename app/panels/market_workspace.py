@@ -20,6 +20,7 @@ class MarketWorkspace(WorkstationWorkspace):
         self.market_data = market_service()
         # latest real MOEX snapshot when a local DB is present, else demo
         self.snapshot = active_snapshot(self.market_data)
+        self._db = getattr(self.market_data, "market_db", None)
         self.validation = self._validation_summary()
         self.snapshot_lineage = self.market_data.snapshot_lineage(self.snapshot.snapshot_id)
         source = self.snapshot.source_value
@@ -88,7 +89,51 @@ class MarketWorkspace(WorkstationWorkspace):
         tabs.addTab(self._fx_explorer_tab(), "FX Explorer")
         tabs.addTab(self._vol_surface_explorer_tab(), "Vol Surface Explorer")
         tabs.addTab(self._credit_curve_explorer_tab(), "Credit Curve Explorer")
+        tabs.addTab(self._data_health_tab(), "Data Health")
         return tabs
+
+    def _breakeven_panel(self):
+        """Market breakeven inflation (nominal − real) when both curves exist."""
+        from services import market_views as mv
+        be = mv.breakeven_term_structure(self.snapshot)
+        if not be["available"]:
+            return None
+        panel = WorkstationPanel("Breakeven Inflation (КБД − OFZ-IN real)")
+        rows = [[f"{T}y", f"{n:.2f}%", f"{r:.2f}%", f"{b:.2f}%"]
+                for T, n, r, b in zip(be["tenors"], be["nominal"],
+                                      be["real"], be["breakeven"])]
+        panel.layout.addWidget(
+            DenseTable(["Tenor", "Nominal", "Real", "Breakeven"], rows))
+        return panel
+
+    def _data_health_tab(self):
+        """Snapshot coverage calendar + recent ingest log + quality alerts."""
+        panel = WorkstationPanel("Data Health")
+        if self._db is None:
+            panel.layout.addWidget(self._snapshot_context_table(
+                "Demo mode — no local market-data DB connected"))
+            return panel
+        from services import market_views as mv
+        from infra.jobs.data_quality import snapshot_quality_report
+        cal = mv.snapshot_calendar(self._db, 30)
+        rep = snapshot_quality_report(self._db, self.snapshot.snapshot_id)
+        panel.layout.addWidget(DenseTable(
+            ["Metric", "Value"],
+            [["Snapshot", rep["snapshot_id"]],
+             ["Source / quality", f"{rep['source']} / {rep['quality']}"],
+             ["Completeness", f"{rep['completeness_pct']}%"],
+             ["Freshness", f"{rep.get('staleness_days', '—')} days"],
+             ["Calendar coverage (30d)", f"{cal['present']}/{cal['business_days']} "
+                                         f"({cal['coverage_pct']}%)"],
+             ["Status", rep["status"]],
+             ["Alerts", "; ".join(rep["alerts"]) or "none"]]))
+        log_rows = [[r["endpoint"][:42], r["status"], r["rows"] or 0,
+                     str(r["finished_at"])[:19]]
+                    for r in mv.ingest_history(self._db, 20)]
+        if log_rows:
+            panel.layout.addWidget(DenseTable(
+                ["Endpoint", "Status", "Rows", "Finished"], log_rows))
+        return panel
 
     def _curve_explorer_tab(self):
         panel = WorkstationPanel("Curve Explorer")
@@ -131,6 +176,9 @@ class MarketWorkspace(WorkstationWorkspace):
                 rows,
             )
         )
+        breakeven = self._breakeven_panel()
+        if breakeven is not None:
+            panel.layout.addWidget(breakeven)
         panel.layout.addWidget(self._lineage_table())
         return panel
 
@@ -183,7 +231,33 @@ class MarketWorkspace(WorkstationWorkspace):
                 rows,
             )
         )
+        smile = self._smile_detail_panel()
+        if smile is not None:
+            panel.layout.addWidget(smile)
         panel.layout.addWidget(self._lineage_table())
+        return panel
+
+    def _smile_detail_panel(self):
+        """Per-expiry implied-vol smile + SVI fit quality for one underlying."""
+        if self._db is None:
+            return None
+        from services import market_views as mv
+        unds = mv.vol_underlyings(self._db, self.snapshot.snapshot_id)
+        if not unds:
+            return None
+        # prefer Si (FX) then RTS/MIX (index) as the headline smile
+        underlying = next((u for u in ("Si", "RTS", "MIX") if u in unds), unds[0])
+        smile = mv.vol_smile_slices(self._db, self.snapshot.snapshot_id, underlying)
+        rows = []
+        for s in smile["slices"]:
+            svi = f"{s['svi']['rmse']:.2f}%" if s.get("svi") else "—"
+            rows.append([s["expiry"], s["n_points"], f"{s['forward']:.0f}",
+                         f"{s['atm_vol']:.2f}%", svi])
+        if not rows:
+            return None
+        panel = WorkstationPanel(f"Implied Vol Smile — {underlying} (self-implied)")
+        panel.layout.addWidget(
+            DenseTable(["Expiry", "Strikes", "Forward", "ATM vol", "SVI rmse"], rows))
         return panel
 
     def _credit_curve_explorer_tab(self):

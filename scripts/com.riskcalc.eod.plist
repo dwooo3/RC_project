@@ -17,10 +17,13 @@
     <key>Label</key>
     <string>com.riskcalc.eod</string>
 
+    <!-- launchd needs ABSOLUTE paths everywhere: replace REPLACE_WITH_REPO_PATH
+         with your repo path in all four <string>s below (or just use
+         scripts/install_launchd.sh which fills them in for you). -->
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>scripts/daily_eod.sh</string>
+        <string>REPLACE_WITH_REPO_PATH/scripts/daily_eod.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -39,8 +42,8 @@
     <false/>
 
     <key>StandardOutPath</key>
-    <string>data/logs/launchd.out.log</string>
+    <string>REPLACE_WITH_REPO_PATH/data/logs/launchd.out.log</string>
     <key>StandardErrorPath</key>
-    <string>data/logs/launchd.err.log</string>
+    <string>REPLACE_WITH_REPO_PATH/data/logs/launchd.err.log</string>
 </dict>
 </plist>

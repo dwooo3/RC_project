@@ -18,9 +18,11 @@ class RiskWorkspace(WorkstationWorkspace):
     """Unified risk workstation for VaR, stress, backtesting, and capital."""
 
     def __init__(self, parent=None):
+        from app.runtime import active_snapshot, market_service
         self.calculation_timestamp = datetime.now(UTC).replace(microsecond=0)
-        self.market_data = MarketDataService()
-        self.snapshot = self.market_data.demo_snapshot()
+        self.market_data = market_service()
+        self._db = getattr(self.market_data, "market_db", None)
+        self.snapshot = active_snapshot(self.market_data)
         self.risk_service = RiskService(market_data=self.market_data)
         self.returns = self._demo_returns()
         self.position_value = 1_000_000.0
@@ -132,7 +134,37 @@ class RiskWorkspace(WorkstationWorkspace):
         tabs.addTab(self._stress_tab(), "Stress")
         tabs.addTab(self._backtesting_tab(), "Backtesting")
         tabs.addTab(self._capital_tab(), "Capital")
+        tabs.addTab(self._factors_tab(), "Factors")
         return tabs
+
+    def _factors_tab(self):
+        """Risk-factor annualised vols + correlation matrix from real history."""
+        panel = WorkstationPanel("Risk Factors (return history)")
+        if self._db is None:
+            panel.layout.addWidget(DenseTable(
+                ["Status"], [["Demo mode — connect a market-data DB for factor history"]]))
+            return panel
+        from services import market_views as mv
+        candidates = ["IMOEX:price", "SBER:price", "GAZP:price", "LKOH:price",
+                      "ROSN:price", "GMKN:price", "PLZL:price", "VTBR:price"]
+        have = {r["factor_id"] for r in self._db._query(
+            "SELECT DISTINCT factor_id FROM time_series WHERE kind='price'")}
+        factors = [f for f in candidates if f in have]
+        if not factors:
+            panel.layout.addWidget(DenseTable(["Status"], [["No factor history ingested yet"]]))
+            return panel
+        fs = mv.factor_series(self.market_data, factors)
+        panel.layout.addWidget(DenseTable(
+            ["Factor", "Ann. vol", "Observations"],
+            [[f, f"{fs['ann_vol'][f]:.1f}%", fs["n_obs"]] for f in fs["factors"]]))
+        # correlation matrix
+        names = [f.replace(":price", "") for f in fs["factors"]]
+        header = ["Corr"] + names
+        corr_rows = [[names[i]] + [f"{fs['correlation'][i][j]:.2f}"
+                                   for j in range(len(names))]
+                     for i in range(len(names))]
+        panel.layout.addWidget(DenseTable(header, corr_rows))
+        return panel
 
     def _var_tab(self):
         panel = WorkstationPanel("VaR")
