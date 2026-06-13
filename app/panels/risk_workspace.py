@@ -131,11 +131,125 @@ class RiskWorkspace(WorkstationWorkspace):
     def _risk_tabs(self):
         tabs = QTabWidget()
         tabs.addTab(self._var_tab(), "VaR")
+        tabs.addTab(self._decomposition_tab(), "Decomposition")
+        tabs.addTab(self._scenarios_tab(), "Scenarios")
         tabs.addTab(self._stress_tab(), "Stress")
+        tabs.addTab(self._xva_tab(), "XVA")
         tabs.addTab(self._backtesting_tab(), "Backtesting")
         tabs.addTab(self._capital_tab(), "Capital")
         tabs.addTab(self._factors_tab(), "Factors")
         return tabs
+
+    def _analytics_portfolio(self):
+        """A representative demo book for the institutional analytics views."""
+        if getattr(self, "_an_ps", None) is not None:
+            return self._an_ps
+        from domain.portfolio import Portfolio, Position
+        from services.portfolio_service import PortfolioService
+        book = Portfolio(name="Risk demo", positions=[
+            Position(id="opt_sber", instrument="call", description="SBER call",
+                     quantity=500, params=dict(S=322.0, K=340.0, T=0.5, r=0.14, sigma=0.30)),
+            Position(id="ofz_5y", instrument="bond", description="OFZ 5Y",
+                     quantity=2000, params=dict(face=1000, coupon=0.12, T=5, freq=2, r=0.14)),
+            Position(id="eq_gazp", instrument="equity", description="GAZP",
+                     quantity=20000, params=dict(S=113.0)),
+            Position(id="eq_lkoh", instrument="equity", description="LUKOIL",
+                     quantity=1000, params=dict(S=4734.0)),
+        ])
+        self._an_ps = PortfolioService(book, market_data=self.market_data)
+        return self._an_ps
+
+    def _decomposition_tab(self):
+        """Risk decomposition by factor / bucket / position (Aladdin-style)."""
+        from services import analytics_views as av
+        panel = WorkstationPanel("Risk Decomposition")
+        try:
+            d = av.risk_decomposition(self._analytics_portfolio())
+        except Exception as exc:
+            panel.layout.addWidget(DenseTable(["Error"], [[str(exc)[:120]]]))
+            return panel
+        panel.layout.addWidget(DenseTable(
+            ["Bucket", "|Contribution|"],
+            [[b, self._money(v)] for b, v in sorted(d["by_bucket"].items(),
+                                                    key=lambda x: -x[1])]))
+        panel.layout.addWidget(DenseTable(
+            ["Factor", "Bucket", "Sensitivity", "Contribution"],
+            [[r["factor"], r["bucket"], f"{r['sensitivity']:,.2f}",
+              self._money(r["contribution"])] for r in d["by_factor"][:15]]))
+        panel.layout.addWidget(DenseTable(
+            ["Position", "Instrument", "Market Value", "DV01", "Delta", "Vega"],
+            [[r["id"], r["instrument"], self._money(r["mv"]),
+              f"{r['dv01']:,.1f}", f"{r['delta']:,.1f}", f"{r['vega']:,.1f}"]
+             for r in d["by_position"]]))
+        try:
+            from app.chart import ChartWidget
+            if d["by_bucket"]:
+                chart = ChartWidget()
+                chart.setMinimumHeight(240)
+                items = sorted(d["by_bucket"].items(), key=lambda x: -x[1])
+                chart.plot_curves([("contribution", list(range(len(items))),
+                                    [v for _, v in items])],
+                                  title="Risk by bucket", xlabel="bucket", ylabel="|contribution|")
+                panel.layout.addWidget(chart)
+        except Exception:
+            pass
+        return panel
+
+    def _scenarios_tab(self):
+        """Named stress library via full-reprice P&L."""
+        from services import analytics_views as av
+        panel = WorkstationPanel("Scenario Library (full-reprice)")
+        try:
+            lib = av.scenario_library(self._analytics_portfolio())
+        except Exception as exc:
+            panel.layout.addWidget(DenseTable(["Error"], [[str(exc)[:120]]]))
+            return panel
+        panel.layout.addWidget(DenseTable(
+            ["Scenario", "P&L", "Shocks"],
+            [[s["name"], self._money(s["pnl"]),
+              ", ".join(f"{k}={v:+g}" for k, v in s["shocks"].items())]
+             for s in lib["scenarios"]]))
+        try:
+            from app.chart import ChartWidget
+            chart = ChartWidget()
+            chart.setMinimumHeight(240)
+            names = [s["name"] for s in lib["scenarios"]]
+            chart.plot_series(names, [("P&L", [s["pnl"] for s in lib["scenarios"]])],
+                              title="Scenario P&L", ylabel="P&L")
+            panel.layout.addWidget(chart)
+        except Exception:
+            pass
+        return panel
+
+    def _xva_tab(self):
+        """XVA dashboard: EPE/ENE/PFE profiles + CVA/DVA from exposure simulation."""
+        from services import analytics_views as av
+        panel = WorkstationPanel("XVA — IRS counterparty exposure")
+        try:
+            x = av.xva_profile(self.risk_service, n_sims=2000, n_grid=20)
+        except Exception as exc:
+            panel.layout.addWidget(DenseTable(["Error"], [[str(exc)[:120]]]))
+            return panel
+        if x.get("errors"):
+            panel.layout.addWidget(DenseTable(["Error"], [["; ".join(x["errors"])[:120]]]))
+            return panel
+        panel.layout.addWidget(DenseTable(
+            ["Metric", "Value"],
+            [["CVA", self._money(x["cva"])], ["DVA", self._money(x.get("dva") or 0)],
+             ["BCVA", self._money(x.get("bcva") or 0)],
+             ["Peak PFE (95%)", self._money(x["peak_pfe"])]]))
+        try:
+            from app.chart import ChartWidget
+            chart = ChartWidget()
+            chart.setMinimumHeight(260)
+            t = [f"{v:.1f}" for v in x["times"]]
+            chart.plot_series(t, [("EPE", x["epe"]), ("PFE 95%", x["pfe95"]),
+                                  ("PFE 99%", x["pfe99"])],
+                              title="Exposure profile", xlabel="years", ylabel="exposure")
+            panel.layout.addWidget(chart)
+        except Exception:
+            pass
+        return panel
 
     def _factors_tab(self):
         """Risk-factor annualised vols + correlation matrix from real history."""
@@ -157,6 +271,20 @@ class RiskWorkspace(WorkstationWorkspace):
         panel.layout.addWidget(DenseTable(
             ["Factor", "Ann. vol", "Observations"],
             [[f, f"{fs['ann_vol'][f]:.1f}%", fs["n_obs"]] for f in fs["factors"]]))
+        # factor model: beta to benchmark, systematic vs idiosyncratic (P2)
+        try:
+            from services import analytics_views as av
+            fm = av.factor_model(self.market_data,
+                                 [f for f in factors if f != "IMOEX:price"],
+                                 "IMOEX:price")
+            if fm["factors"]:
+                panel.layout.addWidget(DenseTable(
+                    ["Factor", "Beta (IMOEX)", "Systematic %", "Idio vol", "Total vol"],
+                    [[r["factor"].replace(":price", ""), f"{r['beta']:.2f}",
+                      f"{r['systematic_pct']:.0f}%", f"{r['idio_vol']:.1f}%",
+                      f"{r['total_vol']:.1f}%"] for r in fm["factors"]]))
+        except Exception:
+            pass
         # correlation matrix (table + heatmap)
         names = [f.replace(":price", "") for f in fs["factors"]]
         header = ["Corr"] + names
