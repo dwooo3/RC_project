@@ -18,7 +18,8 @@ from datetime import date, datetime
 from curves.yield_curve import YieldCurve
 from infra.db.market_data_db import MarketDataDB
 from infra.moex_iss.calibration import (
-    build_corporate_curve_points, issuer_spreads, representative_spread,
+    build_corporate_curve_points, build_corporate_curve_points_bucketed,
+    issuer_spreads, representative_spread,
 )
 from infra.moex_iss.client import IssClient
 from infra.moex_iss.validation import validate_curve_points
@@ -88,11 +89,16 @@ class MoexIngestor:
         return f"moex-{valuation_date.isoformat()}"
 
     # -- G-curve (КБД) -----------------------------------------------------
-    def ingest_gcurve(self, snapshot_id: str, valuation_date: date) -> int:
+    def ingest_gcurve(self, snapshot_id: str, valuation_date: date,
+                      *, historical: bool = False) -> int:
+        """historical=True requests the curve AS OF valuation_date (backfill)."""
         started = datetime.now()
         endpoint = "engines/stock/zcyc"
         try:
-            blocks = self.client.get_blocks(endpoint, {"iss.only": "yearyields,params"})
+            params = {"iss.only": "yearyields,params"}
+            if historical:
+                params["date"] = valuation_date.isoformat()
+            blocks = self.client.get_blocks(endpoint, params)
             yy = blocks.get("yearyields", [])
             points: list[tuple[float, float, float | None]] = []
             as_of = None
@@ -352,8 +358,13 @@ class MoexIngestor:
             bonds = self.db.get_calibration_bonds(snapshot_id)
             spreads = issuer_spreads(gcurve, bonds, valuation_date)
             saved = 0
+            wide_universe = len(spreads) > 50      # TQCB-scale: bucketed medians
             for tier in ("T1", "T2", "T3"):
-                pts = build_corporate_curve_points(gcurve, spreads, tier, min_bonds=min_bonds)
+                if wide_universe:
+                    pts = build_corporate_curve_points_bucketed(
+                        gcurve, spreads, tier, min_bonds_per_bucket=min_bonds)
+                else:
+                    pts = build_corporate_curve_points(gcurve, spreads, tier, min_bonds=min_bonds)
                 if not pts:
                     continue
                 pts_df = [(t, z, math.exp(-z * t)) for (t, z, _) in pts]
@@ -374,27 +385,35 @@ class MoexIngestor:
     # -- FORTS option vol surface -> vol_points ----------------------------
     def ingest_option_vol_surface(self, snapshot_id: str, valuation_date: date) -> int:
         """
-        Ingest FORTS option implied vols into vol_points (spec §2 equity vol).
+        FORTS option implied vols into vol_points (Stage I.5 rewrite).
 
-        ISS: /engines/futures/markets/options/securities. IVs stored as decimals;
-        grouped into snapshot vol_surfaces by the provider.
+        EOD marketdata publishes NO volatility field (intraday-only), so vols
+        are SELF-IMPLIED from settlement prices via Black-76 against the
+        underlying futures settle (infra.moex_iss.vol_surface.imply_option_vols),
+        with open-interest / moneyness / expiry quality filters.
         """
-        from infra.moex_iss.vol_surface import normalise_option_rows
+        from infra.moex_iss.vol_surface import imply_option_vols, normalise_option_rows
 
         started = datetime.now()
         endpoint = "engines/futures/markets/options/securities"
         try:
-            blocks = self.client.get_blocks(endpoint, {"iss.only": "securities,marketdata"})
-            # join securities (static: strike, expiry, underlying) with marketdata (IV)
-            merged: list[dict] = []
-            md = {r.get("SECID"): r for r in blocks.get("marketdata", [])}
-            for sec in blocks.get("securities", []):
-                row = dict(sec)
-                row.update(md.get(sec.get("SECID"), {}))
-                merged.append(row)
-            if not merged:  # some layouts carry everything in one block
-                merged = blocks.get("marketdata", []) or blocks.get("securities", [])
-            points = normalise_option_rows(merged)
+            opt = self.client.get_blocks(endpoint, {"iss.only": "securities,marketdata"})
+            fut = self.client.get_blocks("engines/futures/markets/forts/securities",
+                                         {"iss.only": "securities,marketdata"})
+            points = imply_option_vols(
+                opt.get("securities", []), opt.get("marketdata", []),
+                fut.get("securities", []), fut.get("marketdata", []),
+                valuation_date,
+            )
+            if not points:
+                # legacy path: keep accepting intraday rows that DO carry IV
+                merged: list[dict] = []
+                md = {r.get("SECID"): r for r in opt.get("marketdata", [])}
+                for sec in opt.get("securities", []):
+                    row = dict(sec)
+                    row.update(md.get(sec.get("SECID"), {}))
+                    merged.append(row)
+                points = normalise_option_rows(merged)
             for p in points:
                 self.db.save_vol_point(snapshot_id, p["underlying"], p["expiry"],
                                        p["strike"], p["iv"])
@@ -403,6 +422,142 @@ class MoexIngestor:
         except Exception as exc:
             self.db.log_ingest(endpoint, "error", 0, started, datetime.now(), str(exc))
             raise
+
+    # -- Real curve from OFZ-IN linkers (Stage I.3) -------------------------
+    def ingest_real_curve(self, snapshot_id: str, valuation_date: date) -> int:
+        """
+        Real (inflation-adjusted) zero curve from OFZ-IN linkers (SU52*): the
+        exchange quotes their YIELD off the indexed nominal, i.e. a real yield.
+        Stored as REALCURVE_OFZIN with continuous compounding.
+        """
+        started = datetime.now()
+        endpoint = "engines/stock/markets/bonds/boards/TQOB/securities"
+        try:
+            blocks = self.client.get_blocks(endpoint, {"iss.only": "securities,marketdata"})
+            md_by_id = {r.get("SECID"): r for r in blocks.get("marketdata", [])}
+            points = []
+            for sec in blocks.get("securities", []):
+                secid = str(sec.get("SECID") or "")
+                if not secid.startswith("SU52"):
+                    continue
+                mat = sec.get("MATDATE")
+                try:
+                    tenor = (date.fromisoformat(str(mat)[:10]) - valuation_date).days / 365.0
+                except (TypeError, ValueError):
+                    continue
+                md = md_by_id.get(secid, {})
+                y_pct = _to_float(md.get("YIELD") or sec.get("YIELDATPREVWAPRICE"))
+                if tenor <= 0 or y_pct is None or not -5 < y_pct < 30:
+                    continue
+                z = math.log(1.0 + y_pct / 100.0)        # effective -> continuous
+                points.append((tenor, z, math.exp(-z * tenor)))
+            points.sort(key=lambda p: p[0])
+            if points:
+                self.db.save_curve(snapshot_id, "REALCURVE_OFZIN", method="linker_yields",
+                                   nss_params={}, as_of=valuation_date, points=points)
+            self.db.log_ingest(endpoint + ":real", "ok", len(points), started, datetime.now())
+            return len(points)
+        except Exception as exc:
+            self.db.log_ingest(endpoint + ":real", "error", 0, started, datetime.now(), str(exc))
+            raise
+
+    # -- FX forward curve from FORTS futures strips (Stage I.4) -------------
+    FX_FUTURES_ASSETS = {"Si": "USD/RUB", "CNY": "CNY/RUB", "CR": "CNY/RUB", "Eu": "EUR/RUB"}
+
+    def ingest_fx_futures(self, snapshot_id: str, valuation_date: date,
+                          spot_rates: dict[str, float] | None = None) -> int:
+        """
+        FX forward curves from futures settlement strips: implied carry
+        c(T) = ln(F/S)/T per expiry, stored as FXFWD_<CCY> (zero_rate = carry).
+        spot_rates: {"USD/RUB": fix, ...}; the nearest future anchors the curve
+        when no spot is supplied.
+        """
+        started = datetime.now()
+        endpoint = "engines/futures/markets/forts/securities"
+        try:
+            blocks = self.client.get_blocks(endpoint, {"iss.only": "securities,marketdata"})
+            md_by_id = {r.get("SECID"): r for r in blocks.get("marketdata", [])}
+            strips: dict[str, list[tuple[float, float]]] = {}
+            for sec in blocks.get("securities", []):
+                asset = str(sec.get("ASSETCODE") or "")
+                pair = self.FX_FUTURES_ASSETS.get(asset)
+                if pair is None:
+                    continue
+                try:
+                    expiry = date.fromisoformat(str(sec.get("LASTTRADEDATE"))[:10])
+                except (TypeError, ValueError):
+                    continue
+                T = (expiry - valuation_date).days / 365.0
+                md = md_by_id.get(sec.get("SECID"), {})
+                settle = _to_float(md.get("SETTLEPRICE")) or _to_float(sec.get("PREVSETTLEPRICE"))
+                if T <= 2 / 365.0 or not settle or settle <= 0:
+                    continue
+                strips.setdefault(pair, []).append((T, settle))
+
+            spot_rates = spot_rates or {}
+            saved = 0
+            for pair, pts in strips.items():
+                pts.sort(key=lambda p: p[0])
+                # Si futures quote RUB per 1000 USD historically — normalise by
+                # comparing the front contract to spot when available.
+                spot = spot_rates.get(pair)
+                scale = 1.0
+                if spot and pts and pts[0][1] / spot > 100:
+                    scale = 1000.0
+                outrights = [(T, F / scale) for T, F in pts]
+                anchor = spot or outrights[0][1]
+                curve_pts = []
+                for T, F in outrights:
+                    carry = math.log(F / anchor) / T if T > 0 else 0.0
+                    if abs(carry) > 1.0:
+                        continue                      # poisoned print
+                    curve_pts.append((T, carry, math.exp(-carry * T)))
+                if not curve_pts:
+                    continue
+                ccy = pair.split("/")[0]
+                self.db.save_curve(
+                    snapshot_id, f"FXFWD_{ccy}", method="futures_strip",
+                    nss_params={"pair": pair, "spot": anchor,
+                                "spot_source": "fix" if spot else "front_future",
+                                "outrights": {f"{T:.4f}": F for T, F in outrights}},
+                    as_of=valuation_date, points=curve_pts)
+                saved += 1
+            self.db.log_ingest(endpoint + ":fxfwd", "ok", saved, started, datetime.now())
+            return saved
+        except Exception as exc:
+            self.db.log_ingest(endpoint + ":fxfwd", "error", 0, started, datetime.now(), str(exc))
+            raise
+
+    # -- Bondization: coupon / amortization / offer schedules (Stage I.6) ---
+    def ingest_bondization(self, secids: list[str]) -> int:
+        """Coupon schedules, amortizations and offers per security (static data)."""
+        started = datetime.now()
+        endpoint = "securities/{secid}/bondization"
+        saved = 0
+        errors: list[str] = []
+        for secid in secids:
+            try:
+                blocks = self.client.get_blocks(
+                    f"securities/{secid}/bondization",
+                    {"iss.only": "coupons,amortizations,offers", "limit": "unlimited"})
+                coupons = [{"date": r.get("coupondate"), "value": _to_float(r.get("value")),
+                            "value_prc": _to_float(r.get("valueprc"))}
+                           for r in blocks.get("coupons", []) if r.get("coupondate")]
+                amorts = [{"date": r.get("amortdate"), "value": _to_float(r.get("value")),
+                           "face_remaining": _to_float(r.get("facevalue"))}
+                          for r in blocks.get("amortizations", []) if r.get("amortdate")]
+                offers = [{"date": r.get("offerdate"), "price": _to_float(r.get("price")),
+                           "offer_type": r.get("offertype")}
+                          for r in blocks.get("offers", []) if r.get("offerdate")]
+                if coupons or amorts or offers:
+                    self.db.save_bond_schedule(secid, coupons=coupons,
+                                               amortizations=amorts, offers=offers)
+                    saved += 1
+            except Exception as exc:               # isolate per-security failures
+                errors.append(f"{secid}: {exc}")
+        self.db.log_ingest(endpoint, "ok" if not errors else "partial", saved,
+                           started, datetime.now(), "; ".join(errors[:5]))
+        return saved
 
     def ingest_all(self, valuation_date: date, *, board: str = "TQOB") -> dict[str, int]:
         sid = self.snapshot_id_for(valuation_date)

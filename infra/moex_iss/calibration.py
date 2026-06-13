@@ -94,3 +94,49 @@ def representative_spread(spreads: list[dict], tier: str) -> float | None:
     """Mean spread for a tier (e.g. for credit_spreads metadata)."""
     vals = [s["spread"] for s in spreads if s["tier"] == tier]
     return (sum(vals) / len(vals)) if vals else None
+
+
+# ── Stage I.2: bucketed calibration for wide universes (TQCB ~2-3k bonds) ──
+
+TENOR_BUCKETS = (0.5, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0)
+
+
+def build_corporate_curve_points_bucketed(
+    gcurve,
+    spreads: list[dict],
+    tier: str,
+    *,
+    buckets: tuple = TENOR_BUCKETS,
+    min_bonds_per_bucket: int = 3,
+    min_buckets: int = 3,
+    spread_bounds: tuple = (-0.02, 0.30),
+) -> list[tuple[float, float, float | None]]:
+    """
+    Robust tier curve from a wide bond universe: per-bond spreads are snapped
+    to the nearest tenor bucket, hard-bounded (kills stale/defaulted prints),
+    then reduced by the bucket MEDIAN. Raw-tenor averaging (the small-universe
+    builder above) produces a noisy, non-monotonic mess on thousands of TQCB
+    quotes; bucketed medians survive it.
+    """
+    import statistics
+
+    by_bucket: dict[float, list[float]] = {}
+    for s in spreads:
+        if s["tier"] != tier:
+            continue
+        sp = s["spread"]
+        if not (spread_bounds[0] <= sp <= spread_bounds[1]):
+            continue
+        bucket = min(buckets, key=lambda b: abs(b - s["tenor"]))
+        if s["tenor"] > buckets[-1] * 1.5:
+            continue                                  # beyond the calibrated grid
+        by_bucket.setdefault(bucket, []).append(sp)
+
+    pts = []
+    for bucket in buckets:
+        vals = by_bucket.get(bucket, [])
+        if len(vals) < min_bonds_per_bucket:
+            continue
+        med = statistics.median(vals)
+        pts.append((bucket, gcurve.rate(bucket) + med, None))
+    return pts if len(pts) >= min_buckets else []

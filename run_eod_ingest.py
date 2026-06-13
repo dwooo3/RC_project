@@ -36,14 +36,48 @@ def main() -> int:
     parser.add_argument("--db", default="data/market_data.sqlite",
                         help="SQLite path (default: data/market_data.sqlite)")
     parser.add_argument("--board", default="TQOB", help="bond board (default TQOB)")
+    parser.add_argument("--equities", default=None,
+                        help="comma-separated tickers for daily history (e.g. SBER,GAZP)")
+    parser.add_argument("--backfill", type=int, default=0, metavar="DAYS",
+                        help="instead of EOD: backfill history DAYS calendar days back "
+                             "(indices, top equities, KBD per-day, CBR series)")
+    parser.add_argument("--top", type=int, default=50,
+                        help="backfill: how many most-liquid TQBR names (default 50)")
+    parser.add_argument("--cpi-csv", default=None, metavar="PATH",
+                        help="load monthly CPI index from CSV (YYYY-MM-DD,value) and exit")
     args = parser.parse_args()
 
     valuation_date = (date.fromisoformat(args.valuation_date)
                       if args.valuation_date else date.today())
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
-
     db = MarketDataDB(args.db)
-    job = EodIngestJob(db, IssClient(), CbrClient(), board=args.board)
+
+    if args.cpi_csv:
+        from infra.jobs.backfill import load_cpi_csv
+        n = load_cpi_csv(db, args.cpi_csv)
+        print(f"OK: loaded {n} CPI points into time_series CPI_RU")
+        return 0
+
+    equities = ([s.strip() for s in args.equities.split(",") if s.strip()]
+                if args.equities else None)
+
+    if args.backfill > 0:
+        from datetime import timedelta
+
+        from infra.jobs.backfill import BackfillJob
+        job = BackfillJob(db, IssClient(), CbrClient())
+        summary = job.run(valuation_date - timedelta(days=args.backfill),
+                          valuation_date, equities=equities, top=args.top)
+        print(json.dumps(summary, indent=2, ensure_ascii=False, default=str))
+        failed = [k for k, v in summary["steps"].items()
+                  if isinstance(v, str) and v.startswith("error")]
+        print(f"\n{'OK' if not failed else 'PARTIAL'}: backfill "
+              f"{summary['from']}..{summary['till']}"
+              + (f", failed: {', '.join(failed)}" if failed else ""))
+        return 0
+
+    job = EodIngestJob(db, IssClient(), CbrClient(), board=args.board,
+                       equities=equities if equities is not None else None)
     summary = job.run(valuation_date)
 
     print(json.dumps(summary, indent=2, ensure_ascii=False, default=str))

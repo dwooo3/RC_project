@@ -49,6 +49,12 @@ _TABLES = {
     "time_series": (["factor_id", "dt", "value", "kind"], ["factor_id", "dt", "kind"]),
     "vol_points": (["snapshot_id", "underlying", "expiry", "strike", "iv"],
                    ["snapshot_id", "underlying", "expiry", "strike"]),
+    "bond_coupons": (["secid", "coupon_date", "value", "value_prc"],
+                     ["secid", "coupon_date"]),
+    "bond_amortizations": (["secid", "amort_date", "value", "face_remaining"],
+                           ["secid", "amort_date"]),
+    "bond_offers": (["secid", "offer_date", "price", "offer_type"],
+                    ["secid", "offer_date"]),
 }
 
 
@@ -92,6 +98,15 @@ def _schema_statements(dialect: str) -> list[str]:
             snapshot_id TEXT NOT NULL, underlying TEXT NOT NULL, expiry TEXT NOT NULL,
             strike REAL NOT NULL, iv REAL,
             PRIMARY KEY (snapshot_id, underlying, expiry, strike))""",
+        """CREATE TABLE IF NOT EXISTS bond_coupons (
+            secid TEXT NOT NULL, coupon_date TEXT NOT NULL, value REAL, value_prc REAL,
+            PRIMARY KEY (secid, coupon_date))""",
+        """CREATE TABLE IF NOT EXISTS bond_amortizations (
+            secid TEXT NOT NULL, amort_date TEXT NOT NULL, value REAL, face_remaining REAL,
+            PRIMARY KEY (secid, amort_date))""",
+        """CREATE TABLE IF NOT EXISTS bond_offers (
+            secid TEXT NOT NULL, offer_date TEXT NOT NULL, price REAL, offer_type TEXT,
+            PRIMARY KEY (secid, offer_date))""",
         f"""CREATE TABLE IF NOT EXISTS ingest_log (
             run_id {serial_pk}, endpoint TEXT, status TEXT, rows INTEGER,
             started_at TEXT, finished_at TEXT, error TEXT)""",
@@ -227,6 +242,32 @@ class MarketDataDB:
             {"factor_id": factor_id, "dt": dt, "value": float(v), "kind": kind}
             for (dt, v) in points
         ])
+
+    def save_bond_schedule(self, secid, *, coupons=None, amortizations=None,
+                           offers=None) -> None:
+        """Persist a bondization schedule (coupons / amortization / offers)."""
+        self._upsert_many("bond_coupons", [
+            {"secid": secid, "coupon_date": str(c["date"]), "value": c.get("value"),
+             "value_prc": c.get("value_prc")} for c in (coupons or [])])
+        self._upsert_many("bond_amortizations", [
+            {"secid": secid, "amort_date": str(a["date"]), "value": a.get("value"),
+             "face_remaining": a.get("face_remaining")} for a in (amortizations or [])])
+        self._upsert_many("bond_offers", [
+            {"secid": secid, "offer_date": str(o["date"]), "price": o.get("price"),
+             "offer_type": o.get("offer_type")} for o in (offers or [])])
+
+    def get_bond_schedule(self, secid) -> dict:
+        return {
+            "coupons": self._query(
+                f"SELECT coupon_date, value, value_prc FROM bond_coupons "
+                f"WHERE secid={self.ph} ORDER BY coupon_date", (secid,)),
+            "amortizations": self._query(
+                f"SELECT amort_date, value, face_remaining FROM bond_amortizations "
+                f"WHERE secid={self.ph} ORDER BY amort_date", (secid,)),
+            "offers": self._query(
+                f"SELECT offer_date, price, offer_type FROM bond_offers "
+                f"WHERE secid={self.ph} ORDER BY offer_date", (secid,)),
+        }
 
     def log_ingest(self, endpoint, status, rows, started_at, finished_at, error="") -> None:
         self._exec(
