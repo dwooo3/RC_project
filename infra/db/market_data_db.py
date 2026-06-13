@@ -281,6 +281,20 @@ class MarketDataDB:
         return self._query_one(
             f"SELECT * FROM market_data_snapshots WHERE snapshot_id={self.ph}", (snapshot_id,))
 
+    def latest_snapshot_meta(self, source: str | None = None) -> dict | None:
+        """Most recent stored snapshot (optionally filtered by source)."""
+        if source:
+            return self._query_one(
+                f"SELECT * FROM market_data_snapshots WHERE source={self.ph} "
+                f"ORDER BY valuation_date DESC LIMIT 1", (source,))
+        return self._query_one(
+            "SELECT * FROM market_data_snapshots ORDER BY valuation_date DESC LIMIT 1")
+
+    def recent_ingest_log(self, limit: int = 40) -> list[dict]:
+        return self._query(
+            f"SELECT endpoint, status, rows, started_at, finished_at, error "
+            f"FROM ingest_log ORDER BY run_id DESC LIMIT {int(limit)}")
+
     def get_curve(self, snapshot_id, curve_id) -> dict | None:
         return self._query_one(
             f"SELECT * FROM yield_curves WHERE snapshot_id={self.ph} AND curve_id={self.ph}",

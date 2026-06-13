@@ -342,6 +342,25 @@ class MarketDataService:
         snapshot = provider.load_snapshot(valuation_date=valuation_date, **kwargs)
         return self.store.save(snapshot)
 
+    def best_available_snapshot(self, valuation_date: date | None = None) -> MarketDataSnapshot:
+        """
+        Return the most useful snapshot for the app/services (Stage II):
+        the latest real MOEX snapshot persisted in the DB (or the one for
+        valuation_date when given), else the DEMO snapshot. Never raises.
+        """
+        if self.market_db is None:
+            return self.demo_snapshot(valuation_date)
+        try:
+            if valuation_date is None:
+                meta = self.market_db.latest_snapshot_meta(source=MarketDataSource.MOEX.value)
+                if meta and meta.get("valuation_date"):
+                    valuation_date = date.fromisoformat(str(meta["valuation_date"])[:10])
+            if valuation_date is not None:
+                return self.moex_snapshot(valuation_date, fallback_to_demo=True)
+        except Exception:
+            pass
+        return self.demo_snapshot()
+
     def moex_snapshot(
         self,
         valuation_date: date | None = None,

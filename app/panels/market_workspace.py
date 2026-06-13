@@ -16,8 +16,10 @@ class MarketWorkspace(WorkstationWorkspace):
     """Market Data owns source, timestamp, snapshots, and validation display."""
 
     def __init__(self, parent=None):
-        self.market_data = MarketDataService()
-        self.snapshot = self.market_data.demo_snapshot()
+        from app.runtime import active_snapshot, market_service
+        self.market_data = market_service()
+        # latest real MOEX snapshot when a local DB is present, else demo
+        self.snapshot = active_snapshot(self.market_data)
         self.validation = self._validation_summary()
         self.snapshot_lineage = self.market_data.snapshot_lineage(self.snapshot.snapshot_id)
         source = self.snapshot.source_value

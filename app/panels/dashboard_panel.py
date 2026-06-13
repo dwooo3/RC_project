@@ -11,10 +11,15 @@ class DashboardPanel(WorkstationWorkspace):
     """Daily operating console for portfolio, risk, data, and model status."""
 
     def __init__(self, parent=None):
+        from app.runtime import active_snapshot, is_live
+        snap = active_snapshot()
+        src = snap.source_value
+        val_date = str(snap.valuation_date) if snap.valuation_date else "—"
+        mode = "Live" if is_live() else "Demo"
         super().__init__(
             "Dashboard",
             "Market risk and pricing control tower",
-            chips=[DataSourceChip("DEMO"), StatusChip("Approximation", text="Warnings: 4")],
+            chips=[DataSourceChip(src), StatusChip("Approximation", text="Warnings: 4")],
             actions=[
                 make_action("Refresh"),
                 make_action("Run Daily Pack", primary=True),
@@ -37,9 +42,9 @@ class DashboardPanel(WorkstationWorkspace):
             context_items=[
                 ("Portfolio", "Main Portfolio"),
                 ("Book", "Trading"),
-                ("Valuation Date", "2026-06-04"),
-                ("Snapshot", "DEMO:snap_20260604:v3"),
-                ("Mode", "Demo"),
+                ("Valuation Date", val_date),
+                ("Snapshot", snap.snapshot_id),
+                ("Mode", mode),
                 ("Last Calculation", "No run in this session"),
             ],
             parent=parent,

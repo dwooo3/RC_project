@@ -45,6 +45,8 @@ def main() -> int:
                         help="backfill: how many most-liquid TQBR names (default 50)")
     parser.add_argument("--cpi-csv", default=None, metavar="PATH",
                         help="load monthly CPI index from CSV (YYYY-MM-DD,value) and exit")
+    parser.add_argument("--quality", action="store_true",
+                        help="print a data-quality report for the snapshot and exit")
     args = parser.parse_args()
 
     valuation_date = (date.fromisoformat(args.valuation_date)
@@ -57,6 +59,19 @@ def main() -> int:
         n = load_cpi_csv(db, args.cpi_csv)
         print(f"OK: loaded {n} CPI points into time_series CPI_RU")
         return 0
+
+    if args.quality:
+        from infra.moex_iss.ingest import MoexIngestor
+        from infra.jobs.data_quality import (
+            format_report, history_depth_report, snapshot_quality_report)
+        sid = MoexIngestor.snapshot_id_for(valuation_date)
+        if not db.get_snapshot_meta(sid):
+            meta = db.latest_snapshot_meta()
+            sid = meta["snapshot_id"] if meta else sid
+        report = snapshot_quality_report(db, sid, valuation_date)
+        hist = history_depth_report(db)
+        print(format_report(report, hist))
+        return 0 if report["status"] != "FAIL" else 1
 
     equities = ([s.strip() for s in args.equities.split(",") if s.strip()]
                 if args.equities else None)

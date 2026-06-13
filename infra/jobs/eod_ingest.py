@@ -115,4 +115,11 @@ class EodIngestJob:
             }
         except Exception as exc:
             summary["snapshot"] = {"error": str(exc)}
+
+        # Stage II.2: attach a completeness/freshness report with alerts
+        try:
+            from infra.jobs.data_quality import snapshot_quality_report
+            summary["quality_report"] = snapshot_quality_report(self.db, sid, valuation_date)
+        except Exception as exc:
+            summary["quality_report"] = {"error": str(exc)}
         return summary

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for the daily EOD market-data ingest (Stage II.1).
+
+  Install:
+    1. Edit WorkingDirectory + ProgramArguments path below to your repo path.
+    2. cp scripts/com.riskcalc.eod.plist ~/Library/LaunchAgents/
+    3. launchctl load ~/Library/LaunchAgents/com.riskcalc.eod.plist
+    4. launchctl start com.riskcalc.eod            # optional immediate run
+
+  Runs weekdays at 19:30 local time (set to MSK on the host). MOEX publishes
+  EOD data after the evening session close; adjust StartCalendarInterval if the
+  host clock is not MSK. Uninstall: launchctl unload ~/Library/LaunchAgents/...
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.riskcalc.eod</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>scripts/daily_eod.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>REPLACE_WITH_REPO_PATH</string>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>data/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>data/logs/launchd.err.log</string>
+</dict>
+</plist>
