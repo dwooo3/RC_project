@@ -363,48 +363,93 @@ class MarketWorkspace(WorkstationWorkspace):
                 rows,
             )
         )
-        smile = self._smile_detail_panel()
+        smile = self._smile_explorer_panel()
         if smile is not None:
             panel.layout.addWidget(smile)
         panel.layout.addWidget(self._lineage_table())
         return panel
 
-    def _smile_detail_panel(self):
-        """Per-expiry implied-vol smile + SVI fit quality for one underlying."""
+    def _smile_explorer_panel(self):
+        """
+        Vol Explorer 2.0: dropdown over all implied underlyings; the chosen one
+        shows its per-expiry smile table, a smile+SVI chart, and the ATM term
+        structure. Self-implied from settlement prices.
+        """
         if self._db is None:
             return None
+        from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+        from app.chart import ChartWidget
         from services import market_views as mv
-        unds = mv.vol_underlyings(self._db, self.snapshot.snapshot_id)
+
+        sid = self.snapshot.snapshot_id
+        unds = mv.vol_underlyings(self._db, sid)
         if not unds:
             return None
-        # prefer Si (FX) then RTS/MIX (index) as the headline smile
-        underlying = next((u for u in ("Si", "RTS", "MIX") if u in unds), unds[0])
-        smile = mv.vol_smile_slices(self._db, self.snapshot.snapshot_id, underlying)
-        rows = []
-        for s in smile["slices"]:
-            svi = f"{s['svi']['rmse']:.2f}%" if s.get("svi") else "—"
-            rows.append([s["expiry"], s["n_points"], f"{s['forward']:.0f}",
-                         f"{s['atm_vol']:.2f}%", svi])
-        if not rows:
-            return None
-        panel = WorkstationPanel(f"Implied Vol Smile — {underlying} (self-implied)")
-        panel.layout.addWidget(
-            DenseTable(["Expiry", "Strikes", "Forward", "ATM vol", "SVI rmse"], rows))
-        # smile + SVI fit chart for the front expiry with a fit
-        try:
-            from app.chart import ChartWidget
+
+        panel = WorkstationPanel("Vol Explorer — implied surfaces (self-implied)")
+        combo = QComboBox()
+        combo.setObjectName("vol_underlying_selector")
+        for u in unds:
+            combo.addItem(u)
+        # headline default: a liquid FX/index/commodity surface if present
+        for pref in ("Si", "RTS", "GOLD", "BR"):
+            if pref in unds:
+                combo.setCurrentIndex(unds.index(pref))
+                break
+        sel = QHBoxLayout()
+        sel.addWidget(QLabel("Underlying:"))
+        sel.addWidget(combo, 1)
+        sel.addStretch()
+        sel_wrap = QWidget()
+        sel_wrap.setLayout(sel)
+        panel.layout.addWidget(sel_wrap)
+
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 8, 0, 0)
+        panel.layout.addWidget(body)
+        smile_chart = ChartWidget()
+        smile_chart.setMinimumHeight(230)
+        panel.layout.addWidget(smile_chart)
+        term_chart = ChartWidget()
+        term_chart.setMinimumHeight(200)
+        panel.layout.addWidget(term_chart)
+
+        def render():
+            while body_layout.count():
+                w = body_layout.takeAt(0).widget()
+                if w is not None:
+                    w.deleteLater()
+            underlying = combo.currentText()
+            smile = mv.vol_smile_slices(self._db, sid, underlying)
+            rows = [[s["expiry"], s["n_points"], f"{s['forward']:.4g}",
+                     f"{s['atm_vol']:.2f}%",
+                     (f"{s['svi']['rmse']:.2f}%" if s.get("svi") else "—")]
+                    for s in smile["slices"]]
+            body_layout.addWidget(DenseTable(
+                ["Expiry", "Strikes", "Forward", "ATM vol", "SVI rmse"], rows))
+            # smile + SVI chart (first fitted expiry)
             slc = next((s for s in smile["slices"] if s.get("svi")), None)
             if slc is not None:
-                chart = ChartWidget()
-                chart.setMinimumHeight(240)
-                vols = [v / 100 for v in slc["vols"]]
-                fit = [v / 100 for v in slc["svi"]["fit_vols"]]
-                chart.plot_vol_smile(slc["strikes"], vols, F=slc["forward"],
-                                     strikes2=slc["strikes"], vols2=fit,
-                                     label2=f"SVI (rmse {slc['svi']['rmse']:.2f}%)")
-                panel.layout.addWidget(chart)
-        except Exception:
-            pass
+                smile_chart.plot_vol_smile(
+                    slc["strikes"], [v / 100 for v in slc["vols"]], F=slc["forward"],
+                    strikes2=slc["strikes"], vols2=[v / 100 for v in slc["svi"]["fit_vols"]],
+                    label2=f"SVI rmse {slc['svi']['rmse']:.2f}%")
+                smile_chart.show()
+            else:
+                smile_chart.hide()
+            # ATM term structure
+            ats = mv.atm_term_structure(smile)
+            if len(ats["expiries"]) > 1:
+                term_chart.plot_series(ats["expiries"], [("ATM vol", ats["atm_vols"])],
+                                       title=f"{underlying} ATM term structure",
+                                       ylabel="ATM vol (%)")
+                term_chart.show()
+            else:
+                term_chart.hide()
+
+        combo.currentIndexChanged.connect(lambda _i: render())
+        render()
         return panel
 
     def _credit_curve_explorer_tab(self):

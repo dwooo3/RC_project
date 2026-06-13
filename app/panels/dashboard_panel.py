@@ -68,30 +68,39 @@ class DashboardPanel(WorkstationWorkspace):
         return panel
 
     def _build_status(self):
-        panel = WorkstationPanel("Portfolio / Risk Status")
-        panel.layout.addWidget(
-            DenseTable(
-                ["Area", "Metric", "Value", "Status"],
-                [
-                    ["Portfolio", "Positions", "128", "Loaded"],
-                    ["Portfolio", "Market Value", "124.8m RUB", "Stale"],
-                    ["Risk", "VaR 99%", "3.8m", "Needs run"],
-                    ["Risk", "Worst Stress", "-9.6m", "Needs run"],
-                    ["Market Data", "Snapshot", "DEMO:v3", "Demo"],
-                    ["Governance", "Blocked Models", "2", "Review"],
-                ],
-            )
-        )
-        panel.layout.addWidget(
-            DenseTable(
-                ["Time", "Type", "Status", "Warnings"],
-                [
-                    ["10:42:18", "VaR", "Demo", "Synthetic returns"],
-                    ["10:31:18", "Market Data", "Created", "Demo source"],
-                    ["09:55:02", "Bond Pricing", "Approx", "Methodology warning"],
-                ],
-            )
-        )
+        """Real Market Overview from the active snapshot (Stage V dashboard)."""
+        panel = WorkstationPanel("Market Overview")
+        try:
+            from app.runtime import active_snapshot, market_service
+            from services import market_views as mv
+            svc = market_service()
+            ov = mv.market_overview(getattr(svc, "market_db", None), active_snapshot(svc))
+        except Exception:
+            ov = None
+
+        if not ov:
+            panel.layout.addWidget(DenseTable(["Status"], [["Snapshot unavailable"]]))
+            return panel
+
+        # headline: КБД, ключевая ставка, FX
+        head = []
+        for t, label in ((1, "КБД 1Y"), (5, "КБД 5Y"), (10, "КБД 10Y")):
+            if t in ov["kbd"]:
+                head.append([label, f"{ov['kbd'][t]:.2f}%"])
+        if ov.get("key_rate") is not None:
+            head.append(["Key rate", f"{ov['key_rate']:.2f}%"])
+        for pair, rate in ov["fx"].items():
+            head.append([pair, f"{rate:.4f}"])
+        for und, v in ov.get("key_vols", {}).items():
+            head.append([f"{und} ATM vol", f"{v:.1f}%"])
+        panel.layout.addWidget(DenseTable(["Indicator", "Value"], head))
+
+        # top movers
+        if ov.get("top_movers"):
+            panel.layout.addWidget(DenseTable(
+                ["Top mover", "Last", "Chg", "Volume"],
+                [[m["secid"], f"{m['last']:,.2f}", f"{m['chg_pct']:+.2f}%",
+                  f"{m['volume']:,.0f}"] for m in ov["top_movers"]]))
         return panel
 
     def _build_warnings(self):

@@ -252,6 +252,51 @@ def commodity_curve_chart(db, snapshot_id: str) -> list:
     return series
 
 
+# ── Market overview (real dashboard) ─────────────────────
+
+def market_overview(db, snapshot) -> dict:
+    """
+    A real daily snapshot for the dashboard: KBD points, top equity movers,
+    FX, key implied vols and the policy rate. Degrades gracefully (demo/no DB).
+    """
+    out = {"snapshot_id": snapshot.snapshot_id,
+           "valuation_date": str(snapshot.valuation_date or ""),
+           "source": snapshot.source_value, "quality": snapshot.quality}
+
+    # KBD key points
+    kbd = snapshot.curves.get("GCURVE_RUB") or snapshot.curves.get("ofz_demo")
+    out["kbd"] = ({t: round(kbd.rate(t) * 100, 2) for t in (1, 5, 10)}
+                  if kbd is not None else {})
+    out["fx"] = {p: round(r, 4) for p, r in sorted(snapshot.fx_rates.items())}
+
+    movers = []
+    if db is not None:
+        for q in db.get_equity_quotes(snapshot.snapshot_id):
+            last, prev = q.get("last"), q.get("prevprice")
+            if last and prev:
+                movers.append({"secid": q["secid"],
+                               "chg_pct": round((last / prev - 1) * 100, 2),
+                               "last": last, "volume": q.get("volume") or 0})
+        movers.sort(key=lambda m: abs(m["chg_pct"]), reverse=True)
+    out["top_movers"] = movers[:8]
+    out["most_active"] = sorted(movers, key=lambda m: m["volume"],
+                                reverse=True)[:8] if movers else []
+
+    # key vols (front ATM) for a few headline underlyings
+    vols = {}
+    if db is not None:
+        for und in ("Si", "RTS", "GOLD", "BR"):
+            sm = vol_smile_slices(db, snapshot.snapshot_id, und)
+            if sm["slices"]:
+                vols[und] = sm["slices"][0]["atm_vol"]
+    out["key_vols"] = vols
+
+    # policy rate from KEYRATE_RUB curve if present
+    kr = snapshot.curves.get("KEYRATE_RUB")
+    out["key_rate"] = round(kr.rate(0.25) * 100, 2) if kr is not None else None
+    return out
+
+
 # ── Data Browser: a spreadsheet-style catalogue of every dataset ─────────
 
 def dataset_catalog(db, snapshot) -> list[dict]:

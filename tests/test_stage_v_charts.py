@@ -87,3 +87,40 @@ def test_data_browser_dropdowns_construct(demo, monkeypatch):
     w = MarketWorkspace()
     assert w.findChild(QComboBox, "dataset_selector") is not None
     assert w.findChild(QComboBox, "snapshot_selector") is not None
+
+
+# ── Vol Explorer 2.0 + Market Overview (Stage V continued) ──
+
+def test_market_overview_real_db():
+    from datetime import datetime
+    db = MarketDataDB(":memory:")
+    sid = "demo-2026-06-13"
+    db.save_equity_quote(sid, {"secid": "SMLT", "last": 412.8, "prevprice": 362.2,
+                               "board": "TQBR", "volume": 9e9})
+    db.save_equity_quote(sid, {"secid": "SBER", "last": 322.4, "prevprice": 321.2,
+                               "board": "TQBR", "volume": 5e8})
+    db.save_vol_point(sid, "Si", "2026-08-09", 90000.0, 0.45)
+    snap = MarketDataService().demo_snapshot(date(2026, 6, 13))
+    ov = mv.market_overview(db, snap)
+    assert ov["kbd"] and 1 in ov["kbd"]                       # demo has ofz_demo
+    assert ov["top_movers"][0]["secid"] == "SMLT"            # biggest abs move first
+    assert ov["top_movers"][0]["chg_pct"] > 13
+    assert "Si" in ov["key_vols"]
+
+
+def test_market_overview_demo_no_db():
+    snap = MarketDataService().demo_snapshot(date(2026, 6, 13))
+    ov = mv.market_overview(None, snap)
+    assert ov["top_movers"] == [] and ov["kbd"]              # curves still present
+
+
+def test_vol_explorer_selector_constructs():
+    from PySide6.QtWidgets import QApplication, QComboBox
+    app = QApplication.instance() or QApplication([])
+    from app.panels.market_workspace import MarketWorkspace
+    w = MarketWorkspace()
+    # selector exists only when a live DB carries implied surfaces; tolerate demo
+    combo = w.findChild(QComboBox, "vol_underlying_selector")
+    if combo is not None:
+        assert combo.count() > 0
+        combo.setCurrentIndex(min(1, combo.count() - 1))     # switch redraws
