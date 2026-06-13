@@ -94,42 +94,109 @@ class MarketWorkspace(WorkstationWorkspace):
         return tabs
 
     def _data_browser_tab(self):
-        """Spreadsheet-style browser: pick a dataset from the dropdown, see its table."""
-        from PySide6.QtWidgets import QComboBox, QVBoxLayout, QWidget
+        """
+        Spreadsheet-style browser: pick a snapshot date and a dataset from two
+        dropdowns; the table rebuilds and a chart appears for graphical datasets
+        (yield curves overlay, commodity strips).
+        """
+        from datetime import date
+        from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+        from app.chart import ChartWidget
         from services import market_views as mv
 
         panel = WorkstationPanel("Data Browser")
-        catalog = mv.dataset_catalog(self._db, self.snapshot)
-        if not catalog:
-            panel.layout.addWidget(DenseTable(["Status"], [["No datasets in this snapshot"]]))
-            return panel
+        state = {"snapshot": self.snapshot}
 
-        combo = QComboBox()
-        combo.setObjectName("dataset_selector")
-        for d in catalog:
-            combo.addItem(f"{d['label']}  ({d['count']})", d["key"])
+        snap_combo = QComboBox()
+        snap_combo.setObjectName("snapshot_selector")
+        snaps = mv.available_snapshots(self._db)
+        for s in snaps:
+            snap_combo.addItem(f"{s['valuation_date']} · {s['source']} ({s['quality']})",
+                               s["snapshot_id"])
+        if not snaps:
+            snap_combo.addItem(f"{state['snapshot'].valuation_date} · "
+                               f"{state['snapshot'].source_value}",
+                               state["snapshot"].snapshot_id)
+
+        ds_combo = QComboBox()
+        ds_combo.setObjectName("dataset_selector")
+
+        selectors = QHBoxLayout()
+        selectors.addWidget(QLabel("Snapshot:"))
+        selectors.addWidget(snap_combo, 1)
+        selectors.addWidget(QLabel("Dataset:"))
+        selectors.addWidget(ds_combo, 1)
+        selectors.addStretch()
+        sel_wrap = QWidget()
+        sel_wrap.setLayout(selectors)
+        panel.layout.addWidget(sel_wrap)
 
         body = QWidget()
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(0, 8, 0, 0)
+        panel.layout.addWidget(body)
+        chart = ChartWidget()
+        chart.setMinimumHeight(260)
+        panel.layout.addWidget(chart)
 
-        def render():
+        def load_snapshot():
+            sid = snap_combo.currentData()
+            snap = self.snapshot
+            if self._db and sid and sid != self.snapshot.snapshot_id:
+                try:
+                    d = date.fromisoformat(sid.split("-", 1)[1])
+                    snap = self.market_data.moex_snapshot(d, fallback_to_demo=True)
+                except Exception:
+                    snap = self.snapshot
+            state["snapshot"] = snap
+            ds_combo.blockSignals(True)
+            ds_combo.clear()
+            for d in mv.dataset_catalog(self._db, snap):
+                ds_combo.addItem(f"{d['label']}  ({d['count']})", d["key"])
+            ds_combo.blockSignals(False)
+            render_dataset()
+
+        def render_dataset():
             while body_layout.count():
                 w = body_layout.takeAt(0).widget()
                 if w is not None:
                     w.deleteLater()
-            key = combo.currentData()
+            snap = state["snapshot"]
+            key = ds_combo.currentData()
+            if key is None:
+                return
             try:
-                t = mv.dataset_table(self._db, self.snapshot, key)
+                t = mv.dataset_table(self._db, snap, key)
                 body_layout.addWidget(DenseTable(t["columns"], t["rows"]))
             except Exception as exc:
                 body_layout.addWidget(DenseTable(["Error"], [[str(exc)[:120]]]))
+            self._draw_dataset_chart(chart, snap, key)
 
-        combo.currentIndexChanged.connect(lambda _i: render())
-        panel.layout.addWidget(combo)
-        panel.layout.addWidget(body)
-        render()
+        snap_combo.currentIndexChanged.connect(lambda _i: load_snapshot())
+        ds_combo.currentIndexChanged.connect(lambda _i: render_dataset())
+        load_snapshot()
         return panel
+
+    def _draw_dataset_chart(self, chart, snap, key):
+        """Draw the chart appropriate to the selected dataset, or hide it."""
+        from services import market_views as mv
+        try:
+            if key == "curves":
+                series = mv.curve_overlay_chart(snap)
+                chart.plot_curves(series, title="Yield Curves (overlay)")
+                chart.show()
+            elif key == "commodity" and self._db is not None:
+                series = mv.commodity_curve_chart(self._db, snap.snapshot_id)
+                if series:
+                    chart.plot_curves(series, title="Commodity Futures (strip)",
+                                      xlabel="Years to expiry", ylabel="Settle")
+                    chart.show()
+                else:
+                    chart.hide()
+            else:
+                chart.hide()
+        except Exception:
+            chart.hide()
 
     def _breakeven_panel(self):
         """Market breakeven inflation (nominal − real) when both curves exist."""
@@ -215,9 +282,35 @@ class MarketWorkspace(WorkstationWorkspace):
                 rows,
             )
         )
+        # overlay chart of all snapshot curves
+        try:
+            from app.chart import ChartWidget
+            from services import market_views as mv
+            series = mv.curve_overlay_chart(self.snapshot)
+            if series:
+                chart = ChartWidget()
+                chart.setMinimumHeight(240)
+                chart.plot_curves(series, title="Yield Curves (overlay)")
+                panel.layout.addWidget(chart)
+        except Exception:
+            pass
         breakeven = self._breakeven_panel()
         if breakeven is not None:
             panel.layout.addWidget(breakeven)
+        # КБД tenor history (if a live DB carries the series)
+        if self._db is not None:
+            try:
+                from app.chart import ChartWidget
+                from services import market_views as mv
+                hist = mv.curve_history_series(self._db, "KBD:5Y")
+                if len(hist["dates"]) > 5:
+                    h = ChartWidget()
+                    h.setMinimumHeight(220)
+                    h.plot_series(hist["dates"], [("KBD 5Y", hist["values"])],
+                                  title="КБД 5Y history", ylabel="Rate (%)")
+                    panel.layout.addWidget(h)
+            except Exception:
+                pass
         panel.layout.addWidget(self._lineage_table())
         return panel
 
@@ -297,6 +390,21 @@ class MarketWorkspace(WorkstationWorkspace):
         panel = WorkstationPanel(f"Implied Vol Smile — {underlying} (self-implied)")
         panel.layout.addWidget(
             DenseTable(["Expiry", "Strikes", "Forward", "ATM vol", "SVI rmse"], rows))
+        # smile + SVI fit chart for the front expiry with a fit
+        try:
+            from app.chart import ChartWidget
+            slc = next((s for s in smile["slices"] if s.get("svi")), None)
+            if slc is not None:
+                chart = ChartWidget()
+                chart.setMinimumHeight(240)
+                vols = [v / 100 for v in slc["vols"]]
+                fit = [v / 100 for v in slc["svi"]["fit_vols"]]
+                chart.plot_vol_smile(slc["strikes"], vols, F=slc["forward"],
+                                     strikes2=slc["strikes"], vols2=fit,
+                                     label2=f"SVI (rmse {slc['svi']['rmse']:.2f}%)")
+                panel.layout.addWidget(chart)
+        except Exception:
+            pass
         return panel
 
     def _credit_curve_explorer_tab(self):

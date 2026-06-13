@@ -459,6 +459,69 @@ class ChartWidget(QWidget):
 
     # ── Clear placeholder ─────────────────────────────────────────────────
 
+    # ── Market-data views (Stage V) ───────────────────────────────────────
+
+    _SERIES_COLORS = (C_ACCENT, C_BLUE, C_GREEN, C_PURPLE, C_AMBER, C_TEAL, C_RED)
+
+    def plot_curves(self, series, title="Yield Curves",
+                    xlabel="Maturity (years)", ylabel="Rate (%)"):
+        """Overlay N curves. series = [(label, xs, ys), ...] (ys already in %)."""
+        ax = self._reset()
+        for i, (label, xs, ys) in enumerate(series):
+            col = self._SERIES_COLORS[i % len(self._SERIES_COLORS)]
+            ax.plot(xs, ys, color=col, lw=1.9, marker="o", ms=3.5,
+                    markerfacecolor=_BG1, markeredgecolor=col, label=label)
+        if series:
+            ax.legend(loc="best", fontsize=7.5)
+        self._finish(ax, title, xlabel, ylabel)
+
+    def plot_series(self, x, ys, title="History", xlabel="Date", ylabel="Value",
+                    max_xticks=8):
+        """
+        Time/sequence series. x = labels (e.g. dates), ys = [(label, values), ...].
+        x ticks are thinned to max_xticks for readability.
+        """
+        ax = self._reset()
+        idx = list(range(len(x)))
+        for i, (label, values) in enumerate(ys):
+            col = self._SERIES_COLORS[i % len(self._SERIES_COLORS)]
+            ax.plot(idx, values, color=col, lw=1.8, label=label)
+            if len(ys) == 1:
+                ax.fill_between(idx, values, alpha=0.10, color=col)
+        if len(x) > max_xticks:
+            step = max(1, len(x) // max_xticks)
+            ax.set_xticks(idx[::step])
+            ax.set_xticklabels([str(x[i])[:10] for i in idx[::step]],
+                               rotation=30, ha="right", fontsize=7)
+        else:
+            ax.set_xticks(idx)
+            ax.set_xticklabels([str(v)[:10] for v in x], rotation=30,
+                               ha="right", fontsize=7)
+        if len(ys) > 1:
+            ax.legend(loc="best", fontsize=7.5)
+        self._finish(ax, title, xlabel, ylabel)
+
+    def plot_heatmap(self, matrix, labels, title="Correlation"):
+        """Correlation/heatmap with annotated cells. matrix = list[list[float]]."""
+        ax = self._reset()
+        m = np.array(matrix, dtype=float)
+        im = ax.imshow(m, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
+        ax.set_xticks(range(len(labels)))
+        ax.set_yticks(range(len(labels)))
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=7, color=_TXT)
+        ax.set_yticklabels(labels, fontsize=7, color=_TXT)
+        n = len(labels)
+        if n <= 12:
+            for i in range(n):
+                for j in range(n):
+                    ax.text(j, i, f"{m[i, j]:.2f}", ha="center", va="center",
+                            fontsize=6.5,
+                            color="#ffffff" if abs(m[i, j]) > 0.55 else _TXT0)
+        cbar = self.fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.ax.tick_params(colors=_TXT, labelsize=7)
+        ax.set_title(title, pad=7, color=_TXT0, fontsize=10, fontweight="bold")
+        self.canvas.draw()
+
     def clear(self):
         ax = self._reset()
         ax.text(0.5, 0.5, "Press Calculate to see chart",

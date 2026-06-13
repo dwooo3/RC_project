@@ -198,6 +198,60 @@ def snapshot_calendar(db, lookback_days: int = 30,
                 100 * len(have) / max(len(business), 1), 1)}
 
 
+# ── Snapshot selector (Stage V.1) ────────────────────────
+
+def available_snapshots(db, source: str | None = None) -> list[dict]:
+    """
+    Stored snapshots for a date dropdown, newest first.
+    Returns [{snapshot_id, valuation_date, source, quality}].
+    """
+    if db is None:
+        return []
+    rows = db._query(  # noqa: SLF001
+        "SELECT snapshot_id, valuation_date, source, quality "
+        "FROM market_data_snapshots ORDER BY valuation_date DESC")
+    if source:
+        rows = [r for r in rows if r["source"] == source]
+    return rows
+
+
+# ── Chart-ready helpers (Stage V.2) ──────────────────────
+
+def curve_overlay_chart(snapshot, curve_ids: list[str] | None = None,
+                        tenors=(0.25, 0.5, 1, 2, 3, 5, 7, 10, 15, 20)) -> list:
+    """[(label, xs, ys%) ...] for ChartWidget.plot_curves — curve overlay."""
+    ids = curve_ids or list(snapshot.curves.keys())
+    series = []
+    for cid in ids:
+        if cid not in snapshot.curves:
+            continue
+        c = snapshot.curves[cid]
+        tmax = float(max(c.tenors)) if len(getattr(c, "tenors", [])) else max(tenors)
+        xs = [T for T in tenors if T <= tmax + 1e-9]
+        series.append((cid, xs, [c.rate(T) * 100 for T in xs]))
+    return series
+
+
+def commodity_curve_chart(db, snapshot_id: str) -> list:
+    """[(asset, expiry_years, settle) ...] for plot_curves — commodity strips."""
+    from datetime import date as _d
+    vdate = _snap_date(snapshot_id) or _d.today()
+    rows = db.get_commodity_quotes(snapshot_id)
+    by_asset: dict[str, list] = {}
+    for r in rows:
+        try:
+            T = (_d.fromisoformat(str(r["expiry"])[:10]) - vdate).days / 365.0
+        except (TypeError, ValueError):
+            continue
+        if r.get("settle"):
+            by_asset.setdefault(r["asset"], []).append((T, float(r["settle"])))
+    series = []
+    for asset, pts in by_asset.items():
+        pts.sort()
+        series.append((asset, [t for t, _ in pts], [s for _, s in pts]))
+    return series
+
+
 # ── Data Browser: a spreadsheet-style catalogue of every dataset ─────────
 
 def dataset_catalog(db, snapshot) -> list[dict]:

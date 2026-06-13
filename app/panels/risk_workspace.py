@@ -157,13 +157,23 @@ class RiskWorkspace(WorkstationWorkspace):
         panel.layout.addWidget(DenseTable(
             ["Factor", "Ann. vol", "Observations"],
             [[f, f"{fs['ann_vol'][f]:.1f}%", fs["n_obs"]] for f in fs["factors"]]))
-        # correlation matrix
+        # correlation matrix (table + heatmap)
         names = [f.replace(":price", "") for f in fs["factors"]]
         header = ["Corr"] + names
         corr_rows = [[names[i]] + [f"{fs['correlation'][i][j]:.2f}"
                                    for j in range(len(names))]
                      for i in range(len(names))]
         panel.layout.addWidget(DenseTable(header, corr_rows))
+        try:
+            from app.chart import ChartWidget
+            if len(names) > 1:
+                chart = ChartWidget()
+                chart.setMinimumHeight(280)
+                chart.plot_heatmap(fs["correlation"], names,
+                                   title="Factor correlation")
+                panel.layout.addWidget(chart)
+        except Exception:
+            pass
         return panel
 
     def _var_tab(self):
