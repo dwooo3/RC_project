@@ -105,6 +105,17 @@ class EodIngestJob:
 
         step("bondization", _bondization)
 
+        # Stage V.4: commodity futures curves + dividends for the liquid names
+        step("commodity_futures", lambda: moex.ingest_commodity_futures(sid, valuation_date))
+
+        def _dividends():
+            quotes = self.db.get_equity_quotes(sid)
+            top = sorted(quotes, key=lambda q: q.get("volume") or 0,
+                         reverse=True)[: self.bondization_top]
+            return moex.ingest_dividends([q["secid"] for q in top if q.get("secid")])
+
+        step("dividends", _dividends)
+
         try:
             snap = MarketDataService(market_db=self.db).moex_snapshot(valuation_date)
             summary["snapshot"] = {

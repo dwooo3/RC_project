@@ -85,12 +85,51 @@ class MarketWorkspace(WorkstationWorkspace):
 
     def _build_detail_tabs(self):
         tabs = QTabWidget()
+        tabs.addTab(self._data_browser_tab(), "Data Browser")
         tabs.addTab(self._curve_explorer_tab(), "Curve Explorer")
         tabs.addTab(self._fx_explorer_tab(), "FX Explorer")
         tabs.addTab(self._vol_surface_explorer_tab(), "Vol Surface Explorer")
         tabs.addTab(self._credit_curve_explorer_tab(), "Credit Curve Explorer")
         tabs.addTab(self._data_health_tab(), "Data Health")
         return tabs
+
+    def _data_browser_tab(self):
+        """Spreadsheet-style browser: pick a dataset from the dropdown, see its table."""
+        from PySide6.QtWidgets import QComboBox, QVBoxLayout, QWidget
+        from services import market_views as mv
+
+        panel = WorkstationPanel("Data Browser")
+        catalog = mv.dataset_catalog(self._db, self.snapshot)
+        if not catalog:
+            panel.layout.addWidget(DenseTable(["Status"], [["No datasets in this snapshot"]]))
+            return panel
+
+        combo = QComboBox()
+        combo.setObjectName("dataset_selector")
+        for d in catalog:
+            combo.addItem(f"{d['label']}  ({d['count']})", d["key"])
+
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 8, 0, 0)
+
+        def render():
+            while body_layout.count():
+                w = body_layout.takeAt(0).widget()
+                if w is not None:
+                    w.deleteLater()
+            key = combo.currentData()
+            try:
+                t = mv.dataset_table(self._db, self.snapshot, key)
+                body_layout.addWidget(DenseTable(t["columns"], t["rows"]))
+            except Exception as exc:
+                body_layout.addWidget(DenseTable(["Error"], [[str(exc)[:120]]]))
+
+        combo.currentIndexChanged.connect(lambda _i: render())
+        panel.layout.addWidget(combo)
+        panel.layout.addWidget(body)
+        render()
+        return panel
 
     def _breakeven_panel(self):
         """Market breakeven inflation (nominal − real) when both curves exist."""

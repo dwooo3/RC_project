@@ -528,6 +528,67 @@ class MoexIngestor:
             self.db.log_ingest(endpoint + ":fxfwd", "error", 0, started, datetime.now(), str(exc))
             raise
 
+    # -- Commodity futures curves (Stage V.4) ------------------------------
+    COMMODITY_ASSETS = ("BR", "NG", "GOLD", "SILV", "PLT", "SUGAR", "CU")
+
+    def ingest_commodity_futures(self, snapshot_id: str, valuation_date: date) -> int:
+        """
+        Commodity futures settlement strips (Brent/gas/metals/sugar) into
+        commodity_quotes — the price curve to complement the vols already implied
+        from their options. One row per contract (asset, expiry, settle, OI).
+        """
+        started = datetime.now()
+        endpoint = "engines/futures/markets/forts/securities:commodity"
+        try:
+            blocks = self.client.get_blocks(
+                "engines/futures/markets/forts/securities",
+                {"iss.only": "securities,marketdata"})
+            md = {r.get("SECID"): r for r in blocks.get("marketdata", [])}
+            rows = []
+            for sec in blocks.get("securities", []):
+                asset = str(sec.get("ASSETCODE") or "")
+                if asset not in self.COMMODITY_ASSETS:
+                    continue
+                m = md.get(sec.get("SECID"), {})
+                settle = _to_float(m.get("SETTLEPRICE")) or _to_float(sec.get("PREVSETTLEPRICE"))
+                if settle is None or settle <= 0:
+                    continue
+                rows.append({
+                    "asset": asset, "secid": sec.get("SECID"),
+                    "expiry": sec.get("LASTTRADEDATE"), "settle": settle,
+                    "open_interest": _to_float(m.get("OPENPOSITION")) or _to_float(sec.get("PREVOPENPOSITION")),
+                    "volume": _to_float(m.get("VOLTODAY")),
+                })
+            self.db.save_commodity_quotes(snapshot_id, rows)
+            self.db.log_ingest(endpoint, "ok", len(rows), started, datetime.now())
+            return len(rows)
+        except Exception as exc:
+            self.db.log_ingest(endpoint, "error", 0, started, datetime.now(), str(exc))
+            raise
+
+    # -- Dividends (Stage V.4) ---------------------------------------------
+    def ingest_dividends(self, secids: list[str]) -> int:
+        """Dividend history per security into the dividends table (static data)."""
+        started = datetime.now()
+        endpoint = "securities/{secid}/dividends"
+        saved = 0
+        errors: list[str] = []
+        for secid in secids:
+            try:
+                blocks = self.client.get_blocks(f"securities/{secid}/dividends", {})
+                rows = [{"registry_date": r.get("registryclosedate"),
+                         "value": _to_float(r.get("value")),
+                         "currency": r.get("currencyid")}
+                        for r in blocks.get("dividends", []) if r.get("registryclosedate")]
+                if rows:
+                    self.db.save_dividends(secid, rows)
+                    saved += 1
+            except Exception as exc:
+                errors.append(f"{secid}: {exc}")
+        self.db.log_ingest(endpoint, "ok" if not errors else "partial", saved,
+                           started, datetime.now(), "; ".join(errors[:5]))
+        return saved
+
     # -- Bondization: coupon / amortization / offer schedules (Stage I.6) ---
     def ingest_bondization(self, secids: list[str]) -> int:
         """Coupon schedules, amortizations and offers per security (static data)."""

@@ -198,6 +198,162 @@ def snapshot_calendar(db, lookback_days: int = 30,
                 100 * len(have) / max(len(business), 1), 1)}
 
 
+# ── Data Browser: a spreadsheet-style catalogue of every dataset ─────────
+
+def dataset_catalog(db, snapshot) -> list[dict]:
+    """
+    List the datasets available for the current snapshot with row counts, for a
+    dropdown (Excel-sheet style). Only non-empty datasets are listed.
+    """
+    sid = snapshot.snapshot_id
+    out = []
+
+    def add(key, label, count):
+        if count:
+            out.append({"key": key, "label": label, "count": count})
+
+    add("curves", "Yield Curves", len(snapshot.curves))
+    add("fx", "FX Rates", len(snapshot.fx_rates))
+    add("bonds", "Bonds (quotes)", len(db.get_bond_quotes(sid)) if db else 0)
+    add("equities", "Equities (spot)", len(db.get_equity_quotes(sid)) if db else 0)
+    add("vol", "Vol Surfaces", len(vol_underlyings(db, sid)) if db else len(snapshot.vol_surfaces))
+    add("commodity", "Commodity Futures",
+        len(db.get_commodity_quotes(sid)) if db else 0)
+    add("dividends", "Dividends", _dividends_count(db) if db else 0)
+    add("history", "Factor History",
+        _history_factor_count(db) if db else 0)
+    add("hazard", "Hazard Curves",
+        sum(1 for v in snapshot.credit_curves.values() if hasattr(v, "hazards")))
+    return out
+
+
+def dataset_table(db, snapshot, key: str, limit: int = 200) -> dict:
+    """
+    Render-ready {title, columns, rows} for one dataset key — the body the Data
+    Browser shows when a sheet is picked from the dropdown.
+    """
+    sid = snapshot.snapshot_id
+    if key == "curves":
+        t = curve_table(snapshot, list(snapshot.curves.keys()))
+        cols = ["Tenor (y)"] + t["columns"]
+        rows = [[r[0]] + [("" if v is None else f"{v:.3f}%") for v in r[1:]]
+                for r in t["rows"]]
+        return {"title": "Yield Curves (zero rates)", "columns": cols, "rows": rows}
+
+    if key == "fx":
+        return {"title": "FX Rates", "columns": ["Pair", "Rate"],
+                "rows": [[p, f"{r:.4f}"] for p, r in sorted(snapshot.fx_rates.items())]}
+
+    if key == "bonds":
+        rows = sorted(db.get_bond_quotes(sid), key=lambda q: q.get("volume") or 0,
+                      reverse=True)[:limit]
+        return {"title": f"Bond Quotes (top {len(rows)} by volume)",
+                "columns": ["SECID", "Board", "Clean", "YTM %", "Volume"],
+                "rows": [[q["secid"], q.get("board", ""),
+                          _fmt(q.get("clean_price")),
+                          _pct(q.get("ytm")), _fmt(q.get("volume"), 0)]
+                         for q in rows]}
+
+    if key == "equities":
+        rows = sorted(db.get_equity_quotes(sid), key=lambda q: q.get("volume") or 0,
+                      reverse=True)[:limit]
+        out = []
+        for q in rows:
+            last, prev = q.get("last"), q.get("prevprice")
+            chg = (last / prev - 1) * 100 if last and prev else None
+            out.append([q["secid"], _fmt(last), _fmt(prev),
+                        (f"{chg:+.2f}%" if chg is not None else ""),
+                        _fmt(q.get("volume"), 0)])
+        return {"title": f"Equity Spot (top {len(out)} by volume)",
+                "columns": ["SECID", "Last", "Prev", "Chg", "Volume"], "rows": out}
+
+    if key == "vol":
+        rows = []
+        for und in vol_underlyings(db, sid):
+            sm = vol_smile_slices(db, sid, und)
+            n = sum(s["n_points"] for s in sm["slices"])
+            exps = len(sm["slices"])
+            atm = sm["slices"][0]["atm_vol"] if sm["slices"] else None
+            rows.append([und, exps, n, (f"{atm:.2f}%" if atm else "")])
+        rows.sort(key=lambda r: r[2], reverse=True)
+        return {"title": "Vol Surfaces (self-implied)",
+                "columns": ["Underlying", "Expiries", "Points", "Front ATM"],
+                "rows": rows}
+
+    if key == "commodity":
+        rows = [[q["asset"], str(q.get("expiry", ""))[:10], _fmt(q.get("settle")),
+                 _fmt(q.get("open_interest"), 0)]
+                for q in db.get_commodity_quotes(sid)]
+        return {"title": "Commodity Futures (settlement strip)",
+                "columns": ["Asset", "Expiry", "Settle", "Open Interest"], "rows": rows}
+
+    if key == "dividends":
+        rows = []
+        for secid in _dividend_secids(db)[:limit]:
+            divs = db.get_dividends(secid)
+            if divs:
+                last = divs[-1]
+                rows.append([secid, last["registry_date"], _fmt(last.get("value")),
+                             last.get("currency", ""), len(divs)])
+        rows.sort(key=lambda r: r[1], reverse=True)
+        return {"title": "Dividends (latest per name)",
+                "columns": ["SECID", "Registry date", "Value", "Ccy", "History"],
+                "rows": rows}
+
+    if key == "history":
+        rows = db._query(  # noqa: SLF001
+            "SELECT factor_id, kind, COUNT(*) n, MIN(dt) lo, MAX(dt) hi "
+            "FROM time_series GROUP BY factor_id, kind ORDER BY n DESC LIMIT ?",
+            (limit,)) if db else []
+        return {"title": "Factor History (time series)",
+                "columns": ["Factor", "Kind", "Points", "From", "To"],
+                "rows": [[r["factor_id"], r["kind"], r["n"], r["lo"], r["hi"]]
+                         for r in rows]}
+
+    if key == "hazard":
+        rows = []
+        for cid, c in snapshot.credit_curves.items():
+            if hasattr(c, "hazards"):
+                rows.append([cid, f"{c.hazard(5.0) * 100:.2f}%",
+                             f"{c.survival(5.0):.3f}", f"{c.recovery:.0%}"])
+        return {"title": "Hazard Curves", "columns":
+                ["Curve", "λ(5y)", "Q(5y)", "Recovery"], "rows": rows}
+
+    return {"title": key, "columns": [], "rows": []}
+
+
+def _fmt(v, digits: int = 2) -> str:
+    if v in (None, ""):
+        return ""
+    return f"{float(v):,.{digits}f}"
+
+
+def _pct(v) -> str:
+    return "" if v in (None, "") else f"{float(v) * 100:.2f}"
+
+
+def _dividends_count(db) -> int:
+    try:
+        return db._query("SELECT COUNT(DISTINCT secid) c FROM dividends")[0]["c"]
+    except Exception:
+        return 0
+
+
+def _dividend_secids(db) -> list[str]:
+    try:
+        return [r["secid"] for r in db._query(
+            "SELECT DISTINCT secid FROM dividends ORDER BY secid")]
+    except Exception:
+        return []
+
+
+def _history_factor_count(db) -> int:
+    try:
+        return db._query("SELECT COUNT(DISTINCT factor_id) c FROM time_series")[0]["c"]
+    except Exception:
+        return 0
+
+
 def _snap_date(snapshot_id: str) -> date | None:
     try:
         return date.fromisoformat(snapshot_id.split("-", 1)[1])

@@ -55,6 +55,11 @@ _TABLES = {
                            ["secid", "amort_date"]),
     "bond_offers": (["secid", "offer_date", "price", "offer_type"],
                     ["secid", "offer_date"]),
+    "commodity_quotes": (["snapshot_id", "asset", "secid", "expiry", "settle",
+                          "open_interest", "volume"],
+                         ["snapshot_id", "secid"]),
+    "dividends": (["secid", "registry_date", "value", "currency"],
+                  ["secid", "registry_date"]),
 }
 
 
@@ -107,6 +112,13 @@ def _schema_statements(dialect: str) -> list[str]:
         """CREATE TABLE IF NOT EXISTS bond_offers (
             secid TEXT NOT NULL, offer_date TEXT NOT NULL, price REAL, offer_type TEXT,
             PRIMARY KEY (secid, offer_date))""",
+        """CREATE TABLE IF NOT EXISTS commodity_quotes (
+            snapshot_id TEXT NOT NULL, asset TEXT NOT NULL, secid TEXT NOT NULL,
+            expiry TEXT, settle REAL, open_interest REAL, volume REAL,
+            PRIMARY KEY (snapshot_id, secid))""",
+        """CREATE TABLE IF NOT EXISTS dividends (
+            secid TEXT NOT NULL, registry_date TEXT NOT NULL, value REAL, currency TEXT,
+            PRIMARY KEY (secid, registry_date))""",
         f"""CREATE TABLE IF NOT EXISTS ingest_log (
             run_id {serial_pk}, endpoint TEXT, status TEXT, rows INTEGER,
             started_at TEXT, finished_at TEXT, error TEXT)""",
@@ -255,6 +267,33 @@ class MarketDataDB:
         self._upsert_many("bond_offers", [
             {"secid": secid, "offer_date": str(o["date"]), "price": o.get("price"),
              "offer_type": o.get("offer_type")} for o in (offers or [])])
+
+    def save_commodity_quotes(self, snapshot_id, rows: list[dict]) -> None:
+        self._upsert_many("commodity_quotes", [
+            {"snapshot_id": snapshot_id, "asset": r["asset"], "secid": r["secid"],
+             "expiry": r.get("expiry"), "settle": r.get("settle"),
+             "open_interest": r.get("open_interest"), "volume": r.get("volume")}
+            for r in rows])
+
+    def get_commodity_quotes(self, snapshot_id, asset: str | None = None) -> list[dict]:
+        if asset:
+            return self._query(
+                f"SELECT * FROM commodity_quotes WHERE snapshot_id={self.ph} AND asset={self.ph} "
+                f"ORDER BY expiry", (snapshot_id, asset))
+        return self._query(
+            f"SELECT * FROM commodity_quotes WHERE snapshot_id={self.ph} ORDER BY asset, expiry",
+            (snapshot_id,))
+
+    def save_dividends(self, secid, rows: list[dict]) -> None:
+        self._upsert_many("dividends", [
+            {"secid": secid, "registry_date": str(r["registry_date"]),
+             "value": r.get("value"), "currency": r.get("currency")}
+            for r in rows if r.get("registry_date")])
+
+    def get_dividends(self, secid) -> list[dict]:
+        return self._query(
+            f"SELECT registry_date, value, currency FROM dividends WHERE secid={self.ph} "
+            f"ORDER BY registry_date", (secid,))
 
     def get_bond_schedule(self, secid) -> dict:
         return {
