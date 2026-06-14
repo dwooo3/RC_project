@@ -135,6 +135,34 @@ ENGINE_PARAMS: dict[str, list[ParameterSpec]] = {
         P("rho", "SABR ρ", -0.3, "model", minimum=-0.999, maximum=0.999),
         P("nu", "SABR vol-of-vol ν", 0.4, "model", minimum=1e-3, maximum=5.0),
     ],
+    # ── Lévy / jump (Fourier COS) — M1 ────────────────────
+    "kou": [
+        P("lam", "Jump intensity λ", 0.5, "model", minimum=0.0, maximum=10.0),
+        P("p", "P(up jump)", 0.4, "model", minimum=0.0, maximum=1.0),
+        P("eta1", "Up-jump rate η1", 10.0, "model", minimum=1.001, maximum=50.0,
+          help="η1>1 required for finite mean"),
+        P("eta2", "Down-jump rate η2", 5.0, "model", minimum=0.1, maximum=50.0),
+        P("N", "COS terms", 256, "numerical", dtype="int", minimum=64, maximum=2048),
+    ],
+    "variance_gamma": [
+        P("nu", "VG variance rate ν", 0.2, "model", minimum=1e-3, maximum=2.0),
+        P("theta", "VG skew θ", -0.1, "model", minimum=-1.0, maximum=1.0),
+        P("N", "COS terms", 256, "numerical", dtype="int", minimum=64, maximum=2048),
+    ],
+    "nig": [
+        P("alpha", "NIG tail α", 15.0, "model", minimum=0.5, maximum=100.0),
+        P("beta", "NIG skew β", -5.0, "model", minimum=-99.0, maximum=99.0,
+          help="|β|<α required"),
+        P("delta", "NIG scale δ", 0.5, "model", minimum=1e-3, maximum=5.0),
+        P("N", "COS terms", 256, "numerical", dtype="int", minimum=64, maximum=2048),
+    ],
+    "cgmy": [
+        P("C", "CGMY activity C", 0.1, "model", minimum=1e-3, maximum=5.0),
+        P("G", "CGMY down decay G", 5.0, "model", minimum=0.1, maximum=50.0),
+        P("M", "CGMY up decay M", 5.0, "model", minimum=0.1, maximum=50.0),
+        P("Y", "CGMY fine structure Y", 0.8, "model", minimum=-5.0, maximum=1.99),
+        P("N", "COS terms", 512, "numerical", dtype="int", minimum=128, maximum=4096),
+    ],
     "local_vol_mc": _mc_specs(80_000, 100),
     "callable_bond": [
         P("sigma", "Rate vol σ", 0.15, "model", minimum=1e-3, maximum=1.0),

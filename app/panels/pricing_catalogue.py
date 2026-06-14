@@ -94,6 +94,11 @@ def _vanilla_engine(s, v):
         return s.price_heston_option(S, K, T, r, q, v.get("v0", 0.04),
                                      v.get("kappa", 1.5), v.get("theta", 0.04),
                                      v.get("xi", 0.5), v.get("rho", -0.6), opt)
+    if eng in ("kou", "variance_gamma", "nig", "cgmy", "merton_cos"):
+        params = {k: v[k] for k in ("lam", "p", "eta1", "eta2", "nu", "theta",
+                                    "alpha", "beta", "delta", "C", "G", "M", "Y",
+                                    "mu_j", "delta_j", "N") if k in v}
+        return s.price_levy_option(eng, S, K, T, r, sig, q, opt, **params)
     # unrecognised / not yet wired -> governed error
     return s.price_vanilla_option(S, K, T, r, sig, q, opt, model="bsm")
 

@@ -83,6 +83,12 @@ CLASSIFICATION: dict[str, tuple] = {
     "sabr": (_A.RATES, _MF.STOCH_VOL, _M.CLOSED_FORM),
     "bates": (_A.EQUITY, _MF.JUMP, _M.FOURIER),
     "merton_jump": (_A.EQUITY, _MF.JUMP, _M.CLOSED_FORM),
+    # ── Lévy / jump (Fourier COS) — M1 ────────────────────
+    "merton_cos": (_A.EQUITY, _MF.JUMP, _M.FOURIER),
+    "kou": (_A.EQUITY, _MF.JUMP, _M.FOURIER),
+    "variance_gamma": (_A.EQUITY, _MF.LEVY, _M.FOURIER),
+    "nig": (_A.EQUITY, _MF.LEVY, _M.FOURIER),
+    "cgmy": (_A.EQUITY, _MF.LEVY, _M.FOURIER),
     "local_vol_mc": (_A.EQUITY, _MF.LOCAL_VOL, _M.MONTE_CARLO),
     "garch": (_A.EQUITY, _MF.STATISTICAL, _M.CLOSED_FORM),
     # ── Short rate ────────────────────────────────────────
@@ -187,7 +193,8 @@ ENGINES: dict[str, list[str]] = {
     # local_vol_mc rejoin once their option wrappers land (M1/M2).
     "european_option": ["black_scholes", "binomial_crr", "binomial_lr",
                         "trinomial", "pde_cn", "mc_gbm", "heston_cf",
-                        "merton_jump", "bates"],
+                        "merton_jump", "bates",
+                        "kou", "variance_gamma", "nig", "cgmy"],
     "american_option": ["pde_cn", "binomial_crr", "binomial_lr", "trinomial", "mc_lsm"],
     "barrier_option": ["barrier", "pde_cn"],
     "asian_option": ["asian"],

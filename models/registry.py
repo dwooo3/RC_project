@@ -36,6 +36,11 @@ ANALYTICS_LAB_MODELS = {
     "short_rate",
     "bates",
     "local_vol_mc",
+    "kou",
+    "variance_gamma",
+    "nig",
+    "cgmy",
+    "merton_cos",
 }
 
 
@@ -142,6 +147,49 @@ MODEL_REGISTRY: dict[str, dict] = {
             "Phase 3: Andersen (2008) Quadratic-Exponential scheme; exact "
             "conditional moments of v. ~6x smaller bias than Euler-reflection "
             "at 32 steps in validation. No martingale correction term."
+        ),
+    },
+    # ── Lévy / jump (Fourier COS) — M1 ────────────────────
+    "kou": {
+        "name": "Kou Double-Exponential Jump (COS)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Analytics",
+        "tests": ["lambda_zero_is_bsm", "put_call_parity", "cos_vs_mc"],
+        "notes": (
+            "M1: Kou double-exponential jump-diffusion via the Fourier COS "
+            "method. λ=0 recovers BSM; put-call parity to 1e-6. η1>1 enforced "
+            "for a finite jump mean. No calibration helper yet."
+        ),
+    },
+    "variance_gamma": {
+        "name": "Variance Gamma (COS)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Analytics",
+        "tests": ["nu_to_zero_is_bsm", "put_call_parity"],
+        "notes": (
+            "M1: Variance Gamma via COS. ν→0 recovers BSM; parity to 1e-11. "
+            "Pure-jump (no diffusion floor in the standard parametrisation)."
+        ),
+    },
+    "nig": {
+        "name": "Normal Inverse Gaussian (COS)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Analytics",
+        "tests": ["put_call_parity", "cos_vs_ig_subordinator_mc"],
+        "notes": (
+            "M1: NIG via COS with the exact martingale drift; parity to 1e-10, "
+            "agrees with an IG-subordinator MC. Requires |β|<α."
+        ),
+    },
+    "cgmy": {
+        "name": "CGMY / KoBoL (COS)",
+        "status": ModelStatus.PROTOTYPE,
+        "domain": "Analytics",
+        "tests": ["put_call_parity_loose"],
+        "notes": (
+            "M1: CGMY tempered-stable via COS. Heavy tails — parity ~1e-4 at "
+            "N=512/1024 (truncation interval needs c4 widening for Y near 1). "
+            "Use VG/NIG for production until the interval is tightened."
         ),
     },
     "local_vol_mc": {

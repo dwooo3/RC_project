@@ -950,6 +950,43 @@ class PricingService:
                     "lam": lam, "mu_j": mu_j, "delta_j": delta_j, "opt": opt},
             snapshot=snapshot, user_action="Price Merton jump option")
 
+    def price_levy_option(self, model, S, K, T, r, sigma=0.0, q=0.0, opt="call",
+                          snapshot=None, **params) -> dict:
+        """
+        European option under a Lévy/jump model via the Fourier COS method
+        (M1): model ∈ {kou, variance_gamma, nig, cgmy, merton_cos}. Analytics Lab.
+        """
+        from models import levy as L
+        engines = {
+            "kou": lambda: L.kou_price(S, K, T, r, sigma, q,
+                                       params.get("lam", 0.5), params.get("p", 0.4),
+                                       params.get("eta1", 10.0), params.get("eta2", 5.0),
+                                       opt, int(params.get("N", 256))),
+            "variance_gamma": lambda: L.vg_price(S, K, T, r, sigma, q,
+                                                 params.get("nu", 0.2), params.get("theta", -0.1),
+                                                 opt, int(params.get("N", 256))),
+            "nig": lambda: L.nig_price(S, K, T, r, params.get("alpha", 15.0),
+                                       params.get("beta", -5.0), params.get("delta", 0.5),
+                                       q, opt, int(params.get("N", 256))),
+            "cgmy": lambda: L.cgmy_price(S, K, T, r, params.get("C", 0.1),
+                                         params.get("G", 5.0), params.get("M", 5.0),
+                                         params.get("Y", 0.8), q, opt, int(params.get("N", 512))),
+            "merton_cos": lambda: L.merton_cos(S, K, T, r, sigma, q,
+                                               params.get("lam", 0.3), params.get("mu_j", -0.1),
+                                               params.get("delta_j", 0.15), opt,
+                                               int(params.get("N", 256))),
+        }
+        if model not in engines:
+            return self._error_result(model_id=model, error=ValueError(f"Unknown Lévy model {model}"),
+                                      snapshot=snapshot, calculation_type="levy_option_pricing",
+                                      inputs={"model": model})
+        return self._priced(
+            model_id=model, calculation_type="levy_option_pricing",
+            engine=engines[model],
+            inputs={"model": model, "S": S, "K": K, "T": T, "r": r, "sigma": sigma,
+                    "q": q, "opt": opt, **params},
+            snapshot=snapshot, user_action=f"Price {model} option (COS)")
+
     def price_heston_option(self, S, K, T, r, q, v0, kappa, theta, xi, rho,
                             opt="call", snapshot=None) -> dict:
         """European option under Heston (characteristic-function); Analytics Lab."""
