@@ -676,6 +676,13 @@ def get(model_id: str) -> dict:
         entry.setdefault("production_allowed", entry.get("status") in {ModelStatus.VALIDATED, ModelStatus.APPROXIMATION})
     elif analytics_lab_only:
         entry.setdefault("production_allowed", False)
+    # M0: enrich with taxonomy axes (asset_class / model_family / method / kind)
+    try:
+        from models.taxonomy import classify
+        for k, v in classify(model_id).items():
+            entry.setdefault(k, v)
+    except Exception:
+        pass
     return entry
 
 
@@ -683,8 +690,41 @@ def by_domain(domain: str) -> list[tuple[str, dict]]:
     return [(k, v) for k, v in MODEL_REGISTRY.items() if v["domain"] == domain]
 
 
+def by_asset_class(asset_class: str) -> list[tuple[str, dict]]:
+    """M0: group models by taxonomy asset class (rates/credit/equity/...)."""
+    from models.taxonomy import classify
+    return [(k, get(k)) for k in MODEL_REGISTRY
+            if classify(k)["asset_class"] == asset_class]
+
+
+def by_model_family(family: str) -> list[tuple[str, dict]]:
+    from models.taxonomy import classify
+    return [(k, get(k)) for k in MODEL_REGISTRY
+            if classify(k)["model_family"] == family]
+
+
 def summary() -> dict:
     counts = {s: 0 for s in ModelStatus}
     for v in MODEL_REGISTRY.values():
         counts[v["status"]] += 1
     return counts
+
+
+# ── M0: status promotion rule (STATE_AUDIT F1) ───────────
+def can_promote_to_validated(model_id: str) -> bool:
+    """
+    A model is eligible for Validated when it (a) is at least Approximation and
+    (b) carries registered tests (identity/benchmark). Eligibility only —
+    promotion stays an explicit registry edit so it is reviewable.
+    """
+    entry = MODEL_REGISTRY.get(model_id)
+    if not entry:
+        return False
+    return (entry["status"] in {ModelStatus.APPROXIMATION, ModelStatus.VALIDATED}
+            and len(entry.get("tests", [])) > 0)
+
+
+def validation_candidates() -> list[str]:
+    """Approximation models with tests — ready for a Validated review."""
+    return [m for m, e in MODEL_REGISTRY.items()
+            if e["status"] == ModelStatus.APPROXIMATION and len(e.get("tests", [])) > 0]
