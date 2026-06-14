@@ -141,3 +141,35 @@ def test_legacy_field_conversion():
     assert by_key["opt"].dtype == "choice"
     assert by_key["cashflows"].dtype == "schedule"  # wide text
     assert by_key["K"].group == "contract"
+
+
+# ── M0 engine-aware pricing (UI dispatch) ────────────────
+
+def test_vanilla_product_is_engine_aware():
+    from app.panels.pricing_catalogue import products_by_category
+    prod = next(p for p in products_by_category("Option") if p.id == "vanilla")
+    engines = prod.engines()
+    assert "black_scholes" in engines and "merton_jump" in engines
+    assert "mc_heston_qe" not in engines           # no service route yet
+
+
+def test_vanilla_engine_dispatch_agrees_and_differs():
+    from app.panels.pricing_catalogue import products_by_category
+    from models.parameters import engine_params
+    from services.pricing_service import PricingService
+    svc = PricingService(allow_analytics_lab=True)
+    prod = next(p for p in products_by_category("Option") if p.id == "vanilla")
+    base = {"S": 100, "K": 100, "T": 1.0, "r": 0.05, "sigma": 0.20, "q": 0.0, "opt": "call"}
+
+    def price(eng):
+        v = dict(base, __engine=eng)
+        for s in engine_params(eng):
+            v.setdefault(s.key, s.default)
+        return prod.price(svc, v)["value"]
+
+    bsm = price("black_scholes")
+    # lattice/PDE/MC engines agree with BSM within numerical tolerance
+    for eng in ("binomial_lr", "pde_cn", "trinomial"):
+        assert abs(price(eng) - bsm) < 0.05, eng
+    # jump engine adds value (negative-mean jumps richen the option)
+    assert price("merton_jump") > bsm

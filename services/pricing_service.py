@@ -950,6 +950,17 @@ class PricingService:
                     "lam": lam, "mu_j": mu_j, "delta_j": delta_j, "opt": opt},
             snapshot=snapshot, user_action="Price Merton jump option")
 
+    def price_heston_option(self, S, K, T, r, q, v0, kappa, theta, xi, rho,
+                            opt="call", snapshot=None) -> dict:
+        """European option under Heston (characteristic-function); Analytics Lab."""
+        from models.heston import heston_price
+        return self._priced(
+            model_id="heston_cf", calculation_type="heston_option_pricing",
+            engine=lambda: heston_price(S, K, T, r, q, v0, kappa, theta, xi, rho, opt),
+            inputs={"S": S, "K": K, "T": T, "r": r, "q": q, "v0": v0,
+                    "kappa": kappa, "theta": theta, "xi": xi, "rho": rho, "opt": opt},
+            snapshot=snapshot, user_action="Price Heston option")
+
     def price_bates_option(self, S, K, T, r, q, v0, kappa, theta, xi, rho,
                            lam=0.1, mu_j=-0.1, delta_j=0.15, opt="call",
                            snapshot=None) -> dict:

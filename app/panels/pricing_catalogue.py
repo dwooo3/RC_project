@@ -34,10 +34,18 @@ class Product:
     price: Callable          # (PricingService, values) -> governed result dict
     to_position: Callable    # (values) -> (instrument:str, params:dict, description:str)
     curve_roles: list[str] = None   # which curves the UI may select: ["disc"] / ["disc","proj"]
+    instrument: str = None   # M0: ENGINES key -> engine dropdown + advanced model/numerical params
 
     def __post_init__(self):
         if self.curve_roles is None:
             self.curve_roles = []
+
+    def engines(self) -> list[str]:
+        """Selectable engine ids for this product (empty if single-engine)."""
+        if not self.instrument:
+            return []
+        from models.taxonomy import engines_for
+        return engines_for(self.instrument)
 
 
 def _disc(s, v):
@@ -57,6 +65,37 @@ def F(key, label, default, choices=None, wide=False):
 
 _OPT = ["call", "put"]
 _DC = ["act365", "act360", "30360", "actact"]
+
+
+def _vanilla_engine(s, v):
+    """
+    M0 engine-aware vanilla pricer: dispatch on the selected engine, pulling its
+    Advanced model/numerical params from `v`. Engines without a service route yet
+    return a governed error rather than failing.
+    """
+    eng = v.get("__engine", "black_scholes")
+    S, K, T, r, sig = v["S"], v["K"], v["T"], v["r"], v["sigma"]
+    q, opt = v.get("q", 0.0), v.get("opt", "call")
+    analytic = {"black_scholes": "bsm", "binomial_crr": "binomial",
+                "binomial_lr": "binomial_lr", "trinomial": "trinomial",
+                "pde_cn": "pde", "mc_gbm": "mc"}
+    if eng in analytic:
+        return s.price_vanilla_option(S, K, T, r, sig, q, opt, model=analytic[eng])
+    if eng == "merton_jump":
+        return s.price_merton_option(S, K, T, r, sig, q, v.get("lam", 0.3),
+                                     v.get("mu_j", -0.1), v.get("delta_j", 0.15), opt)
+    if eng == "bates":
+        return s.price_bates_option(S, K, T, r, q, v.get("v0", 0.04),
+                                    v.get("kappa", 1.5), v.get("theta", 0.04),
+                                    v.get("xi", 0.5), v.get("rho", -0.6),
+                                    v.get("lam", 0.3), v.get("mu_j", -0.1),
+                                    v.get("delta_j", 0.15), opt)
+    if eng == "heston_cf":
+        return s.price_heston_option(S, K, T, r, q, v.get("v0", 0.04),
+                                     v.get("kappa", 1.5), v.get("theta", 0.04),
+                                     v.get("xi", 0.5), v.get("rho", -0.6), opt)
+    # unrecognised / not yet wired -> governed error
+    return s.price_vanilla_option(S, K, T, r, sig, q, opt, model="bsm")
 
 
 def parse_cashflows(text) -> list:
@@ -225,10 +264,10 @@ PRODUCTS: list[Product] = [
             [F("S", "Spot", 100), F("K", "Strike", 100), F("T", "Maturity (y)", 1),
              F("r", "Rate", 0.05), F("sigma", "Vol", 0.20), F("q", "Div yld", 0.0),
              F("opt", "Type", "call", _OPT)],
-            lambda s, v: s.price_vanilla_option(v["S"], v["K"], v["T"], v["r"], v["sigma"],
-                                                v["q"], v["opt"]),
+            _vanilla_engine,
             lambda v: ("option", dict(S=v["S"], K=v["K"], T=v["T"], r=v["r"], sigma=v["sigma"],
-                                      q=v["q"], opt=v["opt"]), "Vanilla Option")),
+                                      q=v["q"], opt=v["opt"]), "Vanilla Option"),
+            instrument="european_option"),
     Product("american", "American Option (PDE)", "Option",
             [F("S", "Spot", 100), F("K", "Strike", 100), F("T", "Maturity (y)", 1),
              F("r", "Rate", 0.05), F("sigma", "Vol", 0.20), F("q", "Div yld", 0.0),

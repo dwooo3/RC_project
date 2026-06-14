@@ -256,6 +256,25 @@ class PricingDetailScreen(QWidget):
             self._inputs[f.key] = w
             _place(self._field_cell(f.label, w), wide=f.wide)
 
+        # M0: engine selector + Advanced model/numerical params (engine-aware products)
+        self._engine_combo = None
+        self._engine_inputs = {}
+        self._engine_param_host = None
+        engines = self.product.engines()
+        if engines:
+            self._engine_combo = QComboBox()
+            self._engine_combo.addItems(engines)
+            _place(self._field_cell("Engine", self._engine_combo), wide=True)
+            host = QWidget()
+            host.setStyleSheet("background:transparent;")
+            self._engine_param_layout = QGridLayout(host)
+            self._engine_param_layout.setHorizontalSpacing(12)
+            self._engine_param_layout.setVerticalSpacing(10)
+            self._engine_param_host = host
+            _place(host, wide=True)
+            self._engine_combo.currentIndexChanged.connect(lambda _i: self._rebuild_engine_params())
+            self._rebuild_engine_params()
+
         self._disc_combo = None
         self._proj_combo = None
         if self.product.curve_roles:
@@ -277,6 +296,29 @@ class PricingDetailScreen(QWidget):
         self._param_grid = grid
         self._param_scroll = scroll
         return card
+
+    def _rebuild_engine_params(self):
+        """Rebuild the Advanced model+numerical fields for the chosen engine (M0)."""
+        from models.parameters import engine_params
+        lay = self._engine_param_layout
+        while lay.count():
+            w = lay.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        self._engine_inputs = {}
+        engine = self._engine_combo.currentText()
+        specs = engine_params(engine)
+        row = 0
+        for spec in specs:
+            if spec.choices:
+                w = QComboBox()
+                w.addItems([str(c) for c in spec.choices])
+                w.setCurrentText(str(spec.default))
+            else:
+                w = QLineEdit(str(spec.default))
+            self._engine_inputs[spec.key] = (w, spec)
+            lay.addWidget(self._field_cell(f"{spec.label}  ·{spec.group}", w), row // 2, row % 2)
+            row += 1
 
     def _field_cell(self, label_text: str, widget: QWidget) -> QWidget:
         cell = QWidget()
@@ -317,6 +359,24 @@ class PricingDetailScreen(QWidget):
                 pn = self._proj_combo.currentText()
                 if pn != "flat(r)":
                     out["__proj_curve"] = snap.curves.get(pn)
+        # M0: selected engine + its Advanced model/numerical params
+        if self._engine_combo is not None:
+            out["__engine"] = self._engine_combo.currentText()
+            for key, (w, spec) in self._engine_inputs.items():
+                if isinstance(w, QComboBox):
+                    out[key] = w.currentText()
+                else:
+                    text = w.text().strip()
+                    if spec.dtype == "int":
+                        try:
+                            out[key] = int(float(text))
+                        except ValueError:
+                            out[key] = spec.default
+                    else:
+                        try:
+                            out[key] = float(text)
+                        except ValueError:
+                            out[key] = text
         return out
 
     def _snapshot(self):

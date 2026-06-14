@@ -183,9 +183,11 @@ def pricer_asset_classes() -> list[str]:
 # ── Instrument → applicable engines (one instrument, many engines) ───────
 # Each entry: instrument key -> [engine model_ids], first is the default.
 ENGINES: dict[str, list[str]] = {
+    # european_option: engines with a live service route (M0). mc_heston_qe /
+    # local_vol_mc rejoin once their option wrappers land (M1/M2).
     "european_option": ["black_scholes", "binomial_crr", "binomial_lr",
                         "trinomial", "pde_cn", "mc_gbm", "heston_cf",
-                        "mc_heston_qe", "merton_jump", "bates", "local_vol_mc"],
+                        "merton_jump", "bates"],
     "american_option": ["pde_cn", "binomial_crr", "binomial_lr", "trinomial", "mc_lsm"],
     "barrier_option": ["barrier", "pde_cn"],
     "asian_option": ["asian"],
