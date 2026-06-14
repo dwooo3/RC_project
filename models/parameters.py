@@ -185,6 +185,15 @@ ENGINE_PARAMS: dict[str, list[ParameterSpec]] = {
         P("calibrate_to_cube", "Calibrate to cube", "no", "model",
           dtype="choice", choices=["no", "yes"]),
     ],
+    "g2pp": [
+        P("a", "Factor-1 mean reversion a", 0.1, "model", minimum=1e-3, maximum=3.0),
+        P("sigma", "Factor-1 vol σ", 0.01, "model", minimum=1e-4, maximum=0.5),
+        P("b", "Factor-2 mean reversion b", 0.3, "model", minimum=1e-3, maximum=5.0),
+        P("eta", "Factor-2 vol η", 0.012, "model", minimum=1e-7, maximum=0.5),
+        P("rho", "Factor correlation ρ", -0.7, "model", minimum=-0.999, maximum=0.999),
+        P("n_sims", "MC paths", 50_000, "numerical", dtype="int",
+          minimum=5000, maximum=500_000),
+    ],
     "cds_curve": [
         P("recovery", "Recovery rate", 0.4, "model", minimum=0.0, maximum=0.99),
     ],

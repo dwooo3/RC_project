@@ -109,6 +109,19 @@ def _vanilla_engine(s, v):
     return s.price_vanilla_option(S, K, T, r, sig, q, opt, model="bsm")
 
 
+def _swaption_engine(s, v):
+    """Engine-aware European swaption: Black-76 (default) or G2++ (M3a)."""
+    eng = v.get("__engine", "swaption")
+    N, K, To, Ts = v["notional"], v["K"], v["T_option"], v["T_swap"]
+    freq, opt = int(v["freq"]), v["opt"]
+    if eng == "g2pp":
+        return s.price_g2pp_swaption(N, K, To, Ts, freq, v.get("a", 0.1),
+                                     v.get("sigma", 0.01), v.get("b", 0.3),
+                                     v.get("eta", 0.012), v.get("rho", -0.7),
+                                     opt, int(v.get("n_sims", 50000)), curve=_disc(s, v))
+    return s.price_swaption(N, K, To, Ts, freq, v["sigma"], opt, curve=_disc(s, v))
+
+
 def parse_cashflows(text) -> list:
     """Parse a manual schedule 't:amount,t:amount' into [(t, amount), ...]."""
     if isinstance(text, (list, tuple)):
@@ -381,12 +394,11 @@ PRODUCTS: list[Product] = [
              F("T_option", "Expiry (y)", 1), F("T_swap", "Swap (y)", 5), F("freq", "Freq/y", 2),
              F("sigma", "Vol", 0.20), F("r", "Flat rate", 0.10),
              F("opt", "Type", "payer", ["payer", "receiver"])],
-            lambda s, v: s.price_swaption(v["notional"], v["K"], v["T_option"], v["T_swap"],
-                                          int(v["freq"]), v["sigma"], v["opt"],
-                                          curve=_disc(s, v)),
+            lambda s, v: _swaption_engine(s, v),
             lambda v: ("swaption", dict(notional=v["notional"], K=v["K"], T_option=v["T_option"],
                                         T_swap=v["T_swap"], freq=int(v["freq"]), sigma=v["sigma"],
-                                        r=v["r"], opt=v["opt"]), "Swaption")),
+                                        r=v["r"], opt=v["opt"]), "Swaption"),
+            instrument="swaption"),
 
     # ── Structured Notes ──────────────────────────────────
     Product("autocall", "Autocall / Phoenix", "Structured Notes",

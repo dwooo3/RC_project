@@ -912,6 +912,23 @@ class PricingService:
                 inputs={"S": S, "K": K, "T": T, "r_d": r_d, "r_f": r_f, "sigma": sigma, "notional": notional, "opt": opt, "quote": quote},
             )
 
+    def price_g2pp_swaption(self, notional, K, T_option, T_swap, freq=2,
+                            a=0.1, sigma=0.01, b=0.3, eta=0.012, rho=-0.7,
+                            opt="payer", n_sims=50_000, curve=None,
+                            snapshot=None, curve_id="flat_rub") -> dict:
+        """European swaption under G2++ (two-factor Gaussian), MC (M3a)."""
+        from models.g2pp import g2pp_swaption
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="g2pp", calculation_type="g2pp_swaption_pricing",
+            engine=lambda: g2pp_swaption(curve, notional, K, T_option, T_swap,
+                                         int(freq), a, sigma, b, eta, rho, opt,
+                                         int(n_sims)),
+            inputs={"notional": notional, "K": K, "T_option": T_option,
+                    "T_swap": T_swap, "freq": int(freq), "a": a, "sigma": sigma,
+                    "b": b, "eta": eta, "rho": rho, "opt": opt, "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price G2++ swaption")
+
     # ── Phase 3: numerical engines ────────────────────────────────────
     def price_american_option(self, S, K, T, r, sigma, q=0.0, opt="put",
                               model="pde", snapshot=None) -> dict:

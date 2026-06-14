@@ -96,6 +96,7 @@ CLASSIFICATION: dict[str, tuple] = {
     "short_rate": (_A.RATES, _MF.SHORT_RATE, _M.LATTICE),
     "bermudan_swaption": (_A.RATES, _MF.SHORT_RATE, _M.LATTICE),
     "callable_bond": (_A.RATES, _MF.SHORT_RATE, _M.LATTICE),
+    "g2pp": (_A.RATES, _MF.SHORT_RATE, _M.MONTE_CARLO),    # M3a: 2-factor Gaussian
     # ── Fixed income (discounting) ────────────────────────
     "fixed_bond": (_A.RATES, _MF.ANALYTIC, _M.CLOSED_FORM),
     "custom_bond": (_A.RATES, _MF.ANALYTIC, _M.CLOSED_FORM),
@@ -202,7 +203,7 @@ ENGINES: dict[str, list[str]] = {
     "digital_option": ["digital"],
     "lookback_option": ["lookback"],
     "fx_option": ["garman_kohlhagen", "fx_smile"],
-    "swaption": ["swaption", "bermudan_swaption"],
+    "swaption": ["swaption", "g2pp"],          # European: Black-76 or G2++ (M3a)
     "cap_floor": ["capfloor"],
     "callable_bond": ["callable_bond"],
     "fixed_bond": ["fixed_bond"],

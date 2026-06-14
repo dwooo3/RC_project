@@ -459,6 +459,21 @@ MODEL_REGISTRY: dict[str, dict] = {
             "vs Black prices; exact round-trip when quotes are HW-generated)."
         ),
     },
+    "g2pp": {
+        "name": "G2++ (two-factor Gaussian short rate)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["curve_reprice", "zcb_option_parity", "eta_zero_is_hw1f",
+                  "swaption_mc_vs_hw1f"],
+        "notes": (
+            "M3a: two-factor Gaussian short rate (Brigo-Mercurio). Analytic "
+            "curve-fitted bond, closed-form ZCB option, MC European swaption "
+            "with exact terminal (x,y) sampling. Validated: reprices the curve, "
+            "ZCB-option parity, η→0 collapses to one-factor Hull-White, swaption "
+            "MC matches HW1F Jamshidian (ATM z≈0). Decorrelated 2-factor "
+            "term-structure for rate exotics. No swaption-cube calibration yet."
+        ),
+    },
     "cms_swap": {
         "name": "CMS Swap (convexity-adjusted)",
         "status": ModelStatus.APPROXIMATION,
