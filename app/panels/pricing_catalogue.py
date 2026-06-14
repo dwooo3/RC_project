@@ -110,7 +110,7 @@ def _vanilla_engine(s, v):
 
 
 def _swaption_engine(s, v):
-    """Engine-aware European swaption: Black-76 (default) or G2++ (M3a)."""
+    """Engine-aware European swaption: Black-76 (default), G2++ (M3a) or LMM (M3b)."""
     eng = v.get("__engine", "swaption")
     N, K, To, Ts = v["notional"], v["K"], v["T_option"], v["T_swap"]
     freq, opt = int(v["freq"]), v["opt"]
@@ -119,6 +119,11 @@ def _swaption_engine(s, v):
                                      v.get("sigma", 0.01), v.get("b", 0.3),
                                      v.get("eta", 0.012), v.get("rho", -0.7),
                                      opt, int(v.get("n_sims", 50000)), curve=_disc(s, v))
+    if eng == "lmm":
+        return s.price_lmm_swaption(N, K, To, Ts, freq, v.get("vol", v.get("sigma", 0.20)),
+                                    v.get("corr_beta", 0.1), opt,
+                                    int(v.get("n_sims", 50000)), int(v.get("steps", 24)),
+                                    curve=_disc(s, v))
     return s.price_swaption(N, K, To, Ts, freq, v["sigma"], opt, curve=_disc(s, v))
 
 

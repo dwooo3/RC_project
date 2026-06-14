@@ -97,6 +97,7 @@ CLASSIFICATION: dict[str, tuple] = {
     "bermudan_swaption": (_A.RATES, _MF.SHORT_RATE, _M.LATTICE),
     "callable_bond": (_A.RATES, _MF.SHORT_RATE, _M.LATTICE),
     "g2pp": (_A.RATES, _MF.SHORT_RATE, _M.MONTE_CARLO),    # M3a: 2-factor Gaussian
+    "lmm": (_A.RATES, _MF.MARKET_MODEL, _M.MONTE_CARLO),   # M3b: LIBOR market model
     # ── Fixed income (discounting) ────────────────────────
     "fixed_bond": (_A.RATES, _MF.ANALYTIC, _M.CLOSED_FORM),
     "custom_bond": (_A.RATES, _MF.ANALYTIC, _M.CLOSED_FORM),
@@ -203,8 +204,8 @@ ENGINES: dict[str, list[str]] = {
     "digital_option": ["digital"],
     "lookback_option": ["lookback"],
     "fx_option": ["garman_kohlhagen", "fx_smile"],
-    "swaption": ["swaption", "g2pp"],          # European: Black-76 or G2++ (M3a)
-    "cap_floor": ["capfloor"],
+    "swaption": ["swaption", "g2pp", "lmm"],   # Black-76 / G2++ (M3a) / LMM (M3b)
+    "cap_floor": ["capfloor", "lmm"],          # Black strip or LMM (M3b)
     "callable_bond": ["callable_bond"],
     "fixed_bond": ["fixed_bond"],
     "cds": ["cds", "cds_curve"],

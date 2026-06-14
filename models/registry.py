@@ -474,6 +474,25 @@ MODEL_REGISTRY: dict[str, dict] = {
             "term-structure for rate exotics. No swaption-cube calibration yet."
         ),
     },
+    "lmm": {
+        "name": "LMM / BGM (LIBOR market model)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["curve_reprice", "caplet_mc_vs_black", "caplet_parity",
+                  "swaption_mc_vs_rebonato", "swaption_parity",
+                  "decorrelation_lowers_swaption_vol"],
+        "notes": (
+            "M3b: forward LIBOR market model. Flat per-rate lognormal vol + "
+            "exp(-β|ΔT|) correlation; analytic Black caplets by construction. "
+            "Terminal T_N-measure Monte Carlo with log-Euler predictor-corrector "
+            "drift; swaptions cross-checked vs the Rebonato vol approximation. "
+            "Validated: reprices the curve (1e-16), caplet MC == Black within "
+            "noise (non-zero drift + numeraire reconstruction), caplet/swaption "
+            "parity, swaption MC == Rebonato within noise, decorrelation lowers "
+            "the swaption vol below the cap vol. No cap/swaption-surface "
+            "calibration yet (flat vol input); time-dependent vol deferred."
+        ),
+    },
     "cms_swap": {
         "name": "CMS Swap (convexity-adjusted)",
         "status": ModelStatus.APPROXIMATION,

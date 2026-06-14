@@ -194,6 +194,16 @@ ENGINE_PARAMS: dict[str, list[ParameterSpec]] = {
         P("n_sims", "MC paths", 50_000, "numerical", dtype="int",
           minimum=5000, maximum=500_000),
     ],
+    "lmm": [
+        P("vol", "Forward vol σ", 0.20, "model", minimum=1e-3, maximum=2.0,
+          help="flat per-rate lognormal vol"),
+        P("corr_beta", "Corr decay β", 0.1, "model", minimum=0.0, maximum=2.0,
+          help="ρ_ij = exp(-β|T_i-T_j|)"),
+        P("n_sims", "MC paths", 50_000, "numerical", dtype="int",
+          minimum=5000, maximum=500_000),
+        P("steps", "Time steps", 24, "numerical", dtype="int",
+          minimum=4, maximum=500),
+    ],
     "cds_curve": [
         P("recovery", "Recovery rate", 0.4, "model", minimum=0.0, maximum=0.99),
     ],

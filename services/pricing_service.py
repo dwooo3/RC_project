@@ -929,6 +929,39 @@ class PricingService:
                     "b": b, "eta": eta, "rho": rho, "opt": opt, "curve_id": curve_id},
             snapshot=snapshot, user_action="Price G2++ swaption")
 
+    def price_lmm_swaption(self, notional, K, T_option, T_swap, freq=2,
+                           vol=0.20, corr_beta=0.1, opt="payer", n_sims=50_000,
+                           steps=24, curve=None, snapshot=None,
+                           curve_id="flat_rub") -> dict:
+        """European swaption under the LIBOR market model, MC (M3b)."""
+        from models.lmm import lmm_swaption
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="lmm", calculation_type="lmm_swaption_pricing",
+            engine=lambda: lmm_swaption(curve, notional, K, T_option, T_swap,
+                                        int(freq), vol, corr_beta, opt,
+                                        int(n_sims), int(steps)),
+            inputs={"notional": notional, "K": K, "T_option": T_option,
+                    "T_swap": T_swap, "freq": int(freq), "vol": vol,
+                    "corr_beta": corr_beta, "opt": opt, "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price LMM swaption")
+
+    def price_lmm_cap(self, notional, K, T, freq=2, vol=0.20, opt="cap",
+                      curve=None, snapshot=None, curve_id="flat_rub") -> dict:
+        """Cap/floor as an LMM Black caplet strip (M3b)."""
+        from models.lmm import LMM
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+
+        def engine():
+            m = LMM(curve, start=0.0, end=T, freq=int(freq), vol=vol)
+            return {"price": m.cap_black(K, opt, start=1, notional=notional)}
+
+        return self._priced(
+            model_id="lmm", calculation_type="lmm_cap_pricing", engine=engine,
+            inputs={"notional": notional, "K": K, "T": T, "freq": int(freq),
+                    "vol": vol, "opt": opt, "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price LMM cap/floor")
+
     # ── Phase 3: numerical engines ────────────────────────────────────
     def price_american_option(self, S, K, T, r, sigma, q=0.0, opt="put",
                               model="pde", snapshot=None) -> dict:
