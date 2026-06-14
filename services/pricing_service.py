@@ -987,6 +987,19 @@ class PricingService:
                     "q": q, "opt": opt, **params},
             snapshot=snapshot, user_action=f"Price {model} option (COS)")
 
+    def price_rough_bergomi_option(self, S, K, T, r, q=0.0, H=0.1, eta=1.5,
+                                   rho=-0.7, xi0=0.04, opt="call",
+                                   n_paths=40_000, steps=100, snapshot=None) -> dict:
+        """European option under rough Bergomi (MC); Analytics Lab (M2)."""
+        from models.rough_vol import rough_bergomi_price
+        return self._priced(
+            model_id="rough_bergomi", calculation_type="rough_bergomi_pricing",
+            engine=lambda: rough_bergomi_price(S, K, T, r, q, H, eta, rho, xi0,
+                                               opt, int(n_paths), int(steps)),
+            inputs={"S": S, "K": K, "T": T, "r": r, "q": q, "H": H, "eta": eta,
+                    "rho": rho, "xi0": xi0, "opt": opt},
+            snapshot=snapshot, user_action="Price rough Bergomi option")
+
     def price_heston_option(self, S, K, T, r, q, v0, kappa, theta, xi, rho,
                             opt="call", snapshot=None) -> dict:
         """European option under Heston (characteristic-function); Analytics Lab."""

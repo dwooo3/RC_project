@@ -41,6 +41,7 @@ ANALYTICS_LAB_MODELS = {
     "nig",
     "cgmy",
     "merton_cos",
+    "rough_bergomi",
 }
 
 
@@ -127,13 +128,14 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "bates": {
         "name": "Bates (Heston + Jumps)",
-        "status": ModelStatus.PROTOTYPE,
+        "status": ModelStatus.APPROXIMATION,
         "domain": "Analytics",
         "tests": ["lambda_zero_is_heston", "xi_zero_is_merton", "put_call_parity"],
         "notes": (
-            "Phase 3: Gil-Pelaez inversion of the Heston CF times the "
-            "compensated jump factor. Degenerates exactly to Heston (λ=0) and "
-            "Merton (ξ→0). No calibration; Analytics Lab only."
+            "M2 promotion (was Prototype): Gil-Pelaez inversion of the Heston CF "
+            "times the compensated jump factor. Validated — degenerates exactly "
+            "to Heston (λ=0) and Merton (ξ→0), parity holds. No market "
+            "calibration; Analytics Lab only."
         ),
     },
 
@@ -228,17 +230,40 @@ MODEL_REGISTRY: dict[str, dict] = {
     # ── Stochastic vol ────────────────────────────────────
     "heston_cf": {
         "name": "Heston (Characteristic Function)",
-        "status": ModelStatus.PROTOTYPE,
+        "status": ModelStatus.APPROXIMATION,
         "domain": "Analytics",
-        "tests": [],
-        "notes": "CF integration via scipy quad (stable Little-Heston-Trap form). Delta now dividend-adjusted (e^{-qT} P1). Feller condition not enforced. No benchmark test.",
+        "tests": ["heston_parity", "xi_to_zero_is_bsm", "heston_mc_vs_cf",
+                  "cos_engine_cross_check"],
+        "notes": (
+            "M2 promotion (was Prototype): Gil-Pelaez inversion (stable form), "
+            "dividend-adjusted delta. Validated — put-call parity, ξ→0 ⇒ BSM, "
+            "MC(QE) vs CF agree, COS-engine cross-check. Feller not enforced."
+        ),
     },
     "sabr": {
-        "name": "SABR",
-        "status": ModelStatus.PROTOTYPE,
+        "name": "SABR (Hagan, Obłój z)",
+        "status": ModelStatus.APPROXIMATION,
         "domain": "Analytics",
-        "tests": [],
-        "notes": "Hagan-Kumar-Lesnieweski-Woodward. No ATM limit test. No positive vol guarantee.",
+        "tests": ["beta1_nu0_is_alpha", "smile_continuity"],
+        "notes": (
+            "M2 promotion (was Prototype): Hagan implied-vol with the Obłój-style "
+            "log-moneyness z. ATM/ν→0 limits validated, smile continuous. No "
+            "guaranteed arbitrage-free wings at extreme strikes."
+        ),
+    },
+    "rough_bergomi": {
+        "name": "Rough Bergomi (rough vol)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Analytics",
+        "tests": ["eta_zero_is_bsm", "put_call_parity_martingale",
+                  "rough_skew_steeper_than_smooth"],
+        "notes": (
+            "M2: rough Bergomi (Bayer-Friz-Gatheral) MC. Volterra integral with "
+            "exact per-step kernel integration; terminal-spot martingale "
+            "correction (McCrickerd-Pakkanen) restores parity. η→0 ⇒ BSM; rough "
+            "(small H) gives a steeper short-dated skew than smooth. Euler spot "
+            "with martingale fix — not a full turbocharged scheme."
+        ),
     },
     "garch": {
         "name": "GARCH / EWMA",

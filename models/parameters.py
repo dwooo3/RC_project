@@ -163,6 +163,16 @@ ENGINE_PARAMS: dict[str, list[ParameterSpec]] = {
         P("Y", "CGMY fine structure Y", 0.8, "model", minimum=-5.0, maximum=1.99),
         P("N", "COS terms", 512, "numerical", dtype="int", minimum=128, maximum=4096),
     ],
+    "rough_bergomi": [
+        P("H", "Hurst H", 0.1, "model", minimum=0.01, maximum=0.49,
+          help="<0.5 = rough"),
+        P("eta", "Vol-of-vol η", 1.5, "model", minimum=1e-3, maximum=5.0),
+        P("rho", "Spot-vol corr ρ", -0.7, "model", minimum=-0.999, maximum=0.999),
+        P("xi0", "Forward variance ξ0", 0.04, "model", minimum=1e-4, maximum=2.0),
+        P("n_paths", "MC paths", 40_000, "numerical", dtype="int",
+          minimum=2000, maximum=500_000),
+        P("steps", "Time steps", 100, "numerical", dtype="int", minimum=20, maximum=1000),
+    ],
     "local_vol_mc": _mc_specs(80_000, 100),
     "callable_bond": [
         P("sigma", "Rate vol σ", 0.15, "model", minimum=1e-3, maximum=1.0),

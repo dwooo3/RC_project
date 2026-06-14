@@ -99,6 +99,12 @@ def _vanilla_engine(s, v):
                                     "alpha", "beta", "delta", "C", "G", "M", "Y",
                                     "mu_j", "delta_j", "N") if k in v}
         return s.price_levy_option(eng, S, K, T, r, sig, q, opt, **params)
+    if eng == "rough_bergomi":
+        return s.price_rough_bergomi_option(S, K, T, r, q, v.get("H", 0.1),
+                                            v.get("eta", 1.5), v.get("rho", -0.7),
+                                            v.get("xi0", sig**2), opt,
+                                            int(v.get("n_paths", 40000)),
+                                            int(v.get("steps", 100)))
     # unrecognised / not yet wired -> governed error
     return s.price_vanilla_option(S, K, T, r, sig, q, opt, model="bsm")
 

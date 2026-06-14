@@ -90,6 +90,7 @@ CLASSIFICATION: dict[str, tuple] = {
     "nig": (_A.EQUITY, _MF.LEVY, _M.FOURIER),
     "cgmy": (_A.EQUITY, _MF.LEVY, _M.FOURIER),
     "local_vol_mc": (_A.EQUITY, _MF.LOCAL_VOL, _M.MONTE_CARLO),
+    "rough_bergomi": (_A.EQUITY, _MF.STOCH_VOL, _M.MONTE_CARLO),
     "garch": (_A.EQUITY, _MF.STATISTICAL, _M.CLOSED_FORM),
     # ── Short rate ────────────────────────────────────────
     "short_rate": (_A.RATES, _MF.SHORT_RATE, _M.LATTICE),
@@ -193,7 +194,7 @@ ENGINES: dict[str, list[str]] = {
     # local_vol_mc rejoin once their option wrappers land (M1/M2).
     "european_option": ["black_scholes", "binomial_crr", "binomial_lr",
                         "trinomial", "pde_cn", "mc_gbm", "heston_cf",
-                        "merton_jump", "bates",
+                        "merton_jump", "bates", "rough_bergomi",
                         "kou", "variance_gamma", "nig", "cgmy"],
     "american_option": ["pde_cn", "binomial_crr", "binomial_lr", "trinomial", "mc_lsm"],
     "barrier_option": ["barrier", "pde_cn"],
