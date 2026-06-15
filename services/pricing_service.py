@@ -931,6 +931,55 @@ class PricingService:
                     "method": method},
             snapshot=snapshot, user_action="Price G2++ swaption")
 
+    def price_commodity_option(self, model, spot, K, T_option, T_future, opt="call",
+                               r=0.05, kappa=1.0, rho=0.3, snapshot=None,
+                               **params) -> dict:
+        """Option on a commodity future under Schwartz-Smith / Gibson-Schwartz (M5).
+        model: 'schwartz_smith' | 'gibson_schwartz'."""
+        from models.commodity import SchwartzSmith, GibsonSchwartz
+        if model == "gibson_schwartz":
+            m = GibsonSchwartz(spot=spot, delta0=params.get("delta0", 0.05), kappa=kappa,
+                               sigma_S=params.get("sigma_S", 0.30),
+                               alpha_tilde=params.get("alpha_tilde", 0.05),
+                               sigma_delta=params.get("sigma_delta", 0.30), rho=rho, r=r)
+            mid = "gibson_schwartz"
+        else:
+            import numpy as _np
+            m = SchwartzSmith(chi0=params.get("chi0", 0.0),
+                              xi0=_np.log(spot) - params.get("chi0", 0.0), kappa=kappa,
+                              sigma_chi=params.get("sigma_chi", 0.30),
+                              mu_xi=params.get("mu_xi", 0.0),
+                              sigma_xi=params.get("sigma_xi", 0.15), rho=rho, r=r)
+            mid = "schwartz_smith"
+        return self._priced(
+            model_id=mid, calculation_type="commodity_option_pricing",
+            engine=lambda: {"price": m.futures_option(T_option, T_future, K, opt)},
+            inputs={"model": model, "spot": spot, "K": K, "T_option": T_option,
+                    "T_future": T_future, "opt": opt, "r": r, "kappa": kappa, "rho": rho},
+            snapshot=snapshot, user_action="Price commodity futures option")
+
+    def commodity_futures_curve(self, model, spot, tenors, r=0.05, kappa=1.0,
+                                rho=0.3, **params) -> dict:
+        """Futures term structure F(0,T) under SS/GS (M5)."""
+        from models.commodity import SchwartzSmith, GibsonSchwartz, commodity_futures_curve
+        try:
+            if model == "gibson_schwartz":
+                m = GibsonSchwartz(spot=spot, delta0=params.get("delta0", 0.05), kappa=kappa,
+                                   sigma_S=params.get("sigma_S", 0.30),
+                                   alpha_tilde=params.get("alpha_tilde", 0.05),
+                                   sigma_delta=params.get("sigma_delta", 0.30), rho=rho, r=r)
+            else:
+                import numpy as _np
+                m = SchwartzSmith(chi0=params.get("chi0", 0.0),
+                                  xi0=_np.log(spot) - params.get("chi0", 0.0), kappa=kappa,
+                                  sigma_chi=params.get("sigma_chi", 0.30),
+                                  mu_xi=params.get("mu_xi", 0.0),
+                                  sigma_xi=params.get("sigma_xi", 0.15), rho=rho, r=r)
+            return {"errors": [], "model_id": model,
+                    "curve": commodity_futures_curve(m, tenors)}
+        except Exception as exc:                       # noqa: BLE001
+            return {"errors": [str(exc)], "model_id": model}
+
     def price_amc_bermudan_swaption(self, notional, K, exercise_dates, T_end,
                                     freq=2, kappa=0.1, sigma_r=0.012, opt="payer",
                                     n_sims=20_000, curve=None, snapshot=None,

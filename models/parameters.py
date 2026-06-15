@@ -219,6 +219,22 @@ ENGINE_PARAMS: dict[str, list[ParameterSpec]] = {
           minimum=5000, maximum=500_000),
         P("steps", "Time steps", 100, "numerical", dtype="int", minimum=20, maximum=1000),
     ],
+    "schwartz_smith": [
+        P("kappa", "Short-term mean reversion κ", 1.0, "model", minimum=1e-2, maximum=10.0),
+        P("sigma_chi", "Short-term vol σ_χ", 0.30, "model", minimum=1e-3, maximum=3.0),
+        P("mu_xi", "Equilibrium drift μ_ξ", 0.0, "model", minimum=-1.0, maximum=1.0),
+        P("sigma_xi", "Equilibrium vol σ_ξ", 0.15, "model", minimum=1e-3, maximum=3.0),
+        P("rho", "Factor correlation ρ", 0.3, "model", minimum=-0.999, maximum=0.999),
+        P("chi0", "Initial short-term χ0", 0.0, "model", minimum=-2.0, maximum=2.0),
+    ],
+    "gibson_schwartz": [
+        P("delta0", "Initial convenience yield δ0", 0.05, "model", minimum=-0.5, maximum=1.0),
+        P("kappa", "CY mean reversion κ", 1.0, "model", minimum=1e-2, maximum=10.0),
+        P("sigma_S", "Spot vol σ_S", 0.30, "model", minimum=1e-3, maximum=3.0),
+        P("alpha_tilde", "Long-run CY α̃", 0.05, "model", minimum=-0.5, maximum=1.0),
+        P("sigma_delta", "CY vol σ_δ", 0.30, "model", minimum=1e-3, maximum=3.0),
+        P("rho", "Spot-CY correlation ρ", 0.3, "model", minimum=-0.999, maximum=0.999),
+    ],
     "cds_curve": [
         P("recovery", "Recovery rate", 0.4, "model", minimum=0.0, maximum=0.99),
     ],

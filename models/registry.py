@@ -562,6 +562,35 @@ MODEL_REGISTRY: dict[str, dict] = {
             "applied to the XVA cube); callable-exposure wiring not yet shipped."
         ),
     },
+    "schwartz_smith": {
+        "name": "Schwartz-Smith (two-factor commodity)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["futures_at_zero_is_spot", "gs_ss_equivalence", "mc_matches_futures",
+                  "futures_option_parity", "samuelson_vol_decay"],
+        "notes": (
+            "M5: log spot = short-term mean-reverting χ + equilibrium ABM ξ. "
+            "Closed-form log-normal futures ln F=e^{-κτ}χ+ξ+A(τ) and futures "
+            "options (Black with the model's term-structure variance). Validated: "
+            "F(0,0)=spot, equivalence to Gibson-Schwartz to machine precision, "
+            "option MC == closed form, put-call parity, Samuelson vol decay (near "
+            "futures more volatile) with long-end vol → σ_ξ. Curve calibration to "
+            "an observed futures strip not yet wired (parametric curve only)."
+        ),
+    },
+    "gibson_schwartz": {
+        "name": "Gibson-Schwartz (stochastic convenience yield)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["futures_at_zero_is_spot", "gs_ss_equivalence", "mc_matches_futures"],
+        "notes": (
+            "M5: spot S with mean-reverting stochastic convenience yield δ; "
+            "closed-form futures F=S·exp(C(τ)-δB(τ)). Mathematically equivalent "
+            "to Schwartz-Smith (to_schwartz_smith mapping). Validated: F(0,0)=spot, "
+            "GS futures/options == SS to machine precision, Euler MC E^Q[S_T] == "
+            "closed-form futures. Convenience-yield/curve calibration deferred."
+        ),
+    },
     "cms_swap": {
         "name": "CMS Swap (convexity-adjusted)",
         "status": ModelStatus.APPROXIMATION,

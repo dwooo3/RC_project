@@ -130,6 +130,9 @@ CLASSIFICATION: dict[str, tuple] = {
     "xccy_swap": (_A.FX, _MF.ANALYTIC, _M.CLOSED_FORM),
     "xccy_curve": (_A.FX, _MF.ANALYTIC, _M.CLOSED_FORM),   # M3c: basis bootstrap
     "fx_smile": (_A.FX, _MF.STOCH_VOL, _M.CLOSED_FORM),
+    # ── Commodity (M5) ────────────────────────────────────
+    "schwartz_smith": (_A.COMMODITY, _MF.ANALYTIC, _M.CLOSED_FORM),
+    "gibson_schwartz": (_A.COMMODITY, _MF.ANALYTIC, _M.CLOSED_FORM),
     # ── Equity exotics ────────────────────────────────────
     "barrier": (_A.EQUITY, _MF.ANALYTIC, _M.CLOSED_FORM),
     "digital": (_A.EQUITY, _MF.ANALYTIC, _M.CLOSED_FORM),
@@ -211,6 +214,8 @@ ENGINES: dict[str, list[str]] = {
     "fx_option": ["garman_kohlhagen", "fx_smile"],
     "swaption": ["swaption", "g2pp", "lmm", "bk", "cheyette"],  # Black-76 / G2++ / LMM / BK / Cheyette
     "cap_floor": ["capfloor", "lmm"],          # Black strip or LMM (M3b)
+    "commodity_option": ["schwartz_smith", "gibson_schwartz"],   # M5: futures option
+    "commodity_future": ["schwartz_smith", "gibson_schwartz"],   # M5: futures curve
     "callable_bond": ["callable_bond"],
     "fixed_bond": ["fixed_bond"],
     "cds": ["cds", "cds_curve"],
