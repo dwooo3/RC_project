@@ -95,6 +95,7 @@ CLASSIFICATION: dict[str, tuple] = {
     # ── Short rate ────────────────────────────────────────
     "short_rate": (_A.RATES, _MF.SHORT_RATE, _M.LATTICE),
     "bermudan_swaption": (_A.RATES, _MF.SHORT_RATE, _M.LATTICE),
+    "amc": (_A.RATES, _MF.SHORT_RATE, _M.MONTE_CARLO),     # M4c: Longstaff-Schwartz
     "callable_bond": (_A.RATES, _MF.SHORT_RATE, _M.LATTICE),
     "g2pp": (_A.RATES, _MF.SHORT_RATE, _M.MONTE_CARLO),    # M3a: 2-factor Gaussian
     "lmm": (_A.RATES, _MF.MARKET_MODEL, _M.MONTE_CARLO),   # M3b: LIBOR market model

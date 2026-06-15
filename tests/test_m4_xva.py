@@ -136,3 +136,48 @@ def test_xva_service_route():
                              n_sims=1500, n_grid=16)
     assert res["errors"] == [] and res["model_id"] == "xva_suite"
     assert res["raw"]["cva"] > 0 and res["raw"]["kva"] > 0
+
+
+# ── M4c: AMC (Longstaff-Schwartz) ────────────────────────
+
+def test_amc_single_exercise_is_jamshidian(curve):
+    from risk.xva import amc_bermudan_swaption
+    from models.short_rate import HullWhite
+    hw = HullWhite(0.1, 0.012, curve)
+    for opt in ("payer", "receiver"):
+        amc = amc_bermudan_swaption(1_000_000, 0.06, [2.0], 5.0, 2, curve,
+                                    0.1, 0.012, opt, n_sims=50_000, seed=7)
+        jam = hw.swaption(1_000_000, 0.06, 2.0, 3.0, 2)[opt]
+        assert amc["price"] == pytest.approx(jam, abs=4 * amc["stderr"])
+
+
+def test_amc_matches_hw_tree(curve):
+    from risk.xva import amc_bermudan_swaption
+    from models.short_rate import bermudan_swaption_hw
+    ex = [1.0, 2.0, 3.0, 4.0]
+    for opt in ("payer", "receiver"):
+        amc = amc_bermudan_swaption(1_000_000, 0.06, ex, 5.0, 2, curve,
+                                    0.1, 0.012, opt, n_sims=60_000, seed=7)
+        tree = bermudan_swaption_hw(1_000_000, 0.06, ex, 5.0, 2, curve, 0.1, 0.012,
+                                    opt, steps=300)
+        assert amc["price"] == pytest.approx(tree["price"], rel=0.01)
+
+
+def test_amc_bermudan_geq_european(curve):
+    from risk.xva import amc_bermudan_swaption
+    from models.short_rate import HullWhite
+    berm = amc_bermudan_swaption(1_000_000, 0.06, [1.0, 2.0, 3.0, 4.0], 5.0, 2,
+                                 curve, 0.1, 0.012, "payer", n_sims=50_000, seed=7)
+    eur = HullWhite(0.1, 0.012, curve).swaption(1_000_000, 0.06, 4.0, 1.0, 2)["payer"]
+    assert berm["price"] >= eur
+
+
+def test_amc_wired_and_service():
+    from models import taxonomy as tax
+    from models import registry as R
+    from services.pricing_service import PricingService
+    assert tax.classify("amc")["asset_class"] == "rates"
+    assert R.MODEL_REGISTRY["amc"]["status"].value == "Approximation"
+    res = PricingService().price_amc_bermudan_swaption(
+        1_000_000, 0.05, [1.0, 2.0, 3.0], 4.0, n_sims=10_000)
+    assert res["errors"] == [] and res["value"] > 0 and res["model_id"] == "amc"

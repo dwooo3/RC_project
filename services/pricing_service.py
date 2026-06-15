@@ -931,6 +931,23 @@ class PricingService:
                     "method": method},
             snapshot=snapshot, user_action="Price G2++ swaption")
 
+    def price_amc_bermudan_swaption(self, notional, K, exercise_dates, T_end,
+                                    freq=2, kappa=0.1, sigma_r=0.012, opt="payer",
+                                    n_sims=20_000, curve=None, snapshot=None,
+                                    curve_id="flat_rub") -> dict:
+        """Bermudan swaption via American Monte Carlo (Longstaff-Schwartz), M4c."""
+        from risk.xva import amc_bermudan_swaption
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="amc", calculation_type="amc_bermudan_swaption_pricing",
+            engine=lambda: amc_bermudan_swaption(notional, K, list(exercise_dates),
+                                                 T_end, int(freq), curve, kappa,
+                                                 sigma_r, opt, int(n_sims)),
+            inputs={"notional": notional, "K": K, "exercise_dates": list(exercise_dates),
+                    "T_end": T_end, "freq": int(freq), "kappa": kappa,
+                    "sigma_r": sigma_r, "opt": opt, "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price AMC Bermudan swaption")
+
     def calibrate_rate_model(self, model_id, instruments, freq=2, curve=None,
                              cube=None, snapshot=None, curve_id="flat_rub") -> dict:
         """Calibrate a rate model (g2pp/lmm/bk/cheyette/hw) to a swaption cube

@@ -546,6 +546,22 @@ MODEL_REGISTRY: dict[str, dict] = {
             "and tenor-basis effects not modelled."
         ),
     },
+    "amc": {
+        "name": "AMC (Longstaff-Schwartz) Bermudan swaption",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["single_exercise_matches_jamshidian", "amc_vs_hw_tree",
+                  "bermudan_geq_european"],
+        "notes": (
+            "M4c: American Monte Carlo for Bermudan swaptions — Longstaff-Schwartz "
+            "regression (quadratic basis in the co-terminal swap value) on a "
+            "Hull-White state carrying the money-market numeraire B=exp(∫r). "
+            "Validated: single exercise == Jamshidian within MC noise, multi-date "
+            "Bermudan within <0.5% of the HW trinomial tree, Bermudan ≥ European. "
+            "Foundation for callable-trade exposure (regression exercise boundary "
+            "applied to the XVA cube); callable-exposure wiring not yet shipped."
+        ),
+    },
     "cms_swap": {
         "name": "CMS Swap (convexity-adjusted)",
         "status": ModelStatus.APPROXIMATION,

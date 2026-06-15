@@ -219,6 +219,78 @@ def capital_value_adjustment(times, epe, disc_curve, cost_of_capital,
     return dict(kva=kva, peak_capital=float(capital.max()), peak_ead=float(ead.max()))
 
 
+# ── AMC: Longstaff-Schwartz for callable trades ──────────────
+
+def _simulate_hw_states(curve, exercise_dates, kappa, sigma_r, n_sims, seed,
+                        steps_per=8):
+    """Simulate HW short rate to the exercise dates, carrying the money-market
+    numeraire B(t)=exp(∫r ds). Returns r and B sampled at each exercise date."""
+    from models.short_rate import HullWhite
+    hw = HullWhite(kappa, sigma_r, curve)
+    rng = np.random.default_rng(seed)
+    ex = np.array(sorted(exercise_dates), float)
+    T = ex[-1]
+    fine = max(int(round(T * steps_per * 4)), len(ex) * steps_per)
+    dt = T / fine
+    r = np.full(n_sims, hw._r0)
+    logB = np.zeros(n_sims)
+    r_at, B_at = [], []
+    targets = list(ex)
+    ti = 0.0
+    next_idx = 0
+    for i in range(fine):
+        f = curve.forward_rate(ti, ti + dt)
+        dfdt = (curve.rate(ti + dt) - curve.rate(max(ti - dt, 0.001))) / (2 * dt)
+        theta = dfdt + kappa * f + sigma_r**2 * (1 - np.exp(-2 * kappa * ti)) / (2 * kappa)
+        logB += r * dt                                  # ∫r ds (left Riemann)
+        r = r + (theta - kappa * r) * dt + sigma_r * np.sqrt(dt) * rng.standard_normal(n_sims)
+        ti = (i + 1) * dt
+        if next_idx < len(targets) and np.isclose(ti, targets[next_idx], atol=dt / 2):
+            r_at.append(r.copy()); B_at.append(np.exp(logB.copy())); next_idx += 1
+    return hw, ex, r_at, B_at
+
+
+def amc_bermudan_swaption(notional, K, exercise_dates, T_end, freq, curve,
+                          kappa=0.1, sigma_r=0.012, opt="payer", n_sims=20_000,
+                          seed=7) -> dict:
+    """Bermudan swaption by Longstaff-Schwartz on a Hull-White state. Validated
+    against the HW trinomial tree; a single exercise date == Jamshidian."""
+    hw, ex, r_at, B_at = _simulate_hw_states(curve, exercise_dates, kappa,
+                                             sigma_r, n_sims, seed)
+    dt_pay = 1.0 / freq
+    sign = 1.0 if opt == "payer" else -1.0
+
+    def swap_value(r, t):                               # payer swap [t, T_end]
+        pay = np.array([t + i * dt_pay for i in range(1, int(round((T_end - t) * freq)) + 1)])
+        return _swap_value(hw, r, t, notional, K, pay, dt_pay, 1.0)
+
+    n_ex = len(ex)
+    V_real = np.zeros(n_sims)                           # realized exercise value
+    cf_B = np.ones(n_sims)                              # numeraire at cashflow time
+    # last date: exercise = intrinsic^+
+    intr_L = np.maximum(sign * swap_value(r_at[-1], ex[-1]), 0.0)
+    V_real = intr_L
+    cf_B = B_at[-1].copy()
+    for j in range(n_ex - 2, -1, -1):
+        sv = swap_value(r_at[j], ex[j])
+        intrinsic = np.maximum(sign * sv, 0.0)
+        itm = intrinsic > 1e-12
+        disc_future = V_real * B_at[j] / cf_B           # continuation realized, disc to ex[j]
+        if itm.sum() > 8:                               # regress continuation on swap value
+            x = sv[itm]
+            Abasis = np.vstack([np.ones_like(x), x, x * x]).T
+            coef, *_ = np.linalg.lstsq(Abasis, disc_future[itm], rcond=None)
+            cont = coef[0] + coef[1] * sv + coef[2] * sv * sv
+        else:
+            cont = disc_future
+        do = itm & (intrinsic > cont)
+        V_real = np.where(do, intrinsic, V_real)
+        cf_B = np.where(do, B_at[j], cf_B)
+    price = float(np.mean(V_real / cf_B))
+    stderr = float(np.std(V_real / cf_B, ddof=1) / np.sqrt(n_sims))
+    return dict(price=price, stderr=stderr, opt=opt, n_sims=n_sims, n_exercise=n_ex)
+
+
 def xva_suite(sim, disc_curve, cpty_hazard, own_hazard=None, *,
               funding_spread=0.0, cost_of_capital=0.0, risk_weight=1.0,
               csa=None, im_mpor=2.0 / 52, recovery=None, own_recovery=None) -> dict:
