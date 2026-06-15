@@ -153,6 +153,7 @@ CLASSIFICATION: dict[str, tuple] = {
     "cva_exposure": (_A.CREDIT, _MF.REDUCED_FORM, _M.MONTE_CARLO),
     # ── Structured / hybrid ───────────────────────────────
     "structured_autocall": (_A.HYBRID, _MF.STOCH_VOL, _M.MONTE_CARLO),
+    "structured_basket_note": (_A.HYBRID, _MF.ANALYTIC, _M.MONTE_CARLO),
     "cln_ftd": (_A.CREDIT, _MF.COPULA, _M.MONTE_CARLO),
     # ── Credit models (M7) ────────────────────────────────
     "cds_isda": (_A.CREDIT, _MF.REDUCED_FORM, _M.CLOSED_FORM),
@@ -161,6 +162,9 @@ CLASSIFICATION: dict[str, tuple] = {
     "kmv": (_A.CREDIT, _MF.STRUCTURAL, _M.CLOSED_FORM),
     "gaussian_copula": (_A.CREDIT, _MF.COPULA, _M.CLOSED_FORM),
     "convertible_bond": (_A.HYBRID, _MF.ANALYTIC, _M.LATTICE),
+    "afv_convertible": (_A.HYBRID, _MF.REDUCED_FORM, _M.LATTICE),   # M8: equity-credit
+    "mbs": (_A.RATES, _MF.REDUCED_FORM, _M.CLOSED_FORM),            # M8: prepayment
+    "frtb_sba": (_A.RISK, _MF.STATISTICAL, _M.CLOSED_FORM),         # M8: FRTB-SA capital
     # ── Risk / portfolio / market (kind != pricer) ────────
     "var_parametric": (_A.RISK, _MF.STATISTICAL, _M.CLOSED_FORM),
     "var_historical": (_A.RISK, _MF.STATISTICAL, _M.SIMULATION),
@@ -231,6 +235,8 @@ ENGINES: dict[str, list[str]] = {
     "commodity_future": ["schwartz_smith", "gibson_schwartz"],   # M5: futures curve
     "callable_bond": ["callable_bond"],
     "fixed_bond": ["fixed_bond"],
+    "convertible_bond": ["convertible_bond", "afv_convertible"],   # TF or AFV (M8)
+    "mbs": ["mbs"],
     "cds": ["cds", "cds_curve", "cds_isda"],
     "structural_default": ["merton_structural", "black_cox", "kmv"],
     "cdo_tranche": ["gaussian_copula"],

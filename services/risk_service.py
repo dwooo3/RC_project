@@ -280,6 +280,24 @@ class RiskService:
             return self._error_result(model_id=model_id, error=exc, snapshot=snapshot,
                                       calculation_type="xva_suite", inputs=inputs)
 
+    def frtb_capital(self, factors, rho=0.5, gamma=0.25, snapshot=None) -> dict:
+        """FRTB Standardised Approach delta charge (SBM), M8.
+        factors: list of {bucket, sensitivity, risk_weight}."""
+        from models.frtb import frtb_delta_charge
+        model_id = "frtb_sba"
+        inputs = {"n_factors": len(factors), "rho": rho, "gamma": gamma}
+        try:
+            self._enforce_model(model_id)
+            snapshot = snapshot or self.market_data.demo_snapshot()
+            res = frtb_delta_charge(list(factors), rho, gamma)
+            return self._result(
+                value=res["charge"], model_id=model_id, raw=res, snapshot=snapshot,
+                calculation_type="frtb_sba", inputs=inputs,
+                user_action="FRTB-SA delta capital")
+        except Exception as exc:
+            return self._error_result(model_id=model_id, error=exc, snapshot=snapshot,
+                                      calculation_type="frtb_sba", inputs=inputs)
+
     def var(
         self,
         returns: np.ndarray,

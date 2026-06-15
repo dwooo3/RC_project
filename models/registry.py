@@ -711,6 +711,52 @@ MODEL_REGISTRY: dict[str, dict] = {
             "calibration and stochastic recovery deferred."
         ),
     },
+    "afv_convertible": {
+        "name": "AFV (Andersen-Buffum) convertible bond",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["conv_zero_is_defaultable_bond", "lambda_zero_is_convertible",
+                  "deep_itm_parity", "price_falls_with_hazard"],
+        "notes": (
+            "M8: defaultable-equity convertible on a CRR tree — stock jumps to "
+            "zero at hazard λ(S)=λ0·(S0/S)^α, holder recovers R·face; risk-neutral "
+            "drift compensated for the jump (growth e^{(r-q+λ)Δt}). Validated: "
+            "conv_ratio→0 == defaultable straight bond, λ0→0 == no-default "
+            "convertible (matches Tsiveriotis-Fernandes), deep ITM → parity, price "
+            "falls as the hazard rises. Hazard capped at 10 for S→0. Equity-credit "
+            "link unlike the constant-spread TF model."
+        ),
+    },
+    "mbs": {
+        "name": "MBS pass-through (PSA prepayment)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["principal_returned", "zero_psa_par", "faster_psa_shorter_wal",
+                  "oas_roundtrip"],
+        "notes": (
+            "M8: amortising mortgage pass-through with a PSA-scaled CPR/SMM "
+            "prepayment model; investor cashflows on the net coupon, scheduled + "
+            "prepaid principal. Price + WAL; OAS solve. Validated: all principal "
+            "returned, 0 PSA prices to par at the net coupon, faster PSA shortens "
+            "WAL, price falls with the discount rate, OAS↔price round-trips. "
+            "Deterministic prepayment (no rate-path option model / refi burnout)."
+        ),
+    },
+    "frtb_sba": {
+        "name": "FRTB Standardised Approach (SBM delta)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Risk",
+        "tests": ["single_factor_rw_times_s", "homogeneous_degree_one",
+                  "correlation_diversifies", "scenario_max"],
+        "notes": (
+            "M8: FRTB sensitivities-based method delta charge — WS=RW·s, "
+            "intra-bucket ρ and inter-bucket γ aggregation, evaluated under the "
+            "three regulatory correlation scenarios (medium/high/low) with the max "
+            "taken. Validated: single factor = RW·|s|, homogeneous degree 1, "
+            "imperfect correlation diversifies and ρ=1 recovers the sum, scenario "
+            "max ≥ medium. Delta only (vega/curvature and DRC/RRAO deferred)."
+        ),
+    },
     "cms_swap": {
         "name": "CMS Swap (convexity-adjusted)",
         "status": ModelStatus.APPROXIMATION,

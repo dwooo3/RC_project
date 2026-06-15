@@ -253,6 +253,12 @@ ENGINE_PARAMS: dict[str, list[ParameterSpec]] = {
         P("n_z", "Factor-grid points", 400, "numerical", dtype="int",
           minimum=50, maximum=2000),
     ],
+    "afv_convertible": [
+        P("lam0", "Base hazard λ0", 0.02, "model", minimum=0.0, maximum=1.0),
+        P("alpha", "Equity-hazard exponent α", 1.2, "model", minimum=0.0, maximum=5.0),
+        P("recovery", "Recovery rate", 0.4, "model", minimum=0.0, maximum=0.99),
+        P("N", "Tree steps", 400, "numerical", dtype="int", minimum=50, maximum=2000),
+    ],
 }
 
 

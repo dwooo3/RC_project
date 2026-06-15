@@ -963,6 +963,33 @@ class PricingService:
                     "method": method},
             snapshot=snapshot, user_action="Price G2++ swaption")
 
+    def price_afv_convertible(self, S, sigma, q, face, coupon, freq, T, conv_ratio,
+                              r=0.05, lam0=0.02, alpha=1.2, recovery=0.4, N=400,
+                              snapshot=None) -> dict:
+        """Andersen-Buffum convertible bond (equity-linked default), M8."""
+        from models.convertible_afv import afv_convertible
+        return self._priced(
+            model_id="afv_convertible", calculation_type="afv_convertible_pricing",
+            engine=lambda: afv_convertible(S, sigma, q, face, coupon, int(freq), T,
+                                           conv_ratio, r, lam0, alpha, recovery, int(N)),
+            inputs={"S": S, "sigma": sigma, "q": q, "face": face, "coupon": coupon,
+                    "freq": int(freq), "T": T, "conv_ratio": conv_ratio, "r": r,
+                    "lam0": lam0, "alpha": alpha, "recovery": recovery},
+            snapshot=snapshot, user_action="Price AFV convertible")
+
+    def price_mbs(self, balance, wac, net_coupon, wam_months, psa=100.0,
+                  disc_rate=None, oas=0.0, snapshot=None) -> dict:
+        """MBS pass-through price + WAL with PSA prepayment (M8)."""
+        from models.mbs import mbs_price
+        return self._priced(
+            model_id="mbs", calculation_type="mbs_pricing",
+            engine=lambda: mbs_price(balance, wac, net_coupon, int(wam_months),
+                                     psa, disc_rate, None, oas),
+            inputs={"balance": balance, "wac": wac, "net_coupon": net_coupon,
+                    "wam_months": int(wam_months), "psa": psa,
+                    "disc_rate": disc_rate, "oas": oas},
+            snapshot=snapshot, user_action="Price MBS pass-through")
+
     def price_isda_cds(self, notional, coupon, quoted_spread, T, freq=4, r=0.03,
                        recovery=0.4, snapshot=None) -> dict:
         """ISDA standard-model CDS: upfront from a quoted spread (M7)."""
