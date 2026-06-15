@@ -665,6 +665,38 @@ class PricingService:
                     "coupon_rate": coupon_rate, "memory_coupon": memory_coupon},
             snapshot=snapshot, user_action="Price autocall/phoenix note")
 
+    def price_basket_note(self, specs, r, T, *, principal_protection=1.0,
+                          guaranteed_coupon=0.0, coupon_freq=1, participation=1.0,
+                          cap=None, basket_type="average", face=1000.0,
+                          n_sims=40_000, steps=52, snapshot=None) -> dict:
+        """Structured note on a basket of real underlyings (equities/bonds/indices).
+
+        ``specs`` is a list of ``{"secid", "kind", "weight"}``. Spot, vol, income and
+        the correlation matrix are resolved from market data; principal protection,
+        guaranteed coupon, participation and cap configure the wrapper.
+        """
+        from instruments.structured.basket_note import basket_note
+        specs = [dict(s) for s in specs]
+
+        def _engine():
+            constituents, corr = self.market_data.basket_market_inputs(specs, T)
+            return basket_note(
+                constituents, r, T, corr,
+                principal_protection=principal_protection,
+                guaranteed_coupon=guaranteed_coupon, coupon_freq=int(coupon_freq),
+                participation=participation, cap=cap, basket_type=basket_type,
+                face=face, n_sims=int(n_sims), steps=int(steps))
+
+        return self._priced(
+            model_id="structured_basket_note", calculation_type="basket_note_pricing",
+            engine=_engine,
+            inputs={"specs": specs, "r": r, "T": T,
+                    "principal_protection": principal_protection,
+                    "guaranteed_coupon": guaranteed_coupon, "coupon_freq": int(coupon_freq),
+                    "participation": participation, "cap": cap,
+                    "basket_type": basket_type, "face": face, "n_sims": int(n_sims)},
+            snapshot=snapshot, user_action="Price basket structured note")
+
     def price_bond(
         self,
         face: float | BondPricingRequest,
@@ -930,6 +962,55 @@ class PricingService:
                     "b": b, "eta": eta, "rho": rho, "opt": opt, "curve_id": curve_id,
                     "method": method},
             snapshot=snapshot, user_action="Price G2++ swaption")
+
+    def price_isda_cds(self, notional, coupon, quoted_spread, T, freq=4, r=0.03,
+                       recovery=0.4, snapshot=None) -> dict:
+        """ISDA standard-model CDS: upfront from a quoted spread (M7)."""
+        from instruments.credit import cds_upfront
+        return self._priced(
+            model_id="cds_isda", calculation_type="isda_cds_pricing", value_key="upfront",
+            engine=lambda: cds_upfront(notional, coupon, quoted_spread, T, int(freq), r, recovery),
+            inputs={"notional": notional, "coupon": coupon, "quoted_spread": quoted_spread,
+                    "T": T, "freq": int(freq), "r": r, "recovery": recovery},
+            snapshot=snapshot, user_action="Price ISDA CDS")
+
+    def price_structural_credit(self, model, V0, D, T, r, sigma_V, barrier=None,
+                                snapshot=None) -> dict:
+        """Structural default model (M7). model: merton | black_cox."""
+        from models.structural_credit import merton, black_cox
+        mid = "merton_structural" if model == "merton" else "black_cox"
+
+        def engine():
+            if model == "black_cox":
+                res = black_cox(V0, D, T, r, sigma_V, barrier)
+                return {"price": res["pd"], **res}
+            res = merton(V0, D, T, r, sigma_V)
+            return {"price": res["credit_spread"], **res}
+        return self._priced(
+            model_id=mid, calculation_type="structural_credit_pricing", value_key="price",
+            engine=engine,
+            inputs={"model": model, "V0": V0, "D": D, "T": T, "r": r, "sigma_V": sigma_V},
+            snapshot=snapshot, user_action="Price structural credit")
+
+    def price_cdo_tranche(self, pds, rho, K1, K2, recovery=0.4, snapshot=None) -> dict:
+        """CDO tranche expected loss via the one-factor Gaussian copula (M7)."""
+        from models.credit_portfolio import cdo_tranche
+        return self._priced(
+            model_id="gaussian_copula", calculation_type="cdo_tranche_pricing",
+            value_key="expected_tranche_loss",
+            engine=lambda: cdo_tranche(list(pds), rho, K1, K2, recovery),
+            inputs={"n_names": len(pds), "rho": rho, "K1": K1, "K2": K2, "recovery": recovery},
+            snapshot=snapshot, user_action="Price CDO tranche")
+
+    def price_kth_to_default(self, pds, rho, k=1, snapshot=None) -> dict:
+        """kth-to-default probability via the one-factor Gaussian copula (M7)."""
+        from models.credit_portfolio import kth_to_default_prob
+        return self._priced(
+            model_id="gaussian_copula", calculation_type="kth_to_default_pricing",
+            value_key="prob",
+            engine=lambda: {"prob": kth_to_default_prob(list(pds), rho, int(k))},
+            inputs={"n_names": len(pds), "rho": rho, "k": int(k)},
+            snapshot=snapshot, user_action="Price kth-to-default basket")
 
     def price_commodity_option(self, model, spot, K, T_option, T_future, opt="call",
                                r=0.05, kappa=1.0, rho=0.3, snapshot=None,

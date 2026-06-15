@@ -644,6 +644,73 @@ MODEL_REGISTRY: dict[str, dict] = {
             "production stoch-vol pricer)."
         ),
     },
+    "cds_isda": {
+        "name": "ISDA CDS Standard Model (upfront)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["par_coupon_zero_upfront", "upfront_spread_roundtrip",
+                  "calibrated_par_matches_quote"],
+        "notes": (
+            "M7: standardised fixed-coupon CDS. Flat hazard calibrated so the "
+            "model par spread equals the quote; upfront = (par-coupon)·RPV01 with "
+            "accrual-on-default in RPV01. Validated: coupon=par ⇒ zero upfront, "
+            "upfront↔spread round-trip, calibrated par reproduces the quote, "
+            "credit-triangle limit. Flat-hazard ISDA convention (single quote); "
+            "full ISDA date roll/holiday calendar not modelled."
+        ),
+    },
+    "merton_structural": {
+        "name": "Merton structural model",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["equity_is_bs_call", "spread_rises_with_leverage_vol",
+                  "low_leverage_zero_spread"],
+        "notes": (
+            "M7: firm asset value GBM; equity = call on assets struck at debt D. "
+            "Risk-neutral PD=N(-d2), distance-to-default, credit spread, implied "
+            "recovery. Validated: equity == BS call on assets, spread → 0 at low "
+            "leverage and rises with leverage/vol."
+        ),
+    },
+    "black_cox": {
+        "name": "Black-Cox (first-passage default)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["pd_geq_merton", "barrier_zero_zero_pd"],
+        "notes": (
+            "M7: first-passage structural default — defaults the first time assets "
+            "touch the barrier; PD via the reflection principle. Validated: PD ≥ "
+            "Merton terminal-only PD, barrier → 0 ⇒ PD → 0."
+        ),
+    },
+    "kmv": {
+        "name": "KMV (distance-to-default / EDF)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["calibration_roundtrip"],
+        "notes": (
+            "M7: inverts observable equity value/vol to latent (V,σ_V) via the "
+            "Merton equations, then distance-to-default and EDF=N(-DD). Validated: "
+            "V,σ_V → E,σ_E → V,σ_V round-trips. Empirical EDF mapping not included "
+            "(model EDF = N(-DD))."
+        ),
+    },
+    "gaussian_copula": {
+        "name": "One-factor Gaussian copula (basket / CDO)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["el_correlation_independent", "tranches_sum_to_el",
+                  "recursion_matches_mc", "correlation_skew"],
+        "notes": (
+            "M7: one-factor Gaussian copula; conditional-independence recursion "
+            "for the number-of-defaults distribution integrated over the factor. "
+            "kth-to-default and CDO-tranche expected loss. Validated: portfolio EL "
+            "correlation-independent (=mean PD·LGD), tranche losses partition back "
+            "to it, recursion == MC copula, FTD falls / senior-tranche rises with "
+            "ρ (correlation skew). Single factor, homogeneous LGD; base-correlation "
+            "calibration and stochastic recovery deferred."
+        ),
+    },
     "cms_swap": {
         "name": "CMS Swap (convexity-adjusted)",
         "status": ModelStatus.APPROXIMATION,
@@ -853,6 +920,19 @@ MODEL_REGISTRY: dict[str, dict] = {
         "domain": "Pricing",
         "tests": [],
         "notes": "Gaussian copula simulation. No calibration to market tranche spreads.",
+    },
+    "structured_basket_note": {
+        "name": "Basket Structured Note (real underlyings)",
+        "status": ModelStatus.PROTOTYPE,
+        "domain": "Pricing",
+        "tests": ["par_at_fair_participation", "protection_floors_capital"],
+        "notes": (
+            "Correlated GBM on real equities/bonds/indices resolved from the market "
+            "store (spot, historical vol, dividend/carry income, empirical correlation). "
+            "Wrapper: principal protection, guaranteed coupon, participation, cap, "
+            "worst-of/average basket. No vol skew/term structure, flat rates, bonds "
+            "proxied as low-vol carry assets (no full cashflow model)."
+        ),
     },
 
     # ── Risk ──────────────────────────────────────────────

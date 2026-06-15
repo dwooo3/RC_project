@@ -179,6 +179,69 @@ def cds_implied_hazard(market_spread: float, T: float, freq: int,
 
 
 # ─────────────────────────────────────────────────────────
+# ISDA CDS Standard Model (fixed coupon + upfront)
+# ─────────────────────────────────────────────────────────
+
+def isda_cds_legs(hazard: float, coupon: float, T: float, freq: int, r: float,
+                  recovery: float = 0.4) -> dict:
+    """ISDA-style flat-hazard CDS legs with accrual-on-default.
+
+    RPV01 = Σ Δt·df·Q + ½Σ Δt·df·ΔQ (premium accrued to the default date);
+    protection PV = (1-R)·∫ df dPD. Returns RPV01, protection PV and par spread.
+    """
+    dt = 1.0 / freq
+    times = [i * dt for i in range(1, int(round(T * freq)) + 1)]
+    rpv01 = 0.0
+    prev_t, prev_Q = 0.0, 1.0
+    for t in times:
+        Q = survival_prob(t, hazard)
+        df = np.exp(-r * t)
+        rpv01 += dt * df * Q + 0.5 * dt * df * (prev_Q - Q)   # coupon + accrual
+        prev_t, prev_Q = t, Q
+    # protection leg on a fine grid
+    dti = min(dt, 0.02)
+    grid = np.arange(dti, T + dti / 2, dti)
+    Qg = np.exp(-hazard * grid)
+    Qg_prev = np.exp(-hazard * (grid - dti))
+    prot = (1 - recovery) * np.sum(np.exp(-r * (grid - dti / 2)) * (Qg_prev - Qg))
+    par = prot / rpv01 if rpv01 > 0 else float("nan")
+    return dict(rpv01=rpv01, protection_pv=prot, par_spread=par,
+                coupon_pv=coupon * rpv01)
+
+
+def cds_upfront(notional: float, coupon: float, quoted_spread: float, T: float,
+                freq: int, r: float, recovery: float = 0.4) -> dict:
+    """ISDA standard model: convert a quoted (par) spread to the clean upfront on
+    a fixed-coupon contract. Upfront = (par_spread - coupon)·RPV01·notional, with
+    the flat hazard calibrated so the model par spread matches the quote."""
+    h = isda_flat_hazard(quoted_spread, T, freq, r, recovery)
+    legs = isda_cds_legs(h, coupon, T, freq, r, recovery)
+    upfront = (legs["par_spread"] - coupon) * legs["rpv01"] * notional
+    return dict(upfront=upfront, points_upfront=upfront / notional,
+                par_spread=legs["par_spread"], rpv01=legs["rpv01"],
+                hazard=h, protection_pv=legs["protection_pv"] * notional)
+
+
+def isda_flat_hazard(quoted_spread: float, T: float, freq: int, r: float,
+                     recovery: float = 0.4) -> float:
+    """Flat hazard whose ISDA par spread equals the quoted spread."""
+    def eq(h):
+        return isda_cds_legs(h, 0.0, T, freq, r, recovery)["par_spread"] - quoted_spread
+    try:
+        return brentq(eq, 1e-7, 5.0)
+    except ValueError:
+        return quoted_spread / (1 - recovery)
+
+
+def cds_spread_from_upfront(notional: float, coupon: float, points_upfront: float,
+                            T: float, freq: int, r: float, recovery: float = 0.4) -> float:
+    """Inverse: recover the quoted par spread from the clean points-upfront."""
+    def eq(s):
+        return cds_upfront(notional, coupon, s, T, freq, r, recovery)["points_upfront"] - points_upfront
+    return brentq(eq, 1e-7, 5.0)
+
+
+# ─────────────────────────────────────────────────────────
 # Default digital (binary CDS)
 # ─────────────────────────────────────────────────────────
 

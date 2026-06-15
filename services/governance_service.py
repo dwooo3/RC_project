@@ -40,6 +40,7 @@ _QUANT_REVIEW_STATUS = {
     "cva_dva": "Open",
     "structured_autocall": "Open",
     "cln_ftd": "Open",
+    "structured_basket_note": "Open",
     "var_parametric": "Partially Validated",
     "var_historical": "Partially Validated",
     "var_mc": "Partially Validated",

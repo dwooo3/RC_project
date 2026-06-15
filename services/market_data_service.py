@@ -642,6 +642,203 @@ class MarketDataService:
             return np.diff(np.log(prices))
         return prices[1:] / prices[:-1] - 1.0
 
+    # ── Basket underlyings for structured products ────────────────────
+    #
+    # Surfaces the *real* instrument universe (equities, bonds, indices) that a
+    # structured note can be written on, and resolves a chosen basket to the spot /
+    # vol / income / correlation inputs the pricing engine needs. Falls back to a
+    # small demo universe + default risk parameters when no market DB is wired, so
+    # the structured-note product prices in tests and demo mode too.
+
+    _INDEX_LABELS = {
+        "IMOEX": "MOEX Russia Index",
+        "RTSI": "RTS Index",
+        "RGBI": "OFZ Govt Bond Index",
+        "RUCBTRNS": "Corp Bond Index (TR)",
+        "RVI": "Volatility Index (RVI)",
+    }
+
+    _DEMO_UNIVERSE = [
+        {"secid": "SBER", "kind": "equity", "label": "Sberbank", "spot": 322.4, "vol": 0.32, "income": 0.10},
+        {"secid": "GAZP", "kind": "equity", "label": "Gazprom", "spot": 112.5, "vol": 0.34, "income": 0.0},
+        {"secid": "LKOH", "kind": "equity", "label": "Lukoil", "spot": 4699.5, "vol": 0.28, "income": 0.12},
+        {"secid": "GMKN", "kind": "equity", "label": "Nornickel", "spot": 110.0, "vol": 0.30, "income": 0.08},
+        {"secid": "IMOEX", "kind": "index", "label": "MOEX Russia Index", "spot": 2515.3, "vol": 0.22, "income": 0.0},
+        {"secid": "RGBI", "kind": "index", "label": "OFZ Govt Bond Index", "spot": 105.0, "vol": 0.06, "income": 0.0},
+        {"secid": "SU26238RMFS4", "kind": "bond", "label": "OFZ-PD 26238", "spot": 56.5, "vol": 0.07, "income": 0.147},
+        {"secid": "SU26254RMFS1", "kind": "bond", "label": "OFZ-PD 26254", "spot": 91.9, "vol": 0.07, "income": 0.149},
+    ]
+
+    def basket_universe(self, kind: str = "all", limit: int = 60) -> list[dict[str, Any]]:
+        """Real instruments selectable as basket underlyings, grouped by kind.
+
+        ``kind``: "equity" | "bond" | "index" | "all". Each entry is
+        ``{"secid", "kind", "label"}``. Equities are restricted to liquid names that
+        carry a price history (so vol / correlation are estimable). Without a market
+        DB a small demo universe is returned.
+        """
+        if self.market_db is None:
+            return [dict(secid=u["secid"], kind=u["kind"], label=u["label"])
+                    for u in self._DEMO_UNIVERSE if kind in ("all", u["kind"])]
+
+        out: list[dict[str, Any]] = []
+        meta = self.market_db.latest_snapshot_meta()
+        sid = meta["snapshot_id"] if meta else None
+        history = self._price_factor_ids()
+
+        if kind in ("equity", "all") and sid:
+            for row in self.market_db.get_equity_quotes(sid):
+                secid = row.get("secid")
+                if secid in history and (row.get("last") or row.get("prevprice")):
+                    out.append({"secid": secid, "kind": "equity", "label": secid})
+            out.sort(key=lambda d: d["secid"])
+        if kind in ("index", "all"):
+            for idx, label in self._INDEX_LABELS.items():
+                if idx in history:
+                    out.append({"secid": idx, "kind": "index", "label": label})
+        if kind in ("bond", "all") and sid:
+            bonds = sorted(self.market_db.get_calibration_bonds(sid),
+                           key=lambda b: -(b.get("volume") or 0))
+            for row in bonds[:limit]:
+                label = row.get("issuer") or row["secid"]
+                out.append({"secid": row["secid"], "kind": "bond", "label": str(label)})
+        return out
+
+    def _price_factor_ids(self) -> set[str]:
+        """SECIDs that have a daily price history in the local store (for vol/corr)."""
+        if self.market_db is None:
+            return set()
+        try:
+            rows = self.market_db._query(
+                "SELECT DISTINCT factor_id FROM time_series WHERE kind='price'")
+            return {r["factor_id"].replace(":price", "") for r in rows}
+        except Exception:
+            return set()
+
+    def basket_market_inputs(
+        self,
+        specs: list[dict[str, Any]],
+        T: float,
+        *,
+        default_vol: dict[str, float] | None = None,
+    ) -> tuple[list, "np.ndarray"]:
+        """Resolve chosen basket members to (constituents, correlation matrix).
+
+        ``specs`` is a list of ``{"secid", "kind", "weight"}``. Spot, annualised vol
+        and income (dividend yield for equities, carry/YTM for bonds) come from the
+        market store; the correlation matrix is estimated from overlapping log-return
+        history, with sensible defaults where history is missing. Everything degrades
+        gracefully to defaults in demo mode.
+        """
+        from instruments.structured.basket_note import Constituent
+
+        default_vol = default_vol or {"equity": 0.30, "index": 0.20, "bond": 0.07}
+        demo = {u["secid"]: u for u in self._DEMO_UNIVERSE}
+        meta = self.market_db.latest_snapshot_meta() if self.market_db else None
+        sid = meta["snapshot_id"] if meta else None
+
+        constituents = []
+        returns: dict[str, np.ndarray] = {}
+        for spec in specs:
+            secid = spec["secid"]
+            kind = spec.get("kind", "equity")
+            weight = float(spec.get("weight", 1.0))
+            spot, vol, income = self._resolve_instrument(secid, kind, sid, default_vol, demo, returns)
+            constituents.append(Constituent(name=secid, kind=kind, spot=spot,
+                                            weight=weight, vol=vol, income=income))
+
+        corr = self._estimate_correlation([c.name for c in constituents],
+                                          [c.kind for c in constituents], returns)
+        return constituents, corr
+
+    def _resolve_instrument(self, secid, kind, sid, default_vol, demo, returns):
+        """Spot / vol / income for one instrument, recording its return series."""
+        spot = None
+        income = 0.0
+        vol = default_vol.get(kind, 0.30)
+
+        series = None
+        if self.market_db is not None:
+            try:
+                rows = self.market_db.get_time_series(f"{secid}:price", "price")
+                prices = np.array([r["value"] for r in rows if r.get("value")], dtype=float)
+                if prices.size >= 2 and np.all(prices > 0):
+                    series = np.diff(np.log(prices))
+                    spot = float(prices[-1])
+                    vol = float(series.std(ddof=1) * np.sqrt(252)) or vol
+            except Exception:
+                series = None
+
+        if kind == "equity":
+            if spot is None and sid is not None:
+                try:
+                    spot = self.market_db.get_equity_spot(sid, secid)
+                except Exception:
+                    spot = None
+            income = self._dividend_yield(secid, spot)
+        elif kind == "bond":
+            b = self._bond_quote(secid, sid)
+            if b:
+                spot = spot if spot is not None else b.get("clean_price") or 100.0
+                income = float(b.get("ytm") or 0.0)
+            else:
+                spot = spot if spot is not None else 100.0
+
+        if spot is None or spot <= 0:
+            d = demo.get(secid)
+            spot = (d["spot"] if d else 100.0)
+            if d:
+                vol = d.get("vol", vol)
+                income = d.get("income", income)
+        if series is not None:
+            returns[secid] = series
+        return float(spot), float(vol), float(income)
+
+    def _bond_quote(self, secid, sid):
+        if self.market_db is None or sid is None:
+            return None
+        try:
+            return self.market_db._query_one(
+                f"SELECT clean_price, ytm FROM bond_quotes WHERE snapshot_id="
+                f"{self.market_db.ph} AND secid={self.market_db.ph}", (sid, secid))
+        except Exception:
+            return None
+
+    def _dividend_yield(self, secid, spot):
+        """Trailing 12-month dividend yield from the dividend history, else 0."""
+        if self.market_db is None or not spot:
+            return 0.0
+        try:
+            divs = self.market_db.get_dividends(secid)
+        except Exception:
+            return 0.0
+        if not divs:
+            return 0.0
+        amounts = sorted((d for d in divs if d.get("value")), key=lambda d: d.get("dt", ""))
+        recent = sum(float(d["value"]) for d in amounts[-2:])  # ~last year of payouts
+        return min(recent / spot, 0.5) if spot else 0.0
+
+    def _estimate_correlation(self, names, kinds, returns) -> "np.ndarray":
+        """Pairwise correlation from overlapping return history; defaults elsewhere."""
+        n = len(names)
+        corr = np.eye(n)
+        for i in range(n):
+            for j in range(i + 1, n):
+                ri, rj = returns.get(names[i]), returns.get(names[j])
+                rho = None
+                if ri is not None and rj is not None:
+                    m = min(ri.size, rj.size)
+                    if m >= 20:
+                        c = np.corrcoef(ri[-m:], rj[-m:])[0, 1]
+                        if np.isfinite(c):
+                            rho = float(np.clip(c, -0.95, 0.95))
+                if rho is None:
+                    same = kinds[i] == kinds[j]
+                    rho = (0.5 if same and kinds[i] != "bond"
+                           else 0.6 if same else 0.2)
+                corr[i, j] = corr[j, i] = rho
+        return corr
+
     def get_fx_rate(self, pair: str, snapshot: MarketDataSnapshot | None = None) -> float:
         snapshot = snapshot or self.demo_snapshot()
         return snapshot.fx_rates[pair]

@@ -247,6 +247,12 @@ ENGINE_PARAMS: dict[str, list[ParameterSpec]] = {
     "cds_curve": [
         P("recovery", "Recovery rate", 0.4, "model", minimum=0.0, maximum=0.99),
     ],
+    "gaussian_copula": [
+        P("rho", "Default correlation ρ", 0.3, "model", minimum=0.0, maximum=0.999),
+        P("recovery", "Recovery rate", 0.4, "model", minimum=0.0, maximum=0.99),
+        P("n_z", "Factor-grid points", 400, "numerical", dtype="int",
+          minimum=50, maximum=2000),
+    ],
 }
 
 
