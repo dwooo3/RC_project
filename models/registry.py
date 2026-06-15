@@ -464,14 +464,17 @@ MODEL_REGISTRY: dict[str, dict] = {
         "status": ModelStatus.APPROXIMATION,
         "domain": "Pricing",
         "tests": ["curve_reprice", "zcb_option_parity", "eta_zero_is_hw1f",
-                  "swaption_mc_vs_hw1f"],
+                  "swaption_mc_vs_hw1f", "analytic_vs_mc", "swaption_surface_calibration"],
         "notes": (
             "M3a: two-factor Gaussian short rate (Brigo-Mercurio). Analytic "
-            "curve-fitted bond, closed-form ZCB option, MC European swaption "
-            "with exact terminal (x,y) sampling. Validated: reprices the curve, "
-            "ZCB-option parity, η→0 collapses to one-factor Hull-White, swaption "
-            "MC matches HW1F Jamshidian (ATM z≈0). Decorrelated 2-factor "
-            "term-structure for rate exotics. No swaption-cube calibration yet."
+            "curve-fitted bond, closed-form ZCB option. M-calib: closed-form "
+            "European swaption (BM 4.31, 1D integral with exercise boundary) and "
+            "a forward-measure MC (exact terminal (x,y) sampling). Validated: "
+            "curve reprice, ZCB parity, η→0 = one-factor Hull-White, analytic == "
+            "MC within noise across expiries/strikes, swaption-surface "
+            "calibration round-trips (rmse~1e-12, recovers a/σ/b/η/ρ). NOTE the "
+            "M3a MC omitted the forward-measure drift means (μx,μy) — small at "
+            "short expiries, fixed in M-calib (simulate_factors fwd_measure)."
         ),
     },
     "lmm": {

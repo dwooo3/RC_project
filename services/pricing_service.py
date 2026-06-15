@@ -915,19 +915,37 @@ class PricingService:
     def price_g2pp_swaption(self, notional, K, T_option, T_swap, freq=2,
                             a=0.1, sigma=0.01, b=0.3, eta=0.012, rho=-0.7,
                             opt="payer", n_sims=50_000, curve=None,
-                            snapshot=None, curve_id="flat_rub") -> dict:
-        """European swaption under G2++ (two-factor Gaussian), MC (M3a)."""
+                            snapshot=None, curve_id="flat_rub", method="analytic") -> dict:
+        """European swaption under G2++ (two-factor Gaussian). method=analytic
+        (Brigo-Mercurio closed form, M-calib) | mc (forward-measure, M3a)."""
         from models.g2pp import g2pp_swaption
         curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
         return self._priced(
             model_id="g2pp", calculation_type="g2pp_swaption_pricing",
             engine=lambda: g2pp_swaption(curve, notional, K, T_option, T_swap,
                                          int(freq), a, sigma, b, eta, rho, opt,
-                                         int(n_sims)),
+                                         int(n_sims), method=method),
             inputs={"notional": notional, "K": K, "T_option": T_option,
                     "T_swap": T_swap, "freq": int(freq), "a": a, "sigma": sigma,
-                    "b": b, "eta": eta, "rho": rho, "opt": opt, "curve_id": curve_id},
+                    "b": b, "eta": eta, "rho": rho, "opt": opt, "curve_id": curve_id,
+                    "method": method},
             snapshot=snapshot, user_action="Price G2++ swaption")
+
+    def calibrate_rate_model(self, model_id, instruments, freq=2, curve=None,
+                             cube=None, snapshot=None, curve_id="flat_rub") -> dict:
+        """Calibrate a rate model (g2pp/lmm/bk/cheyette/hw) to a swaption cube
+        (M-calib). Returns the fitted params + per-instrument repricing table."""
+        from models.rate_calibration import calibrate_rate_model
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        if cube is None:
+            return {"errors": ["no swaption cube supplied"], "model_id": model_id}
+        try:
+            res = calibrate_rate_model(model_id, curve, cube, list(instruments),
+                                       int(freq), 1.0)
+            res.update(errors=[], model_id=model_id)
+            return res
+        except Exception as exc:                       # noqa: BLE001
+            return {"errors": [str(exc)], "model_id": model_id}
 
     def price_lmm_swaption(self, notional, K, T_option, T_swap, freq=2,
                            vol=0.20, corr_beta=0.1, opt="payer", n_sims=50_000,
