@@ -62,7 +62,10 @@ class PricingWorkspace(QWidget):
             products = products_by_category(category)
             self._by_category[category] = products
             for product in products:
-                screen = PricingDetailScreen(product, self.pricing)
+                if product.custom_screen is not None:
+                    screen = product.custom_screen(self.pricing)
+                else:
+                    screen = PricingDetailScreen(product, self.pricing)
                 self._screens[(category, product.label)] = screen
                 self._stack.addWidget(screen)
         root.addWidget(self._stack, 1)

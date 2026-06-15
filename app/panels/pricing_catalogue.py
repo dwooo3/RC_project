@@ -35,6 +35,7 @@ class Product:
     to_position: Callable    # (values) -> (instrument:str, params:dict, description:str)
     curve_roles: list[str] = None   # which curves the UI may select: ["disc"] / ["disc","proj"]
     instrument: str = None   # M0: ENGINES key -> engine dropdown + advanced model/numerical params
+    custom_screen: Callable = None   # (PricingService) -> QWidget; bespoke editor instead of the generic detail screen
 
     def __post_init__(self):
         if self.curve_roles is None:
@@ -431,6 +432,28 @@ PRODUCTS: list[Product] = [
                                         coupon_rate=v["coupon_rate"], n_sims=int(v["n_sims"]),
                                         steps=100), "Autocall / Phoenix")),
 
+    Product("basket_note", "Basket Note (real underlyings)", "Structured Notes",
+            [F("basket", "Basket  (SECID:weight, …)", "SBER:0.4, GAZP:0.3, LKOH:0.3", wide=True),
+             F("r", "Rate", 0.16), F("T", "Maturity (y)", 3),
+             F("principal_protection", "Principal protect", 1.0),
+             F("guaranteed_coupon", "Guaranteed cpn", 0.0), F("coupon_freq", "Cpn freq/y", 1),
+             F("participation", "Participation", 1.0), F("cap", "Upside cap (0=none)", 0.0),
+             F("basket_type", "Basket type", "average", ["average", "worst_of", "best_of"]),
+             F("face", "Notional", 1000), F("n_sims", "Sims", 20000)],
+            lambda s, v: s.price_basket_note(
+                _parse_basket(v["basket"]), v["r"], v["T"],
+                principal_protection=v["principal_protection"],
+                guaranteed_coupon=v["guaranteed_coupon"], coupon_freq=int(v["coupon_freq"]),
+                participation=v["participation"], cap=(v["cap"] or None),
+                basket_type=v["basket_type"], face=v["face"], n_sims=int(v["n_sims"])),
+            lambda v: ("basket_note", dict(
+                specs=_parse_basket(v["basket"]), r=v["r"], T=v["T"],
+                principal_protection=v["principal_protection"],
+                guaranteed_coupon=v["guaranteed_coupon"], coupon_freq=int(v["coupon_freq"]),
+                participation=v["participation"], cap=(v["cap"] or None),
+                basket_type=v["basket_type"], face=v["face"]), "Basket Note"),
+            custom_screen=lambda pricing: _basket_builder(pricing)),
+
     Product("ndf", "NDF (Non-Deliverable Fwd)", "FX",
             [F("S", "Spot", 90), F("K", "NDF rate", 92), F("T", "Maturity (y)", 0.5),
              F("r_d", "Dom rate", 0.16), F("r_f", "For rate", 0.05),
@@ -568,6 +591,48 @@ def _parse_dates(text) -> list:
     if isinstance(text, (list, tuple)):
         return [float(t) for t in text]
     return [float(x) for x in str(text).replace(";", ",").split(",") if x.strip()]
+
+
+_INDEX_IDS = {"IMOEX", "RTSI", "RGBI", "RUCBTRNS", "RVI", "MOEX"}
+
+
+def _infer_kind(secid: str) -> str:
+    """Best-effort instrument kind from a MOEX SECID (OFZ=SU…, corp=RU000…)."""
+    s = secid.upper()
+    if s in _INDEX_IDS:
+        return "index"
+    if s.startswith("SU") or s.startswith("RU000"):
+        return "bond"
+    return "equity"
+
+
+def _parse_basket(text) -> list:
+    """Parse 'SBER:0.4, GAZP:0.3, SU26238RMFS4:0.3' -> [{secid, kind, weight}].
+
+    Each token is ``SECID[:weight[:kind]]``; weight defaults to 1, kind is inferred
+    from the SECID when omitted. Accepts an already-parsed list of dicts unchanged.
+    """
+    if isinstance(text, (list, tuple)):
+        return [dict(s) for s in text]
+    specs = []
+    for token in str(text).replace(";", ",").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        parts = [p.strip() for p in token.split(":")]
+        secid = parts[0]
+        if not secid:
+            continue
+        weight = float(parts[1]) if len(parts) > 1 and parts[1] else 1.0
+        kind = parts[2] if len(parts) > 2 and parts[2] else _infer_kind(secid)
+        specs.append({"secid": secid, "kind": kind, "weight": weight})
+    return specs
+
+
+def _basket_builder(pricing):
+    """Lazy factory for the bespoke basket-note editor (keeps this module Qt-free)."""
+    from app.panels.basket_builder_panel import BasketBuilderPanel
+    return BasketBuilderPanel(pricing)
 
 
 
