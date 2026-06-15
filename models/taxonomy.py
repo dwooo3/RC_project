@@ -153,6 +153,7 @@ CLASSIFICATION: dict[str, tuple] = {
     "evt_var": (_A.RISK, _MF.STATISTICAL, _M.CLOSED_FORM),
     "var_full_reprice": (_A.RISK, _MF.STATISTICAL, _M.SIMULATION),
     "cva_exposure_risk": (_A.RISK, _MF.REDUCED_FORM, _M.MONTE_CARLO),
+    "xva_suite": (_A.RISK, _MF.REDUCED_FORM, _M.MONTE_CARLO),   # M4: full XVA
     "portfolio_aggregation": (_A.PORTFOLIO, _MF.ANALYTIC, _M.CLOSED_FORM),
 }
 

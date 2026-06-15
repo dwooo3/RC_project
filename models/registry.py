@@ -803,6 +803,26 @@ MODEL_REGISTRY: dict[str, dict] = {
             "No netting sets, no collateral/CSA, no wrong-way risk."
         ),
     },
+    "xva_suite": {
+        "name": "XVA suite (netting / CSA / CVA-DVA-FVA-MVA-KVA)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Risk",
+        "tests": ["netting_benefit", "collateral_reduces_exposure",
+                  "zero_spread_zero_xva", "xva_linear_in_spread",
+                  "single_trade_matches_exposure_profile"],
+        "notes": (
+            "M4: path-wise Hull-White MtM cube for an IRS netting set (shared "
+            "rate path -> correct netting), two-way CSA variation margin "
+            "(threshold/MTA/margin-period-of-risk with time-interpolated lag), "
+            "dynamic initial margin (q99 of the MPoR value change). Suite: CVA/"
+            "DVA (vs Phase-1 hazard), FVA (FCA-FBA), MVA (IM funding), KVA "
+            "(CCR capital = RW·8%·α·EffectiveEPE). Validated: offsetting trades "
+            "net to ~0, zero threshold+MPoR collateralises to ~0, each "
+            "adjustment is 0 at zero spread and linear in it, single-trade EPE "
+            "matches risk/exposure.py. Single rate factor (no FX/equity in the "
+            "netting set yet), no wrong-way risk, IM is a model proxy not SIMM."
+        ),
+    },
     "evt_var": {
         "name": "EVT VaR (GPD tail)",
         "status": ModelStatus.APPROXIMATION,

@@ -235,6 +235,51 @@ class RiskService:
                                       calculation_type="cva_exposure",
                                       inputs=inputs)
 
+    def xva_netting_set(
+        self,
+        trades: list,
+        cpty_hazard_id: str = "hazard_1t_demo",
+        own_hazard_id: str | None = None,
+        curve_id: str = "ofz_demo",
+        kappa: float = 0.1,
+        sigma_r: float = 0.012,
+        funding_spread: float = 0.0,
+        cost_of_capital: float = 0.0,
+        risk_weight: float = 1.0,
+        csa: dict | None = None,
+        n_sims: int = 4000,
+        n_grid: int = 24,
+        snapshot: MarketDataSnapshot | None = None,
+    ) -> dict:
+        """Full XVA on an IRS netting set (M4): CVA/DVA/FVA/MVA/KVA on a shared
+        Hull-White MtM cube, with optional two-way CSA collateral."""
+        from risk.xva import simulate_irs_portfolio, xva_suite
+
+        model_id = "xva_suite"
+        inputs = {"n_trades": len(trades), "cpty_hazard_id": cpty_hazard_id,
+                  "own_hazard_id": own_hazard_id, "curve_id": curve_id,
+                  "funding_spread": funding_spread, "cost_of_capital": cost_of_capital,
+                  "csa": csa, "n_sims": n_sims, "n_grid": n_grid}
+        try:
+            self._enforce_model(model_id)
+            snapshot = snapshot or self.market_data.demo_snapshot()
+            curve = self.market_data.get_curve(curve_id, snapshot)
+            cpty = self.market_data.get_hazard_curve(cpty_hazard_id, snapshot)
+            own = (self.market_data.get_hazard_curve(own_hazard_id, snapshot)
+                   if own_hazard_id else None)
+            sim = simulate_irs_portfolio(list(trades), curve, kappa, sigma_r,
+                                         n_sims, n_grid)
+            res = xva_suite(sim, curve, cpty, own, funding_spread=funding_spread,
+                            cost_of_capital=cost_of_capital, risk_weight=risk_weight,
+                            csa=csa)
+            return self._result(
+                value=res["total_xva"], model_id=model_id, raw=res, snapshot=snapshot,
+                calculation_type="xva_suite", inputs=inputs,
+                user_action="XVA on IRS netting set")
+        except Exception as exc:
+            return self._error_result(model_id=model_id, error=exc, snapshot=snapshot,
+                                      calculation_type="xva_suite", inputs=inputs)
+
     def var(
         self,
         returns: np.ndarray,
