@@ -962,6 +962,60 @@ class PricingService:
                     "vol": vol, "opt": opt, "curve_id": curve_id},
             snapshot=snapshot, user_action="Price LMM cap/floor")
 
+    def price_bk_swaption(self, notional, K, T_option, T_swap, freq=2, a=0.1,
+                          sigma=0.20, opt="payer", steps_per_year=24, curve=None,
+                          snapshot=None, curve_id="flat_rub") -> dict:
+        """European swaption under Black-Karasinski (lognormal short rate), tree (M3c)."""
+        from models.black_karasinski import bk_swaption
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="bk", calculation_type="bk_swaption_pricing",
+            engine=lambda: bk_swaption(curve, notional, K, T_option, T_swap,
+                                       int(freq), a, sigma, opt, int(steps_per_year)),
+            inputs={"notional": notional, "K": K, "T_option": T_option,
+                    "T_swap": T_swap, "freq": int(freq), "a": a, "sigma": sigma,
+                    "opt": opt, "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price Black-Karasinski swaption")
+
+    def price_cheyette_swaption(self, notional, K, T_option, T_swap, freq=2, a=0.1,
+                                sigma=0.01, skew=0.0, opt="payer", n_sims=50_000,
+                                steps=100, curve=None, snapshot=None,
+                                curve_id="flat_rub") -> dict:
+        """European swaption under Cheyette (quasi-Gaussian HJM), MC (M3c)."""
+        from models.cheyette import cheyette_swaption
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="cheyette", calculation_type="cheyette_swaption_pricing",
+            engine=lambda: cheyette_swaption(curve, notional, K, T_option, T_swap,
+                                             int(freq), a, sigma, skew, opt,
+                                             int(n_sims), int(steps)),
+            inputs={"notional": notional, "K": K, "T_option": T_option,
+                    "T_swap": T_swap, "freq": int(freq), "a": a, "sigma": sigma,
+                    "skew": skew, "opt": opt, "curve_id": curve_id},
+            snapshot=snapshot, user_action="Price Cheyette swaption")
+
+    def build_xccy_curve(self, fx_spot, tenors, basis_bps, freq=4,
+                         dom_curve=None, for_curve=None, dom_curve_id="flat_rub",
+                         for_curve_id="flat_usd", snapshot=None) -> dict:
+        """Bootstrap a cross-currency basis discount curve and return its zero
+        rates + CIP-implied FX forwards (M3c)."""
+        from curves.xccy_curve import bootstrap_xccy_curve, implied_fx_forwards
+        dom_curve, snapshot = self._resolve_curve(dom_curve, snapshot, dom_curve_id)
+        if for_curve is None:
+            from curves.yield_curve import YieldCurve
+            for_curve = YieldCurve.flat(0.04, label=for_curve_id)
+        try:
+            xc = bootstrap_xccy_curve(dom_curve, for_curve, fx_spot, list(tenors),
+                                      list(basis_bps), int(freq))
+            fwds = implied_fx_forwards(dom_curve, xc, fx_spot, list(tenors))
+            return {"errors": [], "model_id": "xccy_curve",
+                    "tenors": list(tenors),
+                    "discounts": [xc.discount(T) for T in tenors],
+                    "zero_rates": [xc.rate(T) for T in tenors],
+                    "fx_forwards": fwds}
+        except Exception as exc:                       # noqa: BLE001
+            return {"errors": [str(exc)], "model_id": "xccy_curve"}
+
     # ── Phase 3: numerical engines ────────────────────────────────────
     def price_american_option(self, S, K, T, r, sigma, q=0.0, opt="put",
                               model="pde", snapshot=None) -> dict:

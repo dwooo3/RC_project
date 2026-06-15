@@ -110,7 +110,8 @@ def _vanilla_engine(s, v):
 
 
 def _swaption_engine(s, v):
-    """Engine-aware European swaption: Black-76 (default), G2++ (M3a) or LMM (M3b)."""
+    """Engine-aware European swaption: Black-76 (default), G2++ (M3a), LMM (M3b),
+    Black-Karasinski or Cheyette (M3c)."""
     eng = v.get("__engine", "swaption")
     N, K, To, Ts = v["notional"], v["K"], v["T_option"], v["T_swap"]
     freq, opt = int(v["freq"]), v["opt"]
@@ -124,6 +125,15 @@ def _swaption_engine(s, v):
                                     v.get("corr_beta", 0.1), opt,
                                     int(v.get("n_sims", 50000)), int(v.get("steps", 24)),
                                     curve=_disc(s, v))
+    if eng == "bk":
+        return s.price_bk_swaption(N, K, To, Ts, freq, v.get("a", 0.1),
+                                   v.get("sigma", 0.20), opt,
+                                   int(v.get("steps_per_year", 24)), curve=_disc(s, v))
+    if eng == "cheyette":
+        return s.price_cheyette_swaption(N, K, To, Ts, freq, v.get("a", 0.1),
+                                         v.get("sigma", 0.01), v.get("skew", 0.0), opt,
+                                         int(v.get("n_sims", 50000)),
+                                         int(v.get("steps", 100)), curve=_disc(s, v))
     return s.price_swaption(N, K, To, Ts, freq, v["sigma"], opt, curve=_disc(s, v))
 
 

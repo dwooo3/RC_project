@@ -204,6 +204,21 @@ ENGINE_PARAMS: dict[str, list[ParameterSpec]] = {
         P("steps", "Time steps", 24, "numerical", dtype="int",
           minimum=4, maximum=500),
     ],
+    "bk": [
+        P("a", "Mean reversion a", 0.1, "model", minimum=1e-3, maximum=3.0),
+        P("sigma", "Log-rate vol σ", 0.20, "model", minimum=1e-3, maximum=2.0),
+        P("steps_per_year", "Tree steps/year", 24, "numerical", dtype="int",
+          minimum=4, maximum=200),
+    ],
+    "cheyette": [
+        P("a", "Mean reversion a", 0.1, "model", minimum=1e-3, maximum=3.0),
+        P("sigma", "Vol σ", 0.01, "model", minimum=1e-4, maximum=0.5),
+        P("skew", "Local-vol skew", 0.0, "model", minimum=-10.0, maximum=10.0,
+          help="σ_r = σ(1+skew·x); 0 = Hull-White"),
+        P("n_sims", "MC paths", 50_000, "numerical", dtype="int",
+          minimum=5000, maximum=500_000),
+        P("steps", "Time steps", 100, "numerical", dtype="int", minimum=20, maximum=1000),
+    ],
     "cds_curve": [
         P("recovery", "Recovery rate", 0.4, "model", minimum=0.0, maximum=0.99),
     ],

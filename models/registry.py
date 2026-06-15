@@ -493,6 +493,56 @@ MODEL_REGISTRY: dict[str, dict] = {
             "calibration yet (flat vol input); time-dependent vol deferred."
         ),
     },
+    "bk": {
+        "name": "Black-Karasinski (lognormal short rate)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["curve_reprice", "positive_rates", "payer_receiver_parity",
+                  "sigma_zero_is_intrinsic", "monotone_in_vol"],
+        "notes": (
+            "M3c: lognormal short rate r=exp(x), x mean-reverting Gaussian on a "
+            "clamped trinomial lattice; time shift fitted per step by root search "
+            "(transcendental) so the tree reprices the curve. Rates strictly "
+            "positive. European swaption by backward induction (fixed-coupon "
+            "bond rollback). Validated: curve reprice 1e-16, positivity, "
+            "payer/receiver parity (σ-free), σ→0 = discounted intrinsic, "
+            "monotone in vol. No cap/swaption-surface calibration yet."
+        ),
+    },
+    "cheyette": {
+        "name": "Cheyette (quasi-Gaussian HJM)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["bond_reconstruction", "const_vol_is_hull_white",
+                  "payer_receiver_parity", "monotone_skew"],
+        "notes": (
+            "M3c: one-factor Markovian (quasi-Gaussian) HJM in state (x,y) with "
+            "bond reconstruction off the initial curve. Constant local vol "
+            "collapses exactly to one-factor Hull-White; a linear local vol "
+            "σ_r=σ(1+skew·x) adds an implied-vol skew the Gaussian models cannot. "
+            "MC under the risk-neutral measure (MMA from ∫x dt). Validated: bond "
+            "reconstruction at t=0, const-vol swaption MC == HW Jamshidian (z≈0), "
+            "payer/receiver parity, monotone skew in the swaption smile. "
+            "Skew calibration deferred."
+        ),
+    },
+    "xccy_curve": {
+        "name": "Cross-currency basis curve (bootstrap)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["par_reprice", "zero_basis_is_foreign", "basis_sign",
+                  "cip_forwards_monotone"],
+        "notes": (
+            "M3c: bootstraps the foreign basis-adjusted discount curve P_x from "
+            "par constant-notional XCCY basis swaps (foreign-OIS-float + basis vs "
+            "domestic-OIS-float, principals exchanged). Each tenor's zero rate "
+            "solved so the par swap prices to zero; intermediate coupons "
+            "interpolated. Validated: input swaps reprice to par (1e-15), zero "
+            "basis ⇒ P_x ≡ P_f, basis sign moves P_x correctly, CIP forwards "
+            "F=S0·P_x/P_dom monotone. Single-curve float projection; turn-of-year "
+            "and tenor-basis effects not modelled."
+        ),
+    },
     "cms_swap": {
         "name": "CMS Swap (convexity-adjusted)",
         "status": ModelStatus.APPROXIMATION,
