@@ -1103,7 +1103,17 @@ class PricingService:
     # ── Phase 3: numerical engines ────────────────────────────────────
     def price_american_option(self, S, K, T, r, sigma, q=0.0, opt="put",
                               model="pde", snapshot=None) -> dict:
-        """American option. model: pde (Crank-Nicolson) | binomial | binomial_lr | trinomial | lsm."""
+        """American option. model: pde | binomial | binomial_lr | trinomial | lsm
+        | baw (Barone-Adesi-Whaley) | bjerksund_stensland (M6 analytic approx)."""
+        if model in ("baw", "bjerksund_stensland"):
+            from models.american_approx import baw, bjerksund_stensland
+            fn = baw if model == "baw" else bjerksund_stensland
+            return self._priced(
+                model_id=model, calculation_type="american_option_pricing",
+                engine=lambda: {"price": fn(S, K, T, r, sigma, q, opt)},
+                inputs={"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q,
+                        "opt": opt, "model": model},
+                snapshot=snapshot, user_action="Price American option (analytic)")
         from instruments.vanilla import american
         model_id = {"pde": "pde_cn", "binomial": "binomial_crr",
                     "binomial_lr": "binomial_lr", "trinomial": "trinomial",
@@ -1114,6 +1124,40 @@ class PricingService:
             inputs={"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q,
                     "opt": opt, "model": model},
             snapshot=snapshot, user_action="Price American option")
+
+    def price_qmc_option(self, S, K, T, r, sigma, q=0.0, opt="call",
+                         kind="european", n=16384, m=12, snapshot=None) -> dict:
+        """European or geometric-Asian option via Sobol QMC (M6)."""
+        from models import qmc as Q
+        if kind == "geometric_asian":
+            engine = lambda: {"price": Q.geometric_asian_qmc(S, K, T, r, sigma, q, opt, m, int(n))}
+        else:
+            engine = lambda: {"price": Q.qmc_european(S, K, T, r, sigma, q, opt, int(n))}
+        return self._priced(
+            model_id="qmc", calculation_type="qmc_option_pricing", engine=engine,
+            inputs={"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q,
+                    "opt": opt, "kind": kind, "n": int(n)},
+            snapshot=snapshot, user_action="Price option (QMC)")
+
+    def price_two_asset_option(self, S1, S2, T, r, q1, q2, sigma1, sigma2, rho,
+                               kind="exchange", strike=0.0, N1=80, N2=80, Nt=100,
+                               snapshot=None) -> dict:
+        """Two-asset European option via Douglas ADI (M6). kind: exchange | spread."""
+        import numpy as _np
+        from models.adi import two_asset_adi
+        K = strike
+        payoffs = {"exchange": lambda a, b: _np.maximum(a - b, 0.0),
+                   "spread": lambda a, b: _np.maximum(a - b - K, 0.0)}
+        payoff = payoffs.get(kind, payoffs["exchange"])
+        return self._priced(
+            model_id="adi", calculation_type="two_asset_option_pricing",
+            engine=lambda: {"price": two_asset_adi(payoff, S1, S2, T, r, q1, q2,
+                                                   sigma1, sigma2, rho,
+                                                   int(N1), int(N2), int(Nt))},
+            inputs={"S1": S1, "S2": S2, "T": T, "r": r, "q1": q1, "q2": q2,
+                    "sigma1": sigma1, "sigma2": sigma2, "rho": rho, "kind": kind,
+                    "strike": strike},
+            snapshot=snapshot, user_action="Price two-asset option (ADI)")
 
     def price_barrier_option_pde(self, S, K, H, T, r, sigma, q=0.0, opt="call",
                                  barrier_type="down-out", rebate=0.0,

@@ -91,6 +91,11 @@ CLASSIFICATION: dict[str, tuple] = {
     "cgmy": (_A.EQUITY, _MF.LEVY, _M.FOURIER),
     "local_vol_mc": (_A.EQUITY, _MF.LOCAL_VOL, _M.MONTE_CARLO),
     "rough_bergomi": (_A.EQUITY, _MF.STOCH_VOL, _M.MONTE_CARLO),
+    # ── Numerical methods (M6) ────────────────────────────
+    "baw": (_A.EQUITY, _MF.ANALYTIC, _M.CLOSED_FORM),        # American approx
+    "bjerksund_stensland": (_A.EQUITY, _MF.ANALYTIC, _M.CLOSED_FORM),
+    "qmc": (_A.EQUITY, _MF.ANALYTIC, _M.MONTE_CARLO),        # Sobol quasi-MC
+    "adi": (_A.HYBRID, _MF.ANALYTIC, _M.PDE),                # 2-asset ADI PDE
     "garch": (_A.EQUITY, _MF.STATISTICAL, _M.CLOSED_FORM),
     # ── Short rate ────────────────────────────────────────
     "short_rate": (_A.RATES, _MF.SHORT_RATE, _M.LATTICE),
@@ -205,8 +210,10 @@ ENGINES: dict[str, list[str]] = {
     "european_option": ["black_scholes", "binomial_crr", "binomial_lr",
                         "trinomial", "pde_cn", "mc_gbm", "heston_cf",
                         "merton_jump", "bates", "rough_bergomi",
-                        "kou", "variance_gamma", "nig", "cgmy"],
-    "american_option": ["pde_cn", "binomial_crr", "binomial_lr", "trinomial", "mc_lsm"],
+                        "kou", "variance_gamma", "nig", "cgmy", "qmc"],
+    "american_option": ["pde_cn", "binomial_crr", "binomial_lr", "trinomial",
+                        "mc_lsm", "baw", "bjerksund_stensland"],
+    "multi_asset_option": ["adi"],
     "barrier_option": ["barrier", "pde_cn"],
     "asian_option": ["asian"],
     "digital_option": ["digital"],

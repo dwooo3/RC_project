@@ -235,6 +235,15 @@ ENGINE_PARAMS: dict[str, list[ParameterSpec]] = {
         P("sigma_delta", "CY vol σ_δ", 0.30, "model", minimum=1e-3, maximum=3.0),
         P("rho", "Spot-CY correlation ρ", 0.3, "model", minimum=-0.999, maximum=0.999),
     ],
+    "qmc": [
+        P("n", "Sobol paths", 16384, "numerical", dtype="int",
+          minimum=256, maximum=2**20),
+    ],
+    "adi": [
+        P("N1", "S1 grid steps", 80, "numerical", dtype="int", minimum=20, maximum=400),
+        P("N2", "S2 grid steps", 80, "numerical", dtype="int", minimum=20, maximum=400),
+        P("Nt", "Time steps", 100, "numerical", dtype="int", minimum=20, maximum=1000),
+    ],
     "cds_curve": [
         P("recovery", "Recovery rate", 0.4, "model", minimum=0.0, maximum=0.99),
     ],

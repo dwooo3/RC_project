@@ -591,6 +591,59 @@ MODEL_REGISTRY: dict[str, dict] = {
             "closed-form futures. Convenience-yield/curve calibration deferred."
         ),
     },
+    "baw": {
+        "name": "Barone-Adesi-Whaley (American approx)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["geq_european", "no_dividend_call_is_european", "matches_binomial"],
+        "notes": (
+            "M6: quadratic American approximation — European value plus an "
+            "early-exercise premium A·(S/S*)^q from the critical price S* (solved "
+            "by Brent). Validated: ≥ European, a no-dividend call == European, "
+            "within ~0.2% of the binomial American reference. Closed-form, no "
+            "lattice/PDE solve."
+        ),
+    },
+    "bjerksund_stensland": {
+        "name": "Bjerksund-Stensland 1993 (American approx)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["geq_european", "no_dividend_call_is_european", "matches_binomial"],
+        "notes": (
+            "M6: flat-exercise-boundary American approximation (φ/ψ functions); "
+            "put via the McDonald-Schroder put-call transformation. Validated: ≥ "
+            "European, no-dividend call == European, within ~0.5% of the binomial "
+            "American reference."
+        ),
+    },
+    "qmc": {
+        "name": "Quasi-Monte-Carlo (Sobol)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["european_matches_bs", "geometric_asian_matches_cf",
+                  "faster_convergence_than_pseudo"],
+        "notes": (
+            "M6: scrambled Sobol low-discrepancy QMC. Validated: 1-D European == "
+            "Black-Scholes, multi-date geometric Asian == log-normal closed form, "
+            "RMSE 1-2 orders of magnitude below pseudo-MC at equal path count. "
+            "Randomised (scrambled) for an unbiased estimator + error bar."
+        ),
+    },
+    "adi": {
+        "name": "ADI 2-D PDE (two-asset, Douglas)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["exchange_matches_margrabe", "spread_equals_exchange_at_zero"],
+        "notes": (
+            "M6: Douglas ADI for the two-asset Black-Scholes PDE in log-space — "
+            "explicit predictor carrying the cross-derivative ρσ1σ2·U_xy, then two "
+            "implicit tridiagonal sweeps. Validated: exchange option == Margrabe "
+            "within ~0.07% across moneyness and ρ∈{-0.5,0,0.5}. Prices general "
+            "two-asset payoffs (spread/basket/best-of). Heston (S,v) ADI deferred "
+            "(degenerate v=0 boundary needs Hout-Foulon; Heston CF is the "
+            "production stoch-vol pricer)."
+        ),
+    },
     "cms_swap": {
         "name": "CMS Swap (convexity-adjusted)",
         "status": ModelStatus.APPROXIMATION,
