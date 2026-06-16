@@ -267,3 +267,44 @@ multi-curve/multi-currency, гибридный фреймворк ([Numerix](htt
 ставочные продукты, риск-семейство, кривые. Это даёт широкое покрытие
 «ванильно-экзотического» спектра; пробелы — в продвинутых стох-моделях
 ставок/вола и XVA-полноте.
+
+---
+
+## ОБНОВЛЕНИЕ 2026-06-16 — мастер-план M0–M8 выполнен
+
+Таблицы выше отражают состояние на 2026-06-13. С тех пор реализованы фазы
+M0–M8 (93 модели в реестре, ~761 тест). Изменения статусов:
+
+**❌/🟡 → ✅ (реализовано, identity-first валидировано):**
+- Численные: COS-метод (Fang-Oosterlee), Sobol-QMC, Barone-Adesi-Whaley,
+  Bjerksund-Stensland, ADI 2D (двухактивный, Margrabe-валидирован).
+- Lévy/скачки: Kou, Variance Gamma, NIG (CGMY — Prototype, parity ~1e-4).
+- Стох-вол: rough Bergomi.
+- Короткие ставки: Hull-White 2-фактор / G2++ (аналитич. свопцион + MC),
+  Black-Karasinski (дерево, положительные ставки).
+- Рыночные модели ставок: LMM/BGM (caplet/swaption), Cheyette (quasi-Gaussian
+  HJM, skew), cross-currency basis bootstrap.
+- Кредит: ISDA standard CDS, structural Merton/Black-Cox/KMV, Gaussian copula
+  (kth-to-default, CDO-транши, рекурсия + MC).
+- XVA: FVA/MVA/KVA, netting sets, двустороннее CSA-collateral, AMC-свопцион
+  (Longstaff-Schwartz).
+- Commodity: Gibson-Schwartz, Schwartz-Smith (эквивалентность к маш. точности).
+- Конвертируемые: AFV (Andersen-Buffum, equity-linked default).
+- Ипотека: MBS pass-through + PSA/SMM prepayment + OAS.
+- Регуляторика: FRTB-SA (SBM delta).
+- Калибровки (M-calib): G2++/LMM/BK/Cheyette/HW на swaption surface, LMM caplet
+  strip (точно).
+
+**Осталось частично (Prototype / partial):** CGMY (parity ~1e-4); ADI только
+2-актив (Heston-ADI отложен — v=0 Hout-Foulon); FRTB только delta
+(vega/curvature/DRC); LMM без time-dependent vol; Cheyette skew-калибровка;
+commodity без калибровки на futures strip; gaussian_copula без base-correlation;
+AMC callable-exposure wiring; cva_dva/cln_ftd перекрыты M4/M7 (депрецировать);
+frn (нет par-reset); callable_bond (плоская вола).
+
+**Осталось ❌ (не начато):** displaced diffusion / CEV / discrete-div Merton;
+Jarrow-Rudd/Tian; Carr-Madan FFT; ZABR/no-arb SABR; SLV; rough Heston; нормальные
+смеси; Vanna-Volga; SABR-LMM / Swap Market Model / Markov-functional / полный
+HJM; Jarrow-Yildirim инфляция; t-copula/Clayton/Marshall-Olkin; wrong-way risk;
+commodity seasonality/Pilipovic; TARN/accumulator; ABS; Cornish-Fisher / Copula
+VaR; FRTB-IMA.
