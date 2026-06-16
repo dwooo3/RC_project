@@ -847,6 +847,28 @@ class MarketDataService:
         snapshot = snapshot or self.demo_snapshot()
         return snapshot.vol_surfaces[surface_id]
 
+    def get_commodity_curve(self, asset: str,
+                            snapshot: MarketDataSnapshot | None = None) -> dict:
+        """Real commodity futures strip {time_to_expiry_years: settle} from the
+        market store (commodity_quotes). Empty if no DB / no quotes. Feeds the
+        Schwartz-Smith / Gibson-Schwartz models on live MOEX-FORTS futures."""
+        snapshot = snapshot or self.best_available_snapshot()
+        if self.market_db is None:
+            return {}
+        from datetime import date as _date
+        rows = self.market_db.get_commodity_quotes(snapshot.snapshot_id, asset)
+        val = snapshot.valuation_date
+        out = {}
+        for q in rows:
+            try:
+                exp = _date.fromisoformat(str(q["expiry"]))
+                T = (exp - val).days / 365.0
+                if T > 0 and q.get("settle"):
+                    out[round(T, 6)] = float(q["settle"])
+            except (ValueError, KeyError, TypeError):
+                continue
+        return dict(sorted(out.items()))
+
     def get_credit_curve(self, curve_id: str, snapshot: MarketDataSnapshot | None = None) -> Any:
         snapshot = snapshot or self.demo_snapshot()
         return snapshot.credit_curves[curve_id]

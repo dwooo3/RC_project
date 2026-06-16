@@ -1362,6 +1362,27 @@ class PricingService:
                     "theta": theta, "sigma": sigma, "rho": rho, "opt": opt},
             snapshot=snapshot, user_action="Price Heston option (ADI)")
 
+    def calibrate_commodity_from_market(self, asset, vol_proxy=0.25, r=0.05) -> dict:
+        """Calibrate Schwartz-Smith to the LIVE MOEX-FORTS futures strip for
+        `asset` (BR/GOLD/NG/...). Real-data path: pulls commodity_quotes via the
+        market service. Commodity option vols are a documented data gap, so the
+        vol term structure is fitted to a flat proxy (see
+        MODEL_MARKET_DATA_REQUIREMENTS.md)."""
+        from app.runtime import market_service, active_snapshot
+        ms = market_service()
+        curve = ms.get_commodity_curve(asset, active_snapshot(ms))
+        if len(curve) < 3:
+            return {"errors": [f"no live futures strip for {asset!r}"], "model_id": "schwartz_smith"}
+        tenors = list(curve.keys())
+        futures = list(curve.values())
+        vt = tenors
+        vm = [vol_proxy] * len(tenors)
+        res = self.calibrate_commodity("schwartz_smith", tenors, futures, vt, vm,
+                                       r=r, spot=futures[0])
+        res["asset"] = asset
+        res["n_futures"] = len(curve)
+        return res
+
     def calibrate_commodity(self, model, tenors, futures, vol_tenors, vol_mkt,
                             r=0.05, spot=None) -> dict:
         """Calibrate a commodity model to a futures strip + ATM vols (task-3).

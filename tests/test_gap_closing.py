@@ -270,3 +270,21 @@ def test_cgmy_promoted_and_deprecations():
     assert R.MODEL_REGISTRY["cgmy"]["status"].value == "Approximation"
     assert "DEPRECATED" in R.MODEL_REGISTRY["cva_dva"]["notes"]
     assert "DEPRECATED" in R.MODEL_REGISTRY["cln_ftd"]["notes"]
+
+
+# ══════════════════════ Part 2: real-data migration ══════════════════════
+
+def test_commodity_real_data_path():
+    """Schwartz-Smith calibrates to the live MOEX-FORTS futures strip when the
+    market DB is present; otherwise the path degrades gracefully."""
+    from app.runtime import market_service, active_snapshot, is_live
+    ms = market_service()
+    if not is_live():
+        pytest.skip("no live market DB in this environment")
+    curve = ms.get_commodity_curve("BR", active_snapshot(ms))
+    if len(curve) < 3:
+        pytest.skip("no BR futures strip in snapshot")
+    assert all(t > 0 and px > 0 for t, px in curve.items())
+    from services.pricing_service import PricingService
+    res = PricingService().calibrate_commodity_from_market("BR")
+    assert res.get("errors", []) == [] and res["rmse"] < 0.05
