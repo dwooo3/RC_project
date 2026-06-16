@@ -185,13 +185,14 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "cgmy": {
         "name": "CGMY / KoBoL (COS)",
-        "status": ModelStatus.PROTOTYPE,
+        "status": ModelStatus.APPROXIMATION,
         "domain": "Analytics",
-        "tests": ["put_call_parity_loose"],
+        "tests": ["put_call_parity", "nu_to_zero_is_bsm"],
         "notes": (
-            "M1: CGMY tempered-stable via COS. Heavy tails — parity ~1e-4 at "
-            "N=512/1024 (truncation interval needs c4 widening for Y near 1). "
-            "Use VG/NIG for production until the interval is tightened."
+            "M1 + gap fix: CGMY tempered-stable via COS. The truncation interval "
+            "now widens with the 4th cumulant (Fang-Oosterlee c4 term), so "
+            "put-call parity is 1e-6..1e-11 across Y∈[0.5,1.5] at N=1024 (was "
+            "~1e-4). Promoted Prototype→Approximation."
         ),
     },
     "local_vol_mc": {
@@ -1113,11 +1114,14 @@ MODEL_REGISTRY: dict[str, dict] = {
         ),
     },
     "cva_dva": {
-        "name": "CVA / DVA",
+        "name": "CVA / DVA (deprecated)",
         "status": ModelStatus.PROTOTYPE,
         "domain": "Risk",
         "tests": [],
-        "notes": "No exposure simulation. No wrong-way risk. No collateral/netting.",
+        "notes": ("DEPRECATED — superseded by the M4 xva_suite (simulated-exposure "
+                  "CVA/DVA/FVA/MVA/KVA with netting, two-way CSA collateral and "
+                  "wrong-way risk). Retained only for back-compatibility of the old "
+                  "profile-input CVA; use risk.xva for new work."),
     },
 
     # ── Structured ────────────────────────────────────────
@@ -1129,11 +1133,14 @@ MODEL_REGISTRY: dict[str, dict] = {
         "notes": "Path MC. No observation schedule / barrier convention / coupon memory.",
     },
     "cln_ftd": {
-        "name": "CLN / FTD",
+        "name": "CLN / FTD (deprecated)",
         "status": ModelStatus.PROTOTYPE,
         "domain": "Pricing",
         "tests": [],
-        "notes": "Gaussian copula simulation. No calibration to market tranche spreads.",
+        "notes": ("DEPRECATED — superseded by the M7 gaussian_copula portfolio "
+                  "engine (exact number-of-defaults recursion + MC, kth-to-default, "
+                  "CDO tranches, base-correlation, t/Clayton copulas). Use "
+                  "models.credit_portfolio for new work."),
     },
     "structured_basket_note": {
         "name": "Basket Structured Note (real underlyings)",

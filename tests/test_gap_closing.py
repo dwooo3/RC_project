@@ -253,3 +253,20 @@ def test_batch4_wired_and_service():
     import numpy as np
     assert rs.frtb_ima(list(np.random.default_rng(0).standard_normal(20_000)))["errors"] == []
     assert rs.copula_var([1e6, 1e6], [0.2, 0.3], np.eye(2).tolist(), n_sims=20_000)["errors"] == []
+
+
+# ══════════════════════ Batch B: partial-model fixes ══════════════════════
+
+@pytest.mark.parametrize("Y", [0.5, 0.8, 1.2, 1.5])
+def test_cgmy_parity_tight_after_c4_widening(Y):
+    from models.levy import cgmy_price
+    c = cgmy_price(100, 100, 1.0, 0.05, 0.1, 5, 5, Y, 0.0, "call")["price"]
+    p = cgmy_price(100, 100, 1.0, 0.05, 0.1, 5, 5, Y, 0.0, "put")["price"]
+    assert c - p == pytest.approx(100 - 100 * np.exp(-0.05), abs=1e-5)
+
+
+def test_cgmy_promoted_and_deprecations():
+    from models import registry as R
+    assert R.MODEL_REGISTRY["cgmy"]["status"].value == "Approximation"
+    assert "DEPRECATED" in R.MODEL_REGISTRY["cva_dva"]["notes"]
+    assert "DEPRECATED" in R.MODEL_REGISTRY["cln_ftd"]["notes"]

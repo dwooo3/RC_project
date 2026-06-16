@@ -36,16 +36,19 @@ def _chi_psi(a, b, c, d, k):
     return chi, psi
 
 
-def cos_price(cf, c1, c2, S, K, T, r, q, opt="call", N=256, L=12.0) -> float:
+def cos_price(cf, c1, c2, S, K, T, r, q, opt="call", N=256, L=12.0, c4=0.0) -> float:
     """
     European option price via the COS method.
     cf:  characteristic function of x=ln(S_T/S_0) under the pricing measure,
          callable cf(u) -> complex (vectorised over real u).
-    c1,c2: first two cumulants of x (interval = [c1 - L√c2, c1 + L√c2]).
+    c1,c2: first two cumulants of x. c4 (4th cumulant, optional) widens the
+    truncation interval for heavy-tailed CFs (Fang-Oosterlee): interval =
+    [c1 - L√(c2+√c4), c1 + L√(c2+√c4)] — needed for CGMY with Y near/above 1.
     """
     c2 = max(float(c2), 1e-12)
-    a = c1 - L * np.sqrt(c2)
-    b = c1 + L * np.sqrt(c2)
+    halfwidth = L * np.sqrt(c2 + np.sqrt(max(float(c4), 0.0)))
+    a = c1 - halfwidth
+    b = c1 + halfwidth
     k = np.arange(N)
     u = k * np.pi / (b - a)
     x = np.log(S / K)
@@ -184,9 +187,14 @@ def nig_price(S, K, T, r, alpha=15.0, beta=-5.0, delta=0.5, q=0.0,
 
 
 def cgmy_price(S, K, T, r, C=0.1, G=5.0, M=5.0, Y=0.8, q=0.0,
-               opt="call", N=512) -> dict:
-    build = lambda s: cf_cgmy(s, T, r, q, C, G, M, Y)
-    fn = _price_at(build, K, T, r, q, opt, N)
+               opt="call", N=1024) -> dict:
+    # 4th cumulant widens the COS interval for the heavy CGMY tails (Y near 1)
+    c4 = C * T * gamma_fn(4 - Y) * (M ** (Y - 4) + G ** (Y - 4))
+
+    def fn(s):
+        cf, c1, c2 = cf_cgmy(s, T, r, q, C, G, M, Y)
+        return cos_price(cf, c1, c2, s, K, T, r, q, opt, N, c4=c4)
+
     d, g = _greeks_fd(fn, S)
     return dict(price=fn(S), delta=d, gamma=g, model="cgmy")
 
