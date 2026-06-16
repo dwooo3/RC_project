@@ -1255,6 +1255,43 @@ class PricingService:
                     "q": q, "opt": opt, **kw},
             snapshot=snapshot, user_action=f"Price {model}")
 
+    def price_smm_swaption(self, notional, K, T_option, T_swap, freq=2, sigma=0.2,
+                           shift=0.0, opt="payer", curve=None, snapshot=None,
+                           curve_id="flat_rub") -> dict:
+        """European swaption under the Swap Market Model (batch 4)."""
+        from models.rates_market import smm_swaption
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        return self._priced(
+            model_id="swap_market_model", calculation_type="smm_swaption_pricing",
+            engine=lambda: smm_swaption(curve, notional, K, T_option, T_swap,
+                                        int(freq), sigma, shift, opt),
+            inputs={"notional": notional, "K": K, "T_option": T_option,
+                    "T_swap": T_swap, "freq": int(freq), "sigma": sigma,
+                    "shift": shift, "opt": opt},
+            snapshot=snapshot, user_action="Price SMM swaption")
+
+    def price_tarn(self, S0, K, T, freq, r, sigma, target, q=0.0, n_sims=100_000,
+                   snapshot=None) -> dict:
+        """Target accrual redemption note (batch 4)."""
+        from models.exotics_extra import tarn
+        return self._priced(
+            model_id="tarn", calculation_type="tarn_pricing",
+            engine=lambda: tarn(S0, K, T, int(freq), r, sigma, target, q, int(n_sims)),
+            inputs={"S0": S0, "K": K, "T": T, "freq": int(freq), "r": r,
+                    "sigma": sigma, "target": target},
+            snapshot=snapshot, user_action="Price TARN")
+
+    def price_accumulator(self, S0, K, barrier, T, freq, r, sigma, q=0.0, qty=1.0,
+                          n_sims=100_000, snapshot=None) -> dict:
+        """Up-and-out accumulator (batch 4)."""
+        from models.exotics_extra import accumulator
+        return self._priced(
+            model_id="accumulator", calculation_type="accumulator_pricing",
+            engine=lambda: accumulator(S0, K, barrier, T, int(freq), r, sigma, q, qty, int(n_sims)),
+            inputs={"S0": S0, "K": K, "barrier": barrier, "T": T, "freq": int(freq),
+                    "r": r, "sigma": sigma},
+            snapshot=snapshot, user_action="Price accumulator")
+
     def price_vanna_volga(self, S, K, T, r_d, r_f, K_atm, sig_atm, K_put, sig_put,
                           K_call, sig_call, opt="call", snapshot=None) -> dict:
         """FX option at the Vanna-Volga implied vol from the 25Δ pillars (batch 3)."""

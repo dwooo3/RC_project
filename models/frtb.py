@@ -140,3 +140,17 @@ def frtb_capital(delta_factors=None, vega_factors=None, curvature_factors=None,
     drc = frtb_drc_charge(drc_factors)["charge"] if drc_factors else 0.0
     sbm = d + v + c
     return dict(delta=d, vega=v, curvature=c, sbm=sbm, drc=drc, total=sbm + drc)
+
+
+# ── FRTB Internal Models Approach (expected shortfall), gap batch 4 ──
+
+def frtb_ima_es(pnl_scenarios, alpha=0.975, liquidity_scale=1.0):
+    """FRTB-IMA expected-shortfall charge: ES at the α level of the loss
+    distribution (mean loss beyond the α-VaR), scaled for liquidity horizons.
+    pnl_scenarios: array of portfolio P&L (gains +, losses -)."""
+    losses = -np.asarray(pnl_scenarios, float)
+    var = np.quantile(losses, alpha)
+    tail = losses[losses >= var]
+    es = float(tail.mean()) if tail.size else float(var)
+    return dict(es=es * liquidity_scale, var=float(var) * liquidity_scale,
+                alpha=alpha)

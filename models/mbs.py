@@ -74,3 +74,39 @@ def mbs_oas(market_price, balance, wac, net_coupon, wam_months, psa=100.0,
         return mbs_price(balance, wac, net_coupon, wam_months, psa,
                          disc_rate, curve, oas)["price"] - market_price
     return brentq(f, -0.5, 0.5, xtol=1e-10)
+
+
+# ── ABS sequential-pay waterfall, gap-closing batch 4 ───────────────
+
+def abs_waterfall(balance, wac, net_coupon, wam_months, tranches, psa=100.0,
+                  disc_rate=None):
+    """Sequential-pay ABS: pool principal pays tranches senior→junior; each
+    tranche earns its coupon on outstanding balance. tranches: list of
+    (name, size, coupon). Returns per-tranche cashflows, WAL and price."""
+    cf = mbs_cashflows(balance, wac, net_coupon, int(wam_months), psa)
+    months, prin, pool_int = cf["month"], cf["principal"], cf["interest"]
+    bals = [sz for _, sz, _ in tranches]
+    coupons = [cp for _, _, cp in tranches]
+    out = []
+    for ti, (name, _, _) in enumerate(tranches):
+        out.append(dict(name=name, principal=np.zeros(len(months)),
+                        interest=np.zeros(len(months))))
+    for m in range(len(months)):
+        avail = prin[m]
+        for ti in range(len(tranches)):                # sequential principal
+            pay = min(avail, bals[ti])
+            out[ti]["principal"][m] = pay
+            bals[ti] -= pay
+            avail -= pay
+            if avail <= 1e-12:
+                break
+        for ti in range(len(tranches)):                # interest on outstanding
+            out[ti]["interest"][m] = coupons[ti] / 12.0 * (bals[ti] + out[ti]["principal"][m])
+    t = months / 12.0
+    for ti, tr in enumerate(out):
+        p = tr["principal"]
+        tr["wal"] = float(np.sum(t * p) / np.sum(p)) if p.sum() > 0 else 0.0
+        if disc_rate is not None:
+            df = (1 + disc_rate / 12.0) ** (-months)
+            tr["price"] = float(np.sum((p + tr["interest"]) * df))
+    return out

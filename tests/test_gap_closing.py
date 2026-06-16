@@ -162,3 +162,94 @@ def test_batch3_wired_and_service():
     assert vv["errors"] == [] and vv["value"] > 0
     bc = svc.price_basket_copula("clayton", [0.05] * 20, k=3, theta=2.0, n_sims=50_000)
     assert bc["errors"] == [] and bc["value"] >= 0
+
+
+# ══════════════════════ Batch 4: SMM, exotics, ABS, inflation, WWR, risk ══════════════════════
+
+def test_smm_swaption_equals_black():
+    from curves.yield_curve import YieldCurve
+    from models.rates_market import smm_swaption
+    from models.short_rate import black_swaption_price
+    curve = YieldCurve.flat(0.05)
+    for opt in ("payer", "receiver"):
+        smm = smm_swaption(curve, 1e6, 0.05, 2.0, 5.0, 2, 0.2, 0.0, opt)["price"]
+        blk = black_swaption_price(1e6, 0.05, 2.0, 5.0, 2, curve, 0.2, opt)
+        assert smm == pytest.approx(blk, abs=1e-6)
+
+
+def test_tarn_monotone_in_target():
+    from models.exotics_extra import tarn
+    vals = [tarn(100, 105, 3.0, 4, 0.03, 0.25, tg, n_sims=40_000, seed=1)["price"]
+            for tg in (0.001, 0.1, 0.3, 1e9)]
+    assert all(a <= b + 1e-6 for a, b in zip(vals, vals[1:]))
+
+
+def test_accumulator_monotone_in_barrier():
+    from models.exotics_extra import accumulator
+    vals = [accumulator(100, 98, b, 1.0, 12, 0.03, 0.2, n_sims=40_000, seed=1)["price"]
+            for b in (105, 115, 130, 1e9)]
+    assert all(a <= b + 1e-3 for a, b in zip(vals, vals[1:]))
+
+
+def test_abs_waterfall():
+    from models.mbs import abs_waterfall
+    tr = abs_waterfall(100.0, 0.05, 0.05, 360,
+                       [("A", 60, 0.04), ("B", 25, 0.05), ("C", 15, 0.07)],
+                       psa=150, disc_rate=0.05)
+    assert sum(t["principal"].sum() for t in tr) == pytest.approx(100.0, abs=1e-3)
+    assert tr[0]["wal"] < tr[2]["wal"]                    # senior shorter
+    assert tr[0]["principal"][0] > tr[2]["principal"][0]  # senior paid first
+
+
+def test_jarrow_yildirim():
+    from models.inflation_jy import breakeven_inflation, zciis_fair_rate, forward_cpi
+    assert breakeven_inflation(0.05, 0.05, 5) == pytest.approx(0.0, abs=1e-12)
+    assert (1 + zciis_fair_rate(0.06, 0.02, 5)) ** 5 == pytest.approx(forward_cpi(1, 0.06, 0.02, 5), abs=1e-9)
+
+
+def test_cva_wrong_way():
+    from curves.yield_curve import YieldCurve
+    from curves.hazard import HazardCurve
+    from risk.xva import simulate_irs_portfolio, xva_suite, cva_wrong_way
+    curve, cp = YieldCurve.flat(0.06), HazardCurve.flat(0.03)
+    sim = simulate_irs_portfolio([dict(notional=1e7, fixed_rate=0.06, T=5.0, freq=2, pay_fixed=True)],
+                                 curve, n_sims=6000, n_grid=20, seed=1)
+    indep = xva_suite(sim, curve, cp)["cva"]
+    assert cva_wrong_way(sim, curve, cp, beta=0.0) == pytest.approx(indep, abs=2.0)
+    assert cva_wrong_way(sim, curve, cp, beta=3.0) > indep
+
+
+def test_frtb_ima_es():
+    from models.frtb import frtb_ima_es
+    import numpy as np
+    rng = np.random.default_rng(0)
+    pnl = rng.standard_normal(100_000)
+    r = frtb_ima_es(pnl, 0.975)
+    assert r["es"] >= r["var"] and r["es"] == pytest.approx(2.34, abs=0.05)
+
+
+def test_copula_var_ordering():
+    from risk.var import copula_var
+    import numpy as np
+    w, vols = [1e6, 1e6, 1e6], [0.2, 0.3, 0.25]
+    I, ones = np.eye(3), np.ones((3, 3))
+    indep = copula_var(w, vols, I, 0.99, n_sims=200_000)["var"]
+    como = copula_var(w, vols, ones, 0.99, n_sims=200_000)["var"]
+    assert indep < como
+    from scipy.stats import norm
+    assert como == pytest.approx(norm.ppf(0.99) * sum(wi * si for wi, si in zip(w, vols)), rel=0.03)
+
+
+def test_batch4_wired_and_service():
+    from models import taxonomy as tax, registry as R
+    from services.pricing_service import PricingService
+    from services.risk_service import RiskService
+    for mid in ("swap_market_model", "tarn", "accumulator", "abs", "jarrow_yildirim",
+                "cva_wwr", "frtb_ima", "copula_var"):
+        assert mid in R.MODEL_REGISTRY and mid in tax.CLASSIFICATION
+    ps, rs = PricingService(), RiskService()
+    assert ps.price_smm_swaption(1e6, 0.05, 2.0, 5.0)["errors"] == []
+    assert ps.price_tarn(100, 105, 2.0, 4, 0.03, 0.25, 0.2, n_sims=20_000)["errors"] == []
+    import numpy as np
+    assert rs.frtb_ima(list(np.random.default_rng(0).standard_normal(20_000)))["errors"] == []
+    assert rs.copula_var([1e6, 1e6], [0.2, 0.3], np.eye(2).tolist(), n_sims=20_000)["errors"] == []

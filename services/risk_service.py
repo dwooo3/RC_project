@@ -308,6 +308,39 @@ class RiskService:
             return self._error_result(model_id=model_id, error=exc, snapshot=snapshot,
                                       calculation_type="frtb_sba", inputs=inputs)
 
+    def frtb_ima(self, pnl_scenarios, alpha=0.975, liquidity_scale=1.0,
+                 snapshot=None) -> dict:
+        """FRTB-IMA expected-shortfall capital (gap batch 4)."""
+        from models.frtb import frtb_ima_es
+        try:
+            self._enforce_model("frtb_ima")
+            snapshot = snapshot or self.market_data.demo_snapshot()
+            res = frtb_ima_es(list(pnl_scenarios), alpha, liquidity_scale)
+            return self._result(value=res["es"], model_id="frtb_ima", raw=res,
+                                snapshot=snapshot, calculation_type="frtb_ima",
+                                inputs={"alpha": alpha, "n": len(pnl_scenarios)},
+                                user_action="FRTB-IMA expected shortfall")
+        except Exception as exc:
+            return self._error_result(model_id="frtb_ima", error=exc, snapshot=snapshot,
+                                      calculation_type="frtb_ima", inputs={})
+
+    def copula_var(self, weights, vols, corr, alpha=0.99, marginal="normal",
+                   df=5, n_sims=100_000, snapshot=None) -> dict:
+        """Portfolio VaR under a Gaussian copula of normal/t marginals (batch 4)."""
+        from risk.var import copula_var
+        try:
+            self._enforce_model("copula_var")
+            snapshot = snapshot or self.market_data.demo_snapshot()
+            res = copula_var(list(weights), list(vols), corr, alpha, marginal,
+                             int(df), int(n_sims))
+            return self._result(value=res["var"], model_id="copula_var", raw=res,
+                                snapshot=snapshot, calculation_type="copula_var",
+                                inputs={"alpha": alpha, "marginal": marginal},
+                                user_action="Copula VaR")
+        except Exception as exc:
+            return self._error_result(model_id="copula_var", error=exc, snapshot=snapshot,
+                                      calculation_type="copula_var", inputs={})
+
     def var(
         self,
         returns: np.ndarray,

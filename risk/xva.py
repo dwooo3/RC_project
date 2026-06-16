@@ -324,3 +324,27 @@ def xva_suite(sim, disc_curve, cpty_hazard, own_hazard=None, *,
                 kva=kva["kva"], peak_capital=kva["peak_capital"],
                 peak_epe=float(prof["epe"].max()), peak_im=float(im.max()),
                 total_xva=total, collateralised=csa is not None)
+
+
+# ── wrong-way risk, gap-closing batch 4 ──────────────────────
+
+def cva_wrong_way(sim, disc_curve, hazard, beta=0.0, recovery=0.4):
+    """CVA with wrong-way risk via an exposure tilt. In each interval the default
+    contribution is an Esscher-tilted exposure E^β[exposure] ∝ Σ_p e^{β·E_p}·E_p,
+    overweighting high-exposure paths as the counterparty's credit deteriorates.
+    β=0 recovers the standard (independent) CVA; β>0 raises it (wrong-way)."""
+    times = np.asarray(sim["times"], float)
+    mtm = sim["mtm"]
+    pos = np.maximum(mtm, 0.0)
+    cva = 0.0
+    for i in range(1, len(times)):
+        t0, t1 = times[i - 1], times[i]
+        tm = 0.5 * (t0 + t1)
+        e_mid = 0.5 * (pos[:, i - 1] + pos[:, i])
+        scale = e_mid.mean() + 1e-12
+        z = beta * e_mid / scale
+        w = np.exp(z - z.max())                         # softmax-stable tilt
+        tilted = float(np.sum(w * e_mid) / np.sum(w))
+        dq = hazard.survival(t0) - hazard.survival(t1)
+        cva += (1 - recovery) * tilted * disc_curve.discount(tm) * dq
+    return float(cva)

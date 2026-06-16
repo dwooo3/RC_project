@@ -106,6 +106,15 @@ CLASSIFICATION: dict[str, tuple] = {
     "clayton_copula": (_A.CREDIT, _MF.COPULA, _M.MONTE_CARLO),
     "commodity_seasonal": (_A.COMMODITY, _MF.ANALYTIC, _M.CLOSED_FORM),
     "pilipovic": (_A.COMMODITY, _MF.ANALYTIC, _M.CLOSED_FORM),
+    # ── gap batch 4: SMM, exotics, ABS, inflation, WWR, risk ──
+    "swap_market_model": (_A.RATES, _MF.MARKET_MODEL, _M.CLOSED_FORM),
+    "tarn": (_A.FX, _MF.ANALYTIC, _M.MONTE_CARLO),
+    "accumulator": (_A.EQUITY, _MF.ANALYTIC, _M.MONTE_CARLO),
+    "abs": (_A.RATES, _MF.REDUCED_FORM, _M.CLOSED_FORM),
+    "jarrow_yildirim": (_A.INFLATION, _MF.ANALYTIC, _M.CLOSED_FORM),
+    "cva_wwr": (_A.CREDIT, _MF.REDUCED_FORM, _M.MONTE_CARLO),
+    "frtb_ima": (_A.RISK, _MF.STATISTICAL, _M.SIMULATION),
+    "copula_var": (_A.RISK, _MF.STATISTICAL, _M.MONTE_CARLO),
     "baw": (_A.EQUITY, _MF.ANALYTIC, _M.CLOSED_FORM),        # American approx
     "bjerksund_stensland": (_A.EQUITY, _MF.ANALYTIC, _M.CLOSED_FORM),
     "qmc": (_A.EQUITY, _MF.ANALYTIC, _M.MONTE_CARLO),        # Sobol quasi-MC

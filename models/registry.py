@@ -684,6 +684,72 @@ MODEL_REGISTRY: dict[str, dict] = {
         "notes": ("Gap batch 3: one-factor mean-reverting spot dS=κ(μ-S)dt+σS dW; "
                   "futures F(0,T)=μ+(S0-μ)e^{-κT}. F(0,0)=S0, F(0,∞)→μ."),
     },
+    "swap_market_model": {
+        "name": "Swap Market Model (lognormal swap rate)",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["swaption_equals_black"],
+        "notes": ("Gap batch 4: forward swap rate lognormal under the annuity "
+                  "measure → swaption == Black-76 (displaced variant for skew). "
+                  "The dual of the LIBOR market model."),
+    },
+    "tarn": {
+        "name": "TARN (target accrual redemption note)",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["monotone_in_target", "redeems_at_zero_target"],
+        "notes": ("Gap batch 4: GBM Monte-Carlo; accrues per-period coupons and "
+                  "redeems early at the cumulative target. Value rises with the "
+                  "target. Single-name underlying; no TARN-forward leverage tiers."),
+    },
+    "accumulator": {
+        "name": "Accumulator (up-and-out, double-below-strike)",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["monotone_in_barrier"],
+        "notes": ("Gap batch 4: GBM MC; buys qty (2·qty below strike) each fixing, "
+                  "knocks out above the barrier. Value rises as the barrier moves "
+                  "away (less knock-out)."),
+    },
+    "abs": {
+        "name": "ABS sequential-pay waterfall",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["principal_partitions_pool", "senior_wal_shorter"],
+        "notes": ("Gap batch 4: tranched sequential-pay waterfall on the MBS pool "
+                  "cashflows. Tranche principal partitions the pool, senior paid "
+                  "first → shorter WAL. Sequential pay only (no pro-rata/triggers)."),
+    },
+    "jarrow_yildirim": {
+        "name": "Jarrow-Yildirim inflation",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["equal_curves_zero_breakeven", "zciis_is_forward_cpi"],
+        "notes": ("Gap batch 4: foreign-currency analogue (nominal/real curves + "
+                  "CPI). Forward CPI = P_real/P_nom → ZCIIS fair rate and breakeven. "
+                  "Flat curves here; stochastic-vol caplet extension deferred."),
+    },
+    "cva_wwr": {
+        "name": "CVA with wrong-way risk",
+        "status": ModelStatus.APPROXIMATION, "domain": "Risk",
+        "tests": ["beta_zero_is_independent", "wwr_raises_cva"],
+        "notes": ("Gap batch 4: wrong-way CVA via an Esscher exposure tilt on the "
+                  "XVA MtM cube. β=0 recovers the independent CVA; β>0 overweights "
+                  "high-exposure states → higher CVA. A reduced-form WWR proxy "
+                  "(not a full stochastic-intensity-correlated model)."),
+    },
+    "frtb_ima": {
+        "name": "FRTB Internal Models Approach (ES)",
+        "status": ModelStatus.APPROXIMATION, "domain": "Risk",
+        "tests": ["es_ge_var", "es_scales", "normal_es_factor"],
+        "notes": ("Gap batch 4: expected-shortfall charge at 97.5% with a "
+                  "liquidity-horizon scale. ES ≥ VaR; matches the normal ES factor "
+                  "2.34. Liquidity-horizon buckets and P&L-attribution test "
+                  "(green/amber/red) not modelled."),
+    },
+    "copula_var": {
+        "name": "Copula VaR (Gaussian copula)",
+        "status": ModelStatus.APPROXIMATION, "domain": "Risk",
+        "tests": ["comonotone_is_additive", "diversification_ordering"],
+        "notes": ("Gap batch 4: portfolio VaR under a Gaussian copula of normal/t "
+                  "marginals. Comonotone (ρ=1) recovers Σ marginal VaRs; lower "
+                  "correlation diversifies; t-marginals fatten the tail."),
+    },
     "baw": {
         "name": "Barone-Adesi-Whaley (American approx)",
         "status": ModelStatus.APPROXIMATION,

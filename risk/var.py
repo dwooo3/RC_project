@@ -375,3 +375,28 @@ def christoffersen_test(exceptions: np.ndarray) -> dict:
     p_val = 1 - chi2.cdf(lr, df=1)
     return dict(lr_stat=lr, p_value=p_val, reject=(lr > chi2.ppf(0.95,1)),
                 pi01=pi01, pi11=pi11, pi=pi)
+
+
+def copula_var(weights, vols, corr, alpha=0.99, marginal="normal", df=5,
+               n_sims=200_000, seed=0):
+    """Portfolio VaR under a Gaussian copula of the marginal P&Ls.
+
+    weights·vols are position P&L scales; `corr` is the copula correlation matrix;
+    marginal ∈ {normal, t}. Comonotone (ρ=1) recovers Σ marginal VaRs; the
+    independent case is strictly lower (diversification)."""
+    import numpy as _np
+    from scipy.stats import norm as _norm, t as _t
+    w = _np.asarray(weights, float)
+    s = _np.asarray(vols, float)
+    C = _np.asarray(corr, float)
+    rng = _np.random.default_rng(seed)
+    L = _np.linalg.cholesky(C + 1e-12 * _np.eye(len(C)))
+    Z = rng.standard_normal((n_sims, len(w))) @ L.T          # Gaussian copula
+    if marginal == "t":
+        U = _norm.cdf(Z)
+        X = _t.ppf(U, df) * _np.sqrt((df - 2) / df)          # unit-variance t
+    else:
+        X = Z
+    pnl = (X * (w * s)).sum(axis=1)
+    var = float(-_np.quantile(pnl, 1 - alpha))
+    return dict(var=var, alpha=alpha, marginal=marginal)
