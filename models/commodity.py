@@ -149,3 +149,30 @@ class GibsonSchwartz:
 def commodity_futures_curve(model, tenors):
     """Futures term structure F(0,T) for a list of tenors."""
     return {float(T): model.futures(T) for T in tenors}
+
+
+# ── seasonality + Pilipovic mean-reversion, gap-closing batch 3 ─────
+
+def seasonal_factor(t, amps):
+    """Deterministic seasonal log-adjustment Σ_k [a_k cos(2πkt) + b_k sin(2πkt)].
+    amps: list of (a_k, b_k) for harmonics k=1,2,…"""
+    s = 0.0
+    for k, (a, b) in enumerate(amps, start=1):
+        s += a * np.cos(2 * np.pi * k * t) + b * np.sin(2 * np.pi * k * t)
+    return s
+
+
+def seasonal_futures(model, T, amps):
+    """Schwartz-Smith/Gibson-Schwartz futures with a deterministic seasonal factor:
+    F_seasonal(0,T) = F_model(0,T)·exp(seasonal(T)). Zero amplitude → base model."""
+    return float(model.futures(T) * np.exp(seasonal_factor(T, amps)))
+
+
+class Pilipovic:
+    """One-factor mean-reverting (Pilipovic) spot: dS = κ(μ-S)dt + σS dW.
+    Risk-neutral futures F(0,T) = μ + (S0-μ)e^{-κT}: F(0,0)=S0, F(0,∞)→μ."""
+    def __init__(self, S0, kappa, mu, sigma):
+        self.S0, self.kappa, self.mu, self.sigma = float(S0), float(kappa), float(mu), float(sigma)
+
+    def futures(self, T):
+        return float(self.mu + (self.S0 - self.mu) * np.exp(-self.kappa * T))

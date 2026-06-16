@@ -100,6 +100,12 @@ CLASSIFICATION: dict[str, tuple] = {
     "binomial_tian": (_A.EQUITY, _MF.ANALYTIC, _M.LATTICE),
     "lognormal_mixture": (_A.EQUITY, _MF.LOCAL_VOL, _M.CLOSED_FORM),
     "carr_madan": (_A.EQUITY, _MF.ANALYTIC, _M.FOURIER),     # FFT pricer
+    # ── gap batch 3: FX smile, copulas, commodity seasonality ──
+    "vanna_volga": (_A.FX, _MF.STOCH_VOL, _M.CLOSED_FORM),
+    "t_copula": (_A.CREDIT, _MF.COPULA, _M.MONTE_CARLO),
+    "clayton_copula": (_A.CREDIT, _MF.COPULA, _M.MONTE_CARLO),
+    "commodity_seasonal": (_A.COMMODITY, _MF.ANALYTIC, _M.CLOSED_FORM),
+    "pilipovic": (_A.COMMODITY, _MF.ANALYTIC, _M.CLOSED_FORM),
     "baw": (_A.EQUITY, _MF.ANALYTIC, _M.CLOSED_FORM),        # American approx
     "bjerksund_stensland": (_A.EQUITY, _MF.ANALYTIC, _M.CLOSED_FORM),
     "qmc": (_A.EQUITY, _MF.ANALYTIC, _M.MONTE_CARLO),        # Sobol quasi-MC

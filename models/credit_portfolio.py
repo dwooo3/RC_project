@@ -88,3 +88,40 @@ def basket_mc(pds, rho, k=1, recovery=0.4, n_sims=200_000, seed=0) -> dict:
     defaults = (X < c).sum(axis=1)
     return dict(kth_prob=float((defaults >= k).mean()),
                 pool_el=float((defaults / n * (1 - recovery)).mean()))
+
+
+# ── alternative copulas (t / Clayton), gap-closing batch 3 ──────────
+
+def basket_mc_t(pds, rho, df=5, k=1, recovery=0.4, n_sims=200_000, seed=0) -> dict:
+    """One-factor Student-t copula MC. As df→∞ it recovers the Gaussian copula:
+    X_i = (√ρ·Z + √(1-ρ)·ε_i)·√(df/W), W~χ²(df) shared; default if X_i < t_df⁻¹(p_i)."""
+    from scipy.stats import t as student_t, chi2
+    pds = np.asarray(pds, float)
+    n = len(pds)
+    c = student_t.ppf(pds, df)
+    rng = np.random.default_rng(seed)
+    Z = rng.standard_normal((n_sims, 1))
+    eps = rng.standard_normal((n_sims, n))
+    W = chi2.rvs(df, size=(n_sims, 1), random_state=rng)
+    Y = np.sqrt(rho) * Z + np.sqrt(1 - rho) * eps
+    X = Y * np.sqrt(df / W)
+    defaults = (X < c).sum(axis=1)
+    return dict(kth_prob=float((defaults >= k).mean()),
+                pool_el=float((defaults.mean() / n) * (1 - recovery)),
+                mean_defaults=float(defaults.mean()))
+
+
+def basket_mc_clayton(pds, theta=1.0, k=1, recovery=0.4, n_sims=200_000, seed=0) -> dict:
+    """Clayton copula MC via Gamma frailty (Marshall-Olkin): V~Gamma(1/θ,1),
+    U_i = (1 + E_i/V)^{-1/θ}, default if U_i < p_i. Lower-tail dependence
+    λ_L = 2^{-1/θ} > 0 → default clustering the Gaussian copula misses."""
+    pds = np.asarray(pds, float)
+    n = len(pds)
+    rng = np.random.default_rng(seed)
+    V = rng.gamma(1.0 / theta, 1.0, size=(n_sims, 1))
+    E = rng.exponential(1.0, size=(n_sims, n))
+    U = (1 + E / V) ** (-1.0 / theta)
+    defaults = (U < pds).sum(axis=1)
+    return dict(kth_prob=float((defaults >= k).mean()),
+                pool_el=float((defaults.mean() / n) * (1 - recovery)),
+                mean_defaults=float(defaults.mean()))

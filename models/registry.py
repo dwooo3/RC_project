@@ -644,6 +644,46 @@ MODEL_REGISTRY: dict[str, dict] = {
                   "deferred (fractional-Riccati scheme unstable; rough vol is "
                   "covered by the rough-Bergomi MC)."),
     },
+    "vanna_volga": {
+        "name": "Vanna-Volga FX smile",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["reproduces_pillars", "flat_smile_is_flat"],
+        "notes": ("Gap batch 3: Castagna-Mercurio Vanna-Volga smile from the ATM / "
+                  "25Δ-RR / 25Δ-BF pillars. First-order log-strike interpolation is "
+                  "pillar-exact; second-order adds the vanna/volga cost. Flat input "
+                  "→ flat vol (Garman-Kohlhagen)."),
+    },
+    "t_copula": {
+        "name": "Student-t copula (portfolio credit)",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["df_to_inf_is_gaussian", "tail_dependence"],
+        "notes": ("Gap batch 3: one-factor Student-t copula MC. df→∞ recovers the "
+                  "Gaussian copula; finite df adds upper+lower tail dependence "
+                  "(more extreme co-defaults). Pool EL copula-invariant."),
+    },
+    "clayton_copula": {
+        "name": "Clayton copula (portfolio credit)",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["lower_tail_dependence", "pool_el_invariant"],
+        "notes": ("Gap batch 3: Clayton copula via Gamma-frailty (Marshall-Olkin). "
+                  "Lower-tail dependence λ_L=2^{-1/θ} → default clustering the "
+                  "Gaussian copula misses; θ→0 → independence."),
+    },
+    "commodity_seasonal": {
+        "name": "Commodity seasonality overlay",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["zero_amplitude_is_base"],
+        "notes": ("Gap batch 3: deterministic Fourier seasonal factor on the "
+                  "Schwartz-Smith/Gibson-Schwartz futures curve. Zero amplitude == "
+                  "base model; gas/power curves oscillate seasonally."),
+    },
+    "pilipovic": {
+        "name": "Pilipovic mean-reverting spot",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["futures_at_zero_is_spot", "futures_revert_to_mean"],
+        "notes": ("Gap batch 3: one-factor mean-reverting spot dS=κ(μ-S)dt+σS dW; "
+                  "futures F(0,T)=μ+(S0-μ)e^{-κT}. F(0,0)=S0, F(0,∞)→μ."),
+    },
     "baw": {
         "name": "Barone-Adesi-Whaley (American approx)",
         "status": ModelStatus.APPROXIMATION,

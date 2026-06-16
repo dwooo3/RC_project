@@ -1255,6 +1255,34 @@ class PricingService:
                     "q": q, "opt": opt, **kw},
             snapshot=snapshot, user_action=f"Price {model}")
 
+    def price_vanna_volga(self, S, K, T, r_d, r_f, K_atm, sig_atm, K_put, sig_put,
+                          K_call, sig_call, opt="call", snapshot=None) -> dict:
+        """FX option at the Vanna-Volga implied vol from the 25Δ pillars (batch 3)."""
+        from models.vanna_volga import vv_price
+        return self._priced(
+            model_id="vanna_volga", calculation_type="vanna_volga_pricing",
+            engine=lambda: vv_price(S, K, T, r_d, r_f, K_atm, sig_atm, K_put, sig_put,
+                                    K_call, sig_call, opt),
+            inputs={"S": S, "K": K, "T": T, "r_d": r_d, "r_f": r_f, "opt": opt},
+            snapshot=snapshot, user_action="Price FX option (Vanna-Volga)")
+
+    def price_basket_copula(self, copula, pds, k=1, recovery=0.4, rho=0.3, df=5,
+                            theta=1.0, n_sims=100_000, snapshot=None) -> dict:
+        """kth-to-default basket under a t / Clayton copula (batch 3)."""
+        from models.credit_portfolio import basket_mc_t, basket_mc_clayton
+        mid = "t_copula" if copula == "t" else "clayton_copula"
+        if copula == "t":
+            engine = lambda: {"price": basket_mc_t(list(pds), rho, int(df), int(k),
+                                                   recovery, int(n_sims))["kth_prob"]}
+        else:
+            engine = lambda: {"price": basket_mc_clayton(list(pds), theta, int(k),
+                                                         recovery, int(n_sims))["kth_prob"]}
+        return self._priced(
+            model_id=mid, calculation_type="basket_copula_pricing", engine=engine,
+            inputs={"copula": copula, "n_names": len(pds), "k": int(k), "rho": rho,
+                    "df": df, "theta": theta},
+            snapshot=snapshot, user_action=f"Price {copula}-copula basket")
+
     def price_carr_madan(self, model, S, K, T, r, sigma=0.2, q=0.0, opt="call",
                          snapshot=None, **kw) -> dict:
         """Carr-Madan FFT pricer (gap batch 2). model: bsm | heston."""
