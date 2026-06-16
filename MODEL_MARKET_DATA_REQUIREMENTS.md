@@ -142,3 +142,62 @@ strike-измерения** (улыбки) и нет RR/BF.
   Это **дефицит данных, а не проводки** — модели принимают реальные входы, как
   только соответствующий фид появится в хранилище (P1-P3 выше).
 - **Демо-фолбэк** остаётся для оффлайн/тестов (`demo_snapshot`).
+
+---
+
+## 5. ПРОВЕРКА iss.moex (2026-06-16): что из пробелов реально доступно
+
+Прошёлся по каталогам ISS через `infra/moex_iss/client.IssClient` (TLS-обработка
+анти-DDoS уже есть). **Большая часть P1/P2-пробелов на самом деле доступна** —
+через рынок опционов FORTS, который мы пока не инжестим.
+
+### 🟢 Доступно на ISS, но НЕ инжестится (можно закрыть)
+
+**Рынок опционов FORTS — `engines/futures/markets/options`: 38 162 контракта,
+64 базактива, полные цепочки strike × expiry.**
+Колонки securities: `STRIKE`, `CENTRALSTRIKE`, `OPTIONTYPE` (C/P), `ASSETCODE`,
+`UNDERLYINGASSET`, `UNDERLYINGSETTLEPRICE`, `SETTLEPRICE`, `LASTTRADEDATE`;
+marketdata: `SETTLEPRICE`, `BID/OFFER`, `OPENPOSITION`. Явного поля implied-vol
+нет → имплаим Black/Black-76 из settle (форвард = `UNDERLYINGSETTLEPRICE`).
+
+| Пробел из §3 | Статус после проверки | Источник на ISS |
+|---|---|---|
+| **P1 vol-поверхность equity по страйкам** | 🟢 ДОСТУПНО | опционы на SBRF/ROSN/GAZR/LKOH/GMKN/TATN/NOTK/MGNT/PLZL/ALRS… (single-name) |
+| **P1 vol-поверхность index** | 🟢 ДОСТУПНО | опционы на MOEX(IMOEX)/RTS/MXI/IMX |
+| **P1 FX vol + 25Δ RR/BF** | 🟢 ДОСТУПНО | опционы на Si (USD/RUB, 146C+146P/экспирация), CNY — дельты→интерп к 25Δ |
+| **P2 commodity option vols** | 🟢 ДОСТУПНО | опционы на GOLD/SILV/NG/PLT/BR |
+| **История поверхностей (backfill)** | 🟢 ДОСТУПНО | `history/engines/futures/markets/options/securities?date=…` |
+
+Каждый базактив: 6+ экспираций, десятки страйков, есть цена базового фьючерса →
+полноценный self-implied surface (Black-76 inversion), как мы уже делаем для ATM,
+но теперь по всему strike-измерению.
+
+### 🔴 Подтверждённо НЕТ на MOEX (остаются настоящими пробелами)
+
+| Пробел | Проверка |
+|---|---|
+| Swaption/cap vol по страйкам, IRS-куб | `engines/futures/markets/swaprates` = 9 FX-свопов (CNYRUBF…), не IRS; ликвидного RU swaption-рынка нет |
+| Single-name CDS-спреды | на MOEX не торгуются |
+| CPI-фиксинги | Росстат, не MOEX |
+| CSA/SIMM-термины, funding/FTP-кривая, FRTB RW | договорные/регуляторные, не рыночный фид |
+| CDO tranche quotes / base correlation | рынка траншей в RU нет |
+
+### План ингеста (closes P1 equity/index/FX + P2 commodity)
+1. Новый сборщик `infra/moex_iss/options_surface.py`: тянуть
+   `engines/futures/markets/options/securities`, группировать по `ASSETCODE`,
+   по каждой (expiry) имплаить Black-76 вол из `SETTLEPRICE` на форварде
+   `UNDERLYINGSETTLEPRICE` → точки (strike, expiry, iv).
+2. Хранить в `vol_points` (уже есть таблица) с strike-измерением; surface_id
+   per базактив (64 поверхности вместо 1 ATM).
+3. Для FX (Si/CNY) — посчитать дельты, интерполировать к 25Δ → RR/BF →
+   кормить `vanna_volga`.
+4. EOD + `history/...` для backfill (vol time-series для риска/калибровки).
+5. Подключить к калибраторам: Heston/SABR/Bates/local-vol/rough/Carr-Madan
+   (equity-surface), `calibrate_cheyette_skew` (если появится swaption smile —
+   пока нет), `calibrate_schwartz_smith` (commodity option vols),
+   `vanna_volga` (FX RR/BF).
+
+**Вывод:** ~5 из ~10 пунктов backlog'а (§3) закрываются одним новым сборщиком
+опционов FORTS — данные на ISS есть, просто не собирались. Реально отсутствуют
+на рынке только swaption-куб, CDS, CPI, CDO-транши и договорные XVA/регуляторные
+параметры.
