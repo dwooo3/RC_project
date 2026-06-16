@@ -591,6 +591,59 @@ MODEL_REGISTRY: dict[str, dict] = {
             "closed-form futures. Convenience-yield/curve calibration deferred."
         ),
     },
+    "displaced_diffusion": {
+        "name": "Displaced diffusion (shifted lognormal)",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["zero_shift_is_black76"],
+        "notes": ("Gap batch 1: Black-76 on (F+shift, K+shift) — interpolates "
+                  "normal↔lognormal for negative rates/spreads. shift=0 == Black-76."),
+    },
+    "cev": {
+        "name": "CEV (constant elasticity of variance)",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["beta_one_is_bsm", "put_call_parity"],
+        "notes": ("Gap batch 1: Schroder noncentral-χ² closed form, dS=μS dt+σS^β dW. "
+                  "β=1 recovers BSM exactly; parity holds. σ is in CEV units "
+                  "(σ·S^β), not directly comparable to lognormal σ."),
+    },
+    "discrete_div_bsm": {
+        "name": "BSM with discrete dividends (escrowed)",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["no_dividends_is_bsm"],
+        "notes": ("Gap batch 1: escrowed-dividend adjustment (spot minus PV of cash "
+                  "dividends). No-dividend case == BSM. Bos-Vandermark strike-split "
+                  "refinement not applied."),
+    },
+    "binomial_jr": {
+        "name": "Jarrow-Rudd binomial",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["converges_to_bsm", "american_ge_european"],
+        "notes": "Gap batch 1: equal-probability (p=½) tree; European → BSM, American supported.",
+    },
+    "binomial_tian": {
+        "name": "Tian binomial (moment-matched)",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["converges_to_bsm"],
+        "notes": "Gap batch 1: three-moment-matched tree; European → BSM.",
+    },
+    "lognormal_mixture": {
+        "name": "Lognormal-vol mixture",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["single_component_is_bsm", "mixture_convexity"],
+        "notes": ("Gap batch 1: Σ wᵢ·BSM(σᵢ). Single component == BSM; a blend prices "
+                  "above the average-vol BSM (vol convexity) → a smile. Weights an input."),
+    },
+    "carr_madan": {
+        "name": "Carr-Madan FFT",
+        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "tests": ["fft_matches_bsm", "fft_matches_heston_cf", "parity"],
+        "notes": ("Gap batch 2: Carr-Madan (1999) damped-FFT pricer for any "
+                  "characteristic function; prices a strike strip in one FFT. "
+                  "Validated vs BSM (~1e-4) and the Heston CF (~6e-4); parity exact. "
+                  "Closes the previously-removed FFT engine. Rough-Heston CF "
+                  "deferred (fractional-Riccati scheme unstable; rough vol is "
+                  "covered by the rough-Bergomi MC)."),
+    },
     "baw": {
         "name": "Barone-Adesi-Whaley (American approx)",
         "status": ModelStatus.APPROXIMATION,

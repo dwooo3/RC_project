@@ -92,6 +92,14 @@ CLASSIFICATION: dict[str, tuple] = {
     "local_vol_mc": (_A.EQUITY, _MF.LOCAL_VOL, _M.MONTE_CARLO),
     "rough_bergomi": (_A.EQUITY, _MF.STOCH_VOL, _M.MONTE_CARLO),
     # ── Numerical methods (M6) ────────────────────────────
+    # ── Vanilla / vol analytic extensions (gap batch 1) ───
+    "displaced_diffusion": (_A.RATES, _MF.ANALYTIC, _M.CLOSED_FORM),
+    "cev": (_A.EQUITY, _MF.LOCAL_VOL, _M.CLOSED_FORM),
+    "discrete_div_bsm": (_A.EQUITY, _MF.ANALYTIC, _M.CLOSED_FORM),
+    "binomial_jr": (_A.EQUITY, _MF.ANALYTIC, _M.LATTICE),
+    "binomial_tian": (_A.EQUITY, _MF.ANALYTIC, _M.LATTICE),
+    "lognormal_mixture": (_A.EQUITY, _MF.LOCAL_VOL, _M.CLOSED_FORM),
+    "carr_madan": (_A.EQUITY, _MF.ANALYTIC, _M.FOURIER),     # FFT pricer
     "baw": (_A.EQUITY, _MF.ANALYTIC, _M.CLOSED_FORM),        # American approx
     "bjerksund_stensland": (_A.EQUITY, _MF.ANALYTIC, _M.CLOSED_FORM),
     "qmc": (_A.EQUITY, _MF.ANALYTIC, _M.MONTE_CARLO),        # Sobol quasi-MC

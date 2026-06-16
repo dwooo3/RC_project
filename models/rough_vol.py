@@ -78,3 +78,4 @@ def rough_bergomi_price(S, K, T, r, q=0.0, H=0.1, eta=1.5, rho=-0.7, xi0=0.04,
     stderr = float(pv.std() / np.sqrt(n_paths))
     return dict(price=price, stderr=stderr, n_paths=n_paths, H=H, eta=eta,
                 rho=rho, xi0=xi0, model="rough_bergomi")
+

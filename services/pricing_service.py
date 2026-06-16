@@ -1233,6 +1233,43 @@ class PricingService:
                     "opt": opt, "model": model},
             snapshot=snapshot, user_action="Price American option")
 
+    def price_vanilla_extra(self, model, S, K, T, r, sigma, q=0.0, opt="call",
+                            snapshot=None, **kw) -> dict:
+        """Vanilla/vol analytic extensions (gap batch 1). model: displaced_diffusion
+        | cev | discrete_div_bsm | binomial_jr | binomial_tian | lognormal_mixture."""
+        from models import vanilla_extra as VE
+        engines = {
+            "displaced_diffusion": lambda: VE.displaced_diffusion(S, K, T, r, sigma, kw.get("shift", 0.0), opt),
+            "cev": lambda: VE.cev_price(S, K, T, r, sigma, kw.get("beta", 1.0), q, opt),
+            "discrete_div_bsm": lambda: VE.discrete_dividend_bsm(S, K, T, r, sigma, kw.get("dividends", []), opt),
+            "binomial_jr": lambda: VE.binomial_jarrow_rudd(S, K, T, r, sigma, q, opt, int(kw.get("N", 500)), kw.get("exercise", "european")),
+            "binomial_tian": lambda: VE.binomial_tian(S, K, T, r, sigma, q, opt, int(kw.get("N", 500)), kw.get("exercise", "european")),
+            "lognormal_mixture": lambda: VE.mixture_price(S, K, T, r, kw.get("sigma_list", [sigma]), kw.get("weights", [1.0]), q, opt),
+        }
+        if model not in engines:
+            return {"errors": [f"unknown vanilla-extra model {model!r}"], "model_id": model}
+        return self._priced(
+            model_id=model, calculation_type="vanilla_extra_pricing",
+            engine=lambda: {"price": engines[model]()},
+            inputs={"model": model, "S": S, "K": K, "T": T, "r": r, "sigma": sigma,
+                    "q": q, "opt": opt, **kw},
+            snapshot=snapshot, user_action=f"Price {model}")
+
+    def price_carr_madan(self, model, S, K, T, r, sigma=0.2, q=0.0, opt="call",
+                         snapshot=None, **kw) -> dict:
+        """Carr-Madan FFT pricer (gap batch 2). model: bsm | heston."""
+        from models.fourier import carr_madan_bsm, carr_madan_heston
+        if model == "heston":
+            engine = lambda: {"price": carr_madan_heston(
+                S, K, T, r, q, kw.get("v0", 0.04), kw.get("kappa", 1.5),
+                kw.get("theta", 0.04), kw.get("sigma", 0.3), kw.get("rho", -0.6), opt)}
+        else:
+            engine = lambda: {"price": carr_madan_bsm(S, K, T, r, sigma, q, opt)}
+        return self._priced(
+            model_id="carr_madan", calculation_type="carr_madan_pricing", engine=engine,
+            inputs={"model": model, "S": S, "K": K, "T": T, "r": r, "opt": opt, **kw},
+            snapshot=snapshot, user_action="Price option (Carr-Madan FFT)")
+
     def price_qmc_option(self, S, K, T, r, sigma, q=0.0, opt="call",
                          kind="european", n=16384, m=12, snapshot=None) -> dict:
         """European or geometric-Asian option via Sobol QMC (M6)."""
