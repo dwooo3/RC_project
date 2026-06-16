@@ -155,3 +155,111 @@ def exchange_option_adi(S1, S2, T, r, q1, q2, sigma1, sigma2, rho, **kw):
     """Margrabe exchange option max(S1-S2,0) via two-asset ADI."""
     return two_asset_adi(lambda a, b: np.maximum(a - b, 0.0),
                          S1, S2, T, r, q1, q2, sigma1, sigma2, rho, **kw)
+
+
+# ── Heston (S, v) ADI with the Hout-Foulon v=0 boundary ──────
+
+def heston_adi(S0, K, T, r, q, v0, kappa, theta, sigma, rho, opt="call",
+               NS=160, Nv=80, Nt=120, S_max=None, v_max=None):
+    """European Heston option via Douglas ADI. The degenerate v=0 boundary is
+    *evolved* (Hout-Foulon): diffusion vanishes there, so the v-row keeps the
+    κθ·U_v drift with a one-sided forward difference (upwind, κθ>0) instead of
+    being frozen at the payoff. Validated against the Heston CF."""
+    S_max = S_max or 4 * max(S0, K)
+    v_max = v_max or max(0.5, 5 * theta, 5 * v0)
+    S = np.linspace(0.0, S_max, NS + 1)
+    v = np.linspace(0.0, v_max, Nv + 1)
+    dS, dv, dt = S[1] - S[0], v[1] - v[0], T / Nt
+    half = 0.5
+
+    U = np.maximum((S[:, None] - K) if opt == "call" else (K - S[:, None]), 0.0)
+    U = np.repeat(U.astype(float), Nv + 1, axis=1)
+
+    si = np.arange(1, NS)                                # interior S
+    jj = np.arange(0, Nv)                                # v rows we evolve (Nv = Neumann)
+
+    def set_bc(W, tau):
+        if opt == "call":
+            W[0, :] = 0.0
+            W[NS, :] = S_max * np.exp(-q * tau) - K * np.exp(-r * tau)
+        else:
+            W[0, :] = K * np.exp(-r * tau)
+            W[NS, :] = 0.0
+        W[:, Nv] = W[:, Nv - 1]                          # v_max Neumann
+        return W
+
+    Sg = S[si][:, None]; vg = v[jj][None, :]
+
+    def A0(W):                                           # mixed term (interior only)
+        out = np.zeros_like(W)
+        Usv = (W[2:, 2:] - W[2:, :Nv - 1] - W[:NS - 1, 2:] + W[:NS - 1, :Nv - 1]) / (4 * dS * dv)
+        out[1:NS, 1:Nv] = rho * sigma * v[1:Nv][None, :] * S[si][:, None] * Usv
+        return out
+
+    def A1(W):                                           # S-direction (all evolved v rows)
+        out = np.zeros_like(W)
+        Wc = W[1:NS, 0:Nv]
+        U_SS = (W[2:, 0:Nv] - 2 * Wc + W[:NS - 1, 0:Nv]) / dS**2
+        U_S = (W[2:, 0:Nv] - W[:NS - 1, 0:Nv]) / (2 * dS)
+        out[1:NS, 0:Nv] = 0.5 * vg * Sg**2 * U_SS + (r - q) * Sg * U_S - 0.5 * r * Wc
+        return out
+
+    def A2(W):                                           # v-direction (forward diff at v=0)
+        out = np.zeros_like(W)
+        Wc = W[1:NS, 1:Nv]                               # central for j=1..Nv-1
+        U_vv = (W[1:NS, 2:] - 2 * Wc + W[1:NS, :Nv - 1]) / dv**2
+        U_v = (W[1:NS, 2:] - W[1:NS, :Nv - 1]) / (2 * dv)
+        out[1:NS, 1:Nv] = 0.5 * sigma**2 * v[1:Nv] * U_vv + kappa * (theta - v[1:Nv]) * U_v - 0.5 * r * Wc
+        U_v0 = (W[1:NS, 1] - W[1:NS, 0]) / dv           # one-sided at v=0
+        out[1:NS, 0] = kappa * theta * U_v0 - 0.5 * r * W[1:NS, 0]
+        return out
+
+    # S-tridiagonal coeffs per v-row
+    def s_coeffs(vv):
+        a = -half * dt * (0.5 * vv * S[si]**2 / dS**2 - (r - q) * S[si] / (2 * dS))
+        b = 1 + half * dt * (vv * S[si]**2 / dS**2 + 0.5 * r)
+        c = -half * dt * (0.5 * vv * S[si]**2 / dS**2 + (r - q) * S[si] / (2 * dS))
+        return a, b, c
+
+    # v-tridiagonal coeffs (j=0 forward diff; Neumann fold at j=Nv-1)
+    def v_system(rhs_col):
+        a = np.zeros(Nv); b = np.zeros(Nv); c = np.zeros(Nv)
+        b[0] = 1 + half * dt * (kappa * theta / dv + 0.5 * r)
+        c[0] = -half * dt * (kappa * theta / dv)
+        for j in range(1, Nv):
+            vv = v[j]
+            sub = 0.5 * sigma**2 * vv / dv**2 - kappa * (theta - vv) / (2 * dv)
+            sup = 0.5 * sigma**2 * vv / dv**2 + kappa * (theta - vv) / (2 * dv)
+            a[j] = -half * dt * sub
+            b[j] = 1 + half * dt * (sigma**2 * vv / dv**2 + 0.5 * r)
+            c[j] = -half * dt * sup
+        b[Nv - 1] += c[Nv - 1]                           # Neumann: U[Nv]=U[Nv-1]
+        c[Nv - 1] = 0.0
+        return _thomas(a, b, c, rhs_col)
+
+    U = set_bc(U, 0.0)
+    for n in range(Nt):
+        tau = (n + 1) * dt
+        U0 = U.copy()
+        Y0 = set_bc(U + dt * (A0(U) + A1(U) + A2(U)), tau)
+        # implicit S-sweep over every evolved v row
+        rhs1 = Y0 - half * dt * A1(U0)
+        Y1 = Y0.copy()
+        for j in jj:
+            a, b, c = s_coeffs(v[j])
+            d = rhs1[1:NS, j].copy()
+            d[0] -= a[0] * Y0[0, j]; d[-1] -= c[-1] * Y0[NS, j]
+            Y1[1:NS, j] = _thomas(a, b, c, d)
+        Y1 = set_bc(Y1, tau)
+        # implicit v-sweep over interior S
+        rhs2 = Y1 - half * dt * A2(U0)
+        Y2 = Y1.copy()
+        for i in si:
+            Y2[i, 0:Nv] = v_system(rhs2[i, 0:Nv])
+        U = set_bc(Y2, tau)
+
+    i = min(max(np.searchsorted(S, S0) - 1, 0), NS - 1)
+    j = min(max(np.searchsorted(v, v0) - 1, 0), Nv - 1)
+    ws = (S0 - S[i]) / (S[i + 1] - S[i]); wv = (v0 - v[j]) / (v[j + 1] - v[j])
+    return float((1 - ws) * (1 - wv) * U[i, j] + ws * (1 - wv) * U[i + 1, j]
+                 + (1 - ws) * wv * U[i, j + 1] + ws * wv * U[i + 1, j + 1])

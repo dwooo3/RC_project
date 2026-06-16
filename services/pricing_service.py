@@ -1247,6 +1247,55 @@ class PricingService:
                     "opt": opt, "kind": kind, "n": int(n)},
             snapshot=snapshot, user_action="Price option (QMC)")
 
+    def price_heston_adi(self, S, K, T, r, q, v0, kappa, theta, sigma, rho,
+                         opt="call", NS=160, Nv=80, Nt=120, snapshot=None) -> dict:
+        """European Heston option via Douglas ADI with the Hout-Foulon v=0
+        boundary (task-3; cross-check to the Heston CF)."""
+        from models.adi import heston_adi
+        return self._priced(
+            model_id="adi", calculation_type="heston_adi_pricing",
+            engine=lambda: {"price": heston_adi(S, K, T, r, q, v0, kappa, theta,
+                                                sigma, rho, opt, int(NS), int(Nv), int(Nt))},
+            inputs={"S": S, "K": K, "T": T, "r": r, "q": q, "v0": v0, "kappa": kappa,
+                    "theta": theta, "sigma": sigma, "rho": rho, "opt": opt},
+            snapshot=snapshot, user_action="Price Heston option (ADI)")
+
+    def calibrate_commodity(self, model, tenors, futures, vol_tenors, vol_mkt,
+                            r=0.05, spot=None) -> dict:
+        """Calibrate a commodity model to a futures strip + ATM vols (task-3).
+        model: 'schwartz_smith'."""
+        from models.market_calibration import calibrate_schwartz_smith
+        try:
+            res = calibrate_schwartz_smith(tenors, futures, vol_tenors, vol_mkt, r, spot)
+            res.pop("model", None)
+            return {**res, "errors": [], "model_id": "schwartz_smith"}
+        except Exception as exc:                       # noqa: BLE001
+            return {"errors": [str(exc)], "model_id": "schwartz_smith"}
+
+    def calibrate_base_correlation(self, pds, detachments, target_els,
+                                   recovery=0.4) -> dict:
+        """Bootstrap the CDO base-correlation curve from base-tranche ELs (task-3)."""
+        from models.market_calibration import calibrate_base_correlation
+        try:
+            curve = calibrate_base_correlation(list(pds), list(detachments),
+                                               list(target_els), recovery)
+            return {"errors": [], "model_id": "gaussian_copula", "base_correlation": curve}
+        except Exception as exc:                       # noqa: BLE001
+            return {"errors": [str(exc)], "model_id": "gaussian_copula"}
+
+    def calibrate_cheyette_skew(self, T_opt, T_swap, strikes, market_vols, a=0.1,
+                                sigma=0.01, freq=2, curve=None, snapshot=None,
+                                curve_id="flat_rub") -> dict:
+        """Calibrate the Cheyette local-vol skew to a swaption smile (task-3)."""
+        from models.rate_calibration import calibrate_cheyette_skew
+        curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        try:
+            res = calibrate_cheyette_skew(curve, a, sigma, T_opt, T_swap, list(strikes),
+                                          list(market_vols), int(freq))
+            return {**res, "errors": [], "model_id": "cheyette"}
+        except Exception as exc:                       # noqa: BLE001
+            return {"errors": [str(exc)], "model_id": "cheyette"}
+
     def price_two_asset_option(self, S1, S2, T, r, q1, q2, sigma1, sigma2, rho,
                                kind="exchange", strike=0.0, N1=80, N2=80, Nt=100,
                                snapshot=None) -> dict:

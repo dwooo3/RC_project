@@ -18,7 +18,7 @@ to within rmse tolerance.
 from __future__ import annotations
 
 import numpy as np
-from scipy.optimize import least_squares
+from scipy.optimize import least_squares, brentq
 
 from models.short_rate import (_forward_swap_rate, black_swaption_price,
                                HullWhite, calibrate_hull_white)
@@ -153,6 +153,64 @@ def calibrate_cheyette(curve, cube, instruments, freq=2, notional=1.0):
     hw = calibrate_hull_white(curve, cube, instruments, freq, notional)
     return dict(a=hw["kappa"], sigma=hw["sigma"], skew=0.0, rmse=hw["rmse"],
                 instruments=hw["instruments"], converged=hw["converged"])
+
+
+def calibrate_cheyette_skew(curve, a, sigma, T_opt, T_swap, strikes, market_vols,
+                            freq=2, n_sims=80_000, steps=80, seed=11):
+    """Calibrate the Cheyette local-vol skew to a swaption smile (one expiry ×
+    tenor), holding (a, σ) from the ATM/HW fit. Common random numbers (fixed
+    seed) keep the MC objective smooth in the single skew parameter."""
+    from models.cheyette import Cheyette
+    from models.black_scholes import black76
+    S0, ann = _forward_swap_rate(curve, T_opt, T_swap, freq)
+
+    def implied(price, K):
+        try:
+            return brentq(lambda v: ann * black76(S0, K, T_opt, 0, v, "call").price - price,
+                          1e-4, 3.0)
+        except ValueError:
+            return np.nan
+
+    def resid(p):
+        ch = Cheyette(curve, a, sigma, skew=p[0])
+        out = []
+        for K, mv in zip(strikes, market_vols):
+            px = ch.swaption(1.0, K, T_opt, T_swap, freq, "payer", n_sims, steps, seed)["price"]
+            out.append(implied(px, K) - mv)
+        return out
+
+    res = least_squares(resid, x0=[0.0], bounds=([-10.0], [10.0]),
+                        xtol=1e-6, ftol=1e-8, diff_step=0.05)
+    rmse = float(np.sqrt(np.mean(np.square(resid(res.x)))))
+    return dict(skew=float(res.x[0]), a=a, sigma=sigma, rmse=rmse,
+                converged=bool(res.success))
+
+
+def calibrate_lmm_instantaneous_vol(curve, strip, end, freq=2):
+    """Bootstrap piecewise-constant LMM *instantaneous* forward vols v_j on each
+    period from a caplet vol term structure: caplet_k variance = Σ_{j≤k} v_j²·τ.
+    Closes the time-dependent-vol gap (the flat LMM uses one vol per forward).
+    Returns v_j, the implied caplet vols (round-trip), and a no-arb flag."""
+    from models.lmm import LMM
+    m = LMM(curve, start=0.0, end=end, freq=freq)
+    resets, tau = m.reset, m.tau
+    cap_var = np.array([(strip.vol(resets[k]) ** 2) * resets[k] if resets[k] > 0 else 0.0
+                        for k in range(m.N)])
+    inst_var = np.empty(m.N)                            # v_j² per period
+    prev = 0.0
+    arb_free = True
+    for k in range(m.N):
+        inc = cap_var[k] - prev
+        if inc < -1e-12:
+            arb_free = False                            # total variance must rise
+        inst_var[k] = max(inc, 0.0) / tau[k]
+        prev = cap_var[k]
+    inst_vol = np.sqrt(inst_var)
+    # round-trip implied caplet vols from the bootstrapped instantaneous vols
+    implied = np.array([np.sqrt(np.sum(inst_var[:k + 1] * tau[:k + 1]) / resets[k])
+                        if resets[k] > 0 else 0.0 for k in range(m.N)])
+    return dict(inst_vol=inst_vol, resets=resets.copy(), implied_caplet_vol=implied,
+                arb_free=arb_free)
 
 
 # ── unified dispatcher ───────────────────────────────────────

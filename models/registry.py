@@ -633,15 +633,18 @@ MODEL_REGISTRY: dict[str, dict] = {
         "name": "ADI 2-D PDE (two-asset, Douglas)",
         "status": ModelStatus.APPROXIMATION,
         "domain": "Pricing",
-        "tests": ["exchange_matches_margrabe", "spread_equals_exchange_at_zero"],
+        "tests": ["exchange_matches_margrabe", "spread_equals_exchange_at_zero",
+                  "heston_adi_matches_cf", "heston_adi_put_call_parity"],
         "notes": (
-            "M6: Douglas ADI for the two-asset Black-Scholes PDE in log-space — "
-            "explicit predictor carrying the cross-derivative ρσ1σ2·U_xy, then two "
-            "implicit tridiagonal sweeps. Validated: exchange option == Margrabe "
-            "within ~0.07% across moneyness and ρ∈{-0.5,0,0.5}. Prices general "
-            "two-asset payoffs (spread/basket/best-of). Heston (S,v) ADI deferred "
-            "(degenerate v=0 boundary needs Hout-Foulon; Heston CF is the "
-            "production stoch-vol pricer)."
+            "M6 + task-3: Douglas ADI for 2-D PDEs — explicit predictor carrying "
+            "the cross-derivative, then two implicit tridiagonal sweeps. "
+            "(1) Two-asset Black-Scholes in log-space: exchange == Margrabe within "
+            "~0.07% across moneyness and ρ∈{-0.5,0,0.5}; prices spread/basket. "
+            "(2) Heston (S,v) with the Hout-Foulon v=0 boundary — diffusion "
+            "vanishes there so the row is evolved with a one-sided forward U_v "
+            "(upwind κθ>0) rather than frozen; matches the Heston CF within ~0.2% "
+            "(fine grid) / <1% (coarse), put-call parity exact. Earlier frozen-v=0 "
+            "attempt mispriced by ~14%."
         ),
     },
     "cds_isda": {
@@ -747,14 +750,20 @@ MODEL_REGISTRY: dict[str, dict] = {
         "status": ModelStatus.APPROXIMATION,
         "domain": "Risk",
         "tests": ["single_factor_rw_times_s", "homogeneous_degree_one",
-                  "correlation_diversifies", "scenario_max"],
+                  "correlation_diversifies", "scenario_max", "curvature_nonneg",
+                  "drc_hedge_benefit", "total_sums_components"],
         "notes": (
-            "M8: FRTB sensitivities-based method delta charge — WS=RW·s, "
-            "intra-bucket ρ and inter-bucket γ aggregation, evaluated under the "
-            "three regulatory correlation scenarios (medium/high/low) with the max "
-            "taken. Validated: single factor = RW·|s|, homogeneous degree 1, "
-            "imperfect correlation diversifies and ρ=1 recovers the sum, scenario "
-            "max ≥ medium. Delta only (vega/curvature and DRC/RRAO deferred)."
+            "M8 + task-3: FRTB sensitivities-based method — WS=RW·s with "
+            "intra-bucket ρ / inter-bucket γ aggregation over the three "
+            "regulatory correlation scenarios (medium/high/low, max taken), now "
+            "covering delta, vega and curvature (CVR from up/down shocks with the "
+            "ψ both-negative rule), plus the Default Risk Charge (per-bucket net "
+            "long/short JTD with the gross-JTD hedge-benefit ratio). Total = SBM "
+            "(delta+vega+curvature) + DRC. Validated: single factor = RW·|s|, "
+            "homogeneous degree 1, correlation diversifies (ρ=1 → sum), curvature "
+            "≥ 0 and scales, DRC single = RW·JTD with partial hedge offset, total "
+            "sums components. RRAO and the full Basel RW/correlation calibration "
+            "tables are inputs, not hard-coded."
         ),
     },
     "cms_swap": {

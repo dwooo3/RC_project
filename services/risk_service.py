@@ -280,20 +280,30 @@ class RiskService:
             return self._error_result(model_id=model_id, error=exc, snapshot=snapshot,
                                       calculation_type="xva_suite", inputs=inputs)
 
-    def frtb_capital(self, factors, rho=0.5, gamma=0.25, snapshot=None) -> dict:
-        """FRTB Standardised Approach delta charge (SBM), M8.
-        factors: list of {bucket, sensitivity, risk_weight}."""
-        from models.frtb import frtb_delta_charge
+    def frtb_capital(self, factors=None, rho=0.5, gamma=0.25, vega_factors=None,
+                     curvature_factors=None, drc_factors=None, snapshot=None) -> dict:
+        """FRTB Standardised Approach capital (M8 + task-3 extensions). With only
+        `factors` it returns the SBM delta charge; supplying vega/curvature/drc
+        factors returns the full SBM (delta+vega+curvature) + DRC total."""
+        from models.frtb import frtb_delta_charge, frtb_capital as frtb_total
         model_id = "frtb_sba"
-        inputs = {"n_factors": len(factors), "rho": rho, "gamma": gamma}
+        inputs = {"n_delta": len(factors or []), "n_vega": len(vega_factors or []),
+                  "n_curv": len(curvature_factors or []), "n_drc": len(drc_factors or []),
+                  "rho": rho, "gamma": gamma}
         try:
             self._enforce_model(model_id)
             snapshot = snapshot or self.market_data.demo_snapshot()
-            res = frtb_delta_charge(list(factors), rho, gamma)
+            if vega_factors or curvature_factors or drc_factors:
+                res = frtb_total(factors, vega_factors, curvature_factors,
+                                 drc_factors, rho, gamma)
+                value = res["total"]
+            else:
+                res = frtb_delta_charge(list(factors or []), rho, gamma)
+                value = res["charge"]
             return self._result(
-                value=res["charge"], model_id=model_id, raw=res, snapshot=snapshot,
+                value=value, model_id=model_id, raw=res, snapshot=snapshot,
                 calculation_type="frtb_sba", inputs=inputs,
-                user_action="FRTB-SA delta capital")
+                user_action="FRTB-SA capital")
         except Exception as exc:
             return self._error_result(model_id=model_id, error=exc, snapshot=snapshot,
                                       calculation_type="frtb_sba", inputs=inputs)

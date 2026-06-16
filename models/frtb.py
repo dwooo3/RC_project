@@ -60,3 +60,83 @@ def frtb_delta_charge(factors, rho=0.5, gamma=0.25) -> dict:
     charge = max(out.values())
     return dict(charge=charge, scenarios=out,
                 worst=max(out, key=out.get), n_buckets=len(buckets))
+
+
+def frtb_vega_charge(factors, rho=0.5, gamma=0.25) -> dict:
+    """SBM vega charge — structurally identical aggregation to delta, fed with
+    vega sensitivities × vega risk weights. factors: {bucket, sensitivity, risk_weight}."""
+    return frtb_delta_charge(factors, rho, gamma)
+
+
+# ── curvature ────────────────────────────────────────────────
+
+def curvature_cvr(pv0, pv_up, pv_down, delta, rw_curv):
+    """CVR_k = -min(ΔPV_up - RW·δ, ΔPV_down + RW·δ) from up/down shock revals."""
+    up = (pv_up - pv0) - rw_curv * delta
+    down = (pv_down - pv0) + rw_curv * delta
+    return -min(up, down)
+
+
+def _bucket_curvature(cvr, rho):
+    cvr = np.asarray(cvr, float)
+    pos = np.maximum(cvr, 0.0)
+    psi = ~((cvr[:, None] < 0) & (cvr[None, :] < 0))    # 1 unless both negative
+    M = rho * psi.astype(float)
+    np.fill_diagonal(M, 0.0)
+    var = np.sum(pos**2) + np.sum(M * np.outer(cvr, cvr))
+    return np.sqrt(max(var, 0.0))
+
+
+def _aggregate_curvature(buckets, rho, gamma):
+    Kb = np.array([_bucket_curvature(c, rho) for c in buckets.values()])
+    Sb = np.array([float(np.sum(c)) for c in buckets.values()])
+    psi = ~((Sb[:, None] < 0) & (Sb[None, :] < 0))
+    M = gamma * psi.astype(float)
+    np.fill_diagonal(M, 0.0)
+    var = np.sum(Kb**2) + np.sum(M * np.outer(Sb, Sb))
+    return float(np.sqrt(max(var, 0.0)))
+
+
+def frtb_curvature_charge(factors, rho=0.5, gamma=0.25) -> dict:
+    """SBM curvature charge over the three scenarios. factors: {bucket, cvr}."""
+    buckets: dict = {}
+    for f in factors:
+        buckets.setdefault(f["bucket"], []).append(f["cvr"])
+    out = {name: _aggregate_curvature(buckets, r, g)
+           for name, (r, g) in _scenarios(rho, gamma).items()}
+    charge = max(out.values())
+    return dict(charge=charge, scenarios=out, worst=max(out, key=out.get))
+
+
+# ── default risk charge (DRC) ────────────────────────────────
+
+def frtb_drc_charge(factors) -> dict:
+    """Default Risk Charge (non-securitisation): per bucket net long/short JTD
+    with the gross-JTD hedge-benefit ratio. factors: {bucket, jtd, risk_weight}
+    (jtd signed: long > 0, short < 0)."""
+    buckets: dict = {}
+    for f in factors:
+        buckets.setdefault(f["bucket"], []).append(f["risk_weight"] * f["jtd"])
+    per_bucket, total = {}, 0.0
+    for b, rwjtd in buckets.items():
+        arr = np.asarray(rwjtd, float)
+        long = float(np.sum(np.maximum(arr, 0.0)))
+        short = float(np.sum(np.maximum(-arr, 0.0)))
+        wts = long / (long + short) if (long + short) > 0 else 0.0
+        drc_b = max(long - wts * short, 0.0)
+        per_bucket[b] = drc_b
+        total += drc_b
+    return dict(charge=total, per_bucket=per_bucket, hedge_benefit_ratio=wts if buckets else 0.0)
+
+
+# ── total SBM + DRC ──────────────────────────────────────────
+
+def frtb_capital(delta_factors=None, vega_factors=None, curvature_factors=None,
+                 drc_factors=None, rho=0.5, gamma=0.25) -> dict:
+    """Total FRTB-SA: SBM (delta + vega + curvature, each scenario-maxed) + DRC."""
+    d = frtb_delta_charge(delta_factors, rho, gamma)["charge"] if delta_factors else 0.0
+    v = frtb_vega_charge(vega_factors, rho, gamma)["charge"] if vega_factors else 0.0
+    c = frtb_curvature_charge(curvature_factors, rho, gamma)["charge"] if curvature_factors else 0.0
+    drc = frtb_drc_charge(drc_factors)["charge"] if drc_factors else 0.0
+    sbm = d + v + c
+    return dict(delta=d, vega=v, curvature=c, sbm=sbm, drc=drc, total=sbm + drc)
