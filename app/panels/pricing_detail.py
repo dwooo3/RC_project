@@ -273,7 +273,7 @@ class PricingDetailScreen(QWidget):
             self._model_summary.setStyleSheet(
                 f"color:{PALETTE.txt2};font-size:11px;background:transparent;")
             _place(self._model_summary, wide=True)
-            btn = QPushButton("Model & parameters…")
+            btn = QPushButton("Model && parameters…")   # && -> literal & (not a mnemonic)
             btn.setObjectName("model_params_button")
             btn.clicked.connect(self._open_model_dialog)
             _place(btn, wide=True)
