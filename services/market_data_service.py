@@ -869,6 +869,40 @@ class MarketDataService:
                 continue
         return dict(sorted(out.items()))
 
+    def get_option_smile(self, underlying: str, expiry: str | None = None,
+                         snapshot: MarketDataSnapshot | None = None) -> dict:
+        """One expiry's smile from the live FORTS surface {UND}_FORTS: strikes,
+        implied vols, time-to-expiry and an ATM-forward estimate. Feeds SABR /
+        Heston / local-vol calibration on real MOEX option data."""
+        from infra.moex_iss.options_surface import (smile_at_expiry, year_fraction,
+                                                    clean_smile)
+        snapshot = snapshot or self.best_available_snapshot()
+        surf = snapshot.vol_surfaces.get(f"{underlying}_FORTS")
+        if not surf:
+            return {}
+        sm = smile_at_expiry(surf, expiry)
+        if not sm or len(sm.get("strikes", [])) < 3:
+            return {}
+        # self-implied FORTS smiles carry illiquid deep-OTM garbage → clean first
+        strikes, ivs, fwd = clean_smile(sm["strikes"], sm["ivs"])
+        if len(strikes) < 5:
+            return {}
+        sm["strikes"], sm["ivs"], sm["forward"] = strikes, ivs, fwd
+        sm["T"] = year_fraction(sm["expiry"], snapshot.valuation_date)
+        return sm
+
+    def get_fx_rr_bf(self, asset: str, expiry: str | None = None,
+                     snapshot: MarketDataSnapshot | None = None) -> dict:
+        """25Δ ATM / risk-reversal / butterfly from the live FX option smile
+        (asset = Si, CNY, Eu). Feeds the Vanna-Volga model on real data."""
+        from infra.moex_iss.options_surface import rr_bf_25delta
+        sm = self.get_option_smile(asset, expiry, snapshot)
+        if not sm:
+            return {}
+        rb = rr_bf_25delta(sm, sm["T"], sm["forward"])
+        rb["expiry"], rb["T"] = sm["expiry"], sm["T"]
+        return rb
+
     def get_credit_curve(self, curve_id: str, snapshot: MarketDataSnapshot | None = None) -> Any:
         snapshot = snapshot or self.demo_snapshot()
         return snapshot.credit_curves[curve_id]

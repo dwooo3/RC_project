@@ -1362,6 +1362,36 @@ class PricingService:
                     "theta": theta, "sigma": sigma, "rho": rho, "opt": opt},
             snapshot=snapshot, user_action="Price Heston option (ADI)")
 
+    def calibrate_sabr_from_market(self, underlying, expiry=None, beta=0.5) -> dict:
+        """Calibrate SABR (α,ρ,ν) to the LIVE FORTS option smile for `underlying`
+        (real-data path: equity/index/commodity option chains from MOEX)."""
+        from app.runtime import market_service, active_snapshot
+        from models.heston import sabr_calibrate
+        ms = market_service()
+        sm = ms.get_option_smile(underlying, expiry, active_snapshot(ms))
+        if not sm:
+            return {"errors": [f"no live FORTS smile for {underlying!r}"], "model_id": "sabr"}
+        cal = sabr_calibrate(sm["ivs"], sm["forward"], sm["strikes"], sm["T"], beta)
+        return {**cal, "errors": [], "model_id": "sabr", "underlying": underlying,
+                "expiry": sm["expiry"], "forward": sm["forward"], "n_strikes": len(sm["strikes"])}
+
+    def fx_vanna_volga_from_market(self, asset, K, opt="call", expiry=None,
+                                   r_d=0.0, r_f=0.0) -> dict:
+        """Vanna-Volga FX vol/price at strike K from the LIVE 25Δ RR/BF smile
+        (asset = Si/CNY). Real-data path closing the VV data gap."""
+        from app.runtime import market_service, active_snapshot
+        from models.vanna_volga import vv_implied_vol
+        ms = market_service()
+        rb = ms.get_fx_rr_bf(asset, expiry, active_snapshot(ms))
+        if not rb:
+            return {"errors": [f"no live FX smile for {asset!r}"], "model_id": "vanna_volga"}
+        F, T = rb["forward"], rb["T"]
+        iv = vv_implied_vol(F, K, T, r_d, r_f, F, rb["atm_vol"],
+                            rb["k_25p"], rb["sig_25p"], rb["k_25c"], rb["sig_25c"])
+        return {"errors": [], "model_id": "vanna_volga", "asset": asset,
+                "forward": F, "atm_vol": rb["atm_vol"], "rr_25": rb["rr_25"],
+                "bf_25": rb["bf_25"], "implied_vol": iv, "expiry": rb["expiry"]}
+
     def calibrate_commodity_from_market(self, asset, vol_proxy=0.25, r=0.05) -> dict:
         """Calibrate Schwartz-Smith to the LIVE MOEX-FORTS futures strip for
         `asset` (BR/GOLD/NG/...). Real-data path: pulls commodity_quotes via the
