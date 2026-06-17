@@ -1,14 +1,22 @@
-"""Dashboard workstation: daily risk control tower."""
+"""Dashboard workstation: daily risk control tower.
+
+Two tabs keep the noise out of the way: **Overview** carries only the data and
+calculations (market overview + top movers, headline KPIs), while **Operations**
+holds the daily checklist, warnings / required actions, model-status counts and
+alerts — the operational chrome that used to crowd the main screen.
+"""
 
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+
+from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
 
 from ui.components import DataSourceChip, DenseTable, KpiStrip, StatusChip, WorkstationPanel, make_action
 from ui.layouts import WorkstationWorkspace
 
 
 class DashboardPanel(WorkstationWorkspace):
-    """Daily operating console for portfolio, risk, data, and model status."""
+    """Daily operating console — data/calculations on Overview, chrome on Operations."""
 
     def __init__(self, parent=None):
         from app.runtime import active_snapshot, is_live
@@ -35,10 +43,7 @@ class DashboardPanel(WorkstationWorkspace):
                     ("Warnings", "4", "Open log"),
                 ]
             ),
-            left=self._build_checklist(),
-            center=self._build_status(),
-            right=self._build_warnings(),
-            bottom=self._build_alerts(),
+            center=self._build_tabs(),
             context_items=[
                 ("Portfolio", "Main Portfolio"),
                 ("Book", "Trading"),
@@ -49,6 +54,26 @@ class DashboardPanel(WorkstationWorkspace):
             ],
             parent=parent,
         )
+
+    def _build_tabs(self) -> QTabWidget:
+        tabs = QTabWidget()
+        tabs.addTab(self._build_status(), "Overview")
+        tabs.addTab(self._build_operations(), "Operations")
+        return tabs
+
+    def _build_operations(self) -> QWidget:
+        """Operational chrome moved off the main view: checklist, warnings,
+        model status and alerts."""
+        host = QWidget()
+        host.setStyleSheet("background:transparent;")
+        col = QVBoxLayout(host)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(12)
+        col.addWidget(self._build_checklist())
+        col.addWidget(self._build_warnings())
+        col.addWidget(self._build_alerts())
+        col.addStretch(1)
+        return host
 
     def _build_checklist(self):
         panel = WorkstationPanel("Daily Checklist")
