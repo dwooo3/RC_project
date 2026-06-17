@@ -12,8 +12,7 @@ Bond and bond option pricing from each model.
 
 import numpy as np
 from scipy.stats import norm
-from scipy.optimize import minimize, brentq
-from scipy.integrate import quad
+from scipy.optimize import brentq
 
 
 # ─────────────────────────────────────────────────────────
@@ -202,8 +201,8 @@ class HullWhite:
                     opt: str = "call") -> float:
         """Analytic bond option under Hull-White."""
         k, sig = self.kappa, self.sigma
-        B_opt   = self._B(T_opt)
-        B_bond  = self._B(T_bond)
+        self._B(T_opt)
+        self._B(T_bond)
         P_T     = self.bond_price(self._r0, 0, T_opt)
         P_Tb    = self.bond_price(self._r0, 0, T_bond)
         sigma_p = sig * np.sqrt((1-np.exp(-2*k*T_opt))/(2*k)) * self._B(T_bond-T_opt)

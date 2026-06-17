@@ -4,7 +4,6 @@ Portfolio ownership lives in domain.portfolio and services.portfolio_service.
 This module preserves the legacy import path used by existing UI and scripts.
 """
 
-from domain.portfolio import Position
 from services.portfolio_service import PortfolioService
 
 

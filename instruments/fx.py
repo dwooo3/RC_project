@@ -11,10 +11,8 @@ FX instruments:
 """
 
 import numpy as np
-from models.black_scholes import garman_kohlhagen, Greeks
+from models.black_scholes import garman_kohlhagen
 from instruments.barrier import single_barrier, barrier_mc
-from instruments.digital import cash_or_nothing
-from instruments.asian import arithmetic_asian
 
 
 # ─────────────────────────────────────────────────────────

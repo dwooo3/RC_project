@@ -14,7 +14,6 @@ three vols equal) collapses to that flat vol (→ Garman-Kohlhagen).
 from __future__ import annotations
 
 import numpy as np
-from scipy.stats import norm
 
 from models.black_scholes import garman_kohlhagen
 

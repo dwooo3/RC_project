@@ -11,7 +11,6 @@ Credit instruments:
 
 import numpy as np
 from scipy.optimize import brentq
-from scipy.stats import norm
 
 
 # ─────────────────────────────────────────────────────────
@@ -192,12 +191,12 @@ def isda_cds_legs(hazard: float, coupon: float, T: float, freq: int, r: float,
     dt = 1.0 / freq
     times = [i * dt for i in range(1, int(round(T * freq)) + 1)]
     rpv01 = 0.0
-    prev_t, prev_Q = 0.0, 1.0
+    _prev_t, prev_Q = 0.0, 1.0
     for t in times:
         Q = survival_prob(t, hazard)
         df = np.exp(-r * t)
         rpv01 += dt * df * Q + 0.5 * dt * df * (prev_Q - Q)   # coupon + accrual
-        prev_t, prev_Q = t, Q
+        _prev_t, prev_Q = t, Q
     # protection leg on a fine grid
     dti = min(dt, 0.02)
     grid = np.arange(dti, T + dti / 2, dti)

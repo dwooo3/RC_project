@@ -84,7 +84,7 @@ def abs_waterfall(balance, wac, net_coupon, wam_months, tranches, psa=100.0,
     tranche earns its coupon on outstanding balance. tranches: list of
     (name, size, coupon). Returns per-tranche cashflows, WAL and price."""
     cf = mbs_cashflows(balance, wac, net_coupon, int(wam_months), psa)
-    months, prin, pool_int = cf["month"], cf["principal"], cf["interest"]
+    months, prin, _pool_int = cf["month"], cf["principal"], cf["interest"]
     bals = [sz for _, sz, _ in tranches]
     coupons = [cp for _, _, cp in tranches]
     out = []

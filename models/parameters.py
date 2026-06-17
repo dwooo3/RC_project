@@ -18,7 +18,7 @@ Advanced section, rebuilt when the engine changes. Pure data — no Qt.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 GROUPS = ("contract", "market", "model", "numerical")

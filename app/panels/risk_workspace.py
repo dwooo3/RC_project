@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 import numpy as np
 from PySide6.QtWidgets import QTabWidget
 
-from services.market_data_service import MarketDataService
 from services.risk_service import RiskService
 from ui.components import DataSourceChip, DenseTable, KpiStrip, StatusChip, WorkstationPanel, make_action
 from ui.layouts import WorkstationWorkspace

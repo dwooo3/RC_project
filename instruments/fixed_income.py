@@ -19,7 +19,6 @@ import calendar
 
 import numpy as np
 from scipy.optimize import brentq
-from scipy.stats import norm
 from curves.yield_curve import YieldCurve, year_fraction
 from models.black_scholes import black76
 
@@ -780,7 +779,6 @@ def irs(notional: float, fixed_rate: float, T: float, freq: int,
     npv = (float_pv_n - fixed_pv) if pay_fixed else (fixed_pv - float_pv_n)
 
     dv01 = notional * annuity / 10000
-    bpv  = dv01  # bpv = dv01 for flat curve
 
     return dict(npv=npv, fair_rate=fair_rate, annuity=annuity,
                 fixed_pv=fixed_pv, float_pv=float_pv_n,

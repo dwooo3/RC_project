@@ -97,8 +97,8 @@ def one_touch(S: float, H: float, T: float, r: float, sigma: float,
     eta = 1 if direction == "up" else -1
 
     z   = np.log(H/S)/sv + lam*sv
-    x2  = np.log(S/H)/sv + (1+mu)*sv  # = -z + (1+mu+lam)*sv
-    y2  = np.log(H/S)/sv + (1+mu)*sv
+    np.log(S/H)/sv + (1+mu)*sv  # = -z + (1+mu+lam)*sv
+    np.log(H/S)/sv + (1+mu)*sv
 
     if payment == "expiry":
         price = cash*(norm.cdf(eta*(np.log(H/S)/sv - lam*sv))*(H/S)**(mu+lam)

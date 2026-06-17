@@ -21,7 +21,7 @@ import numpy as np
 from scipy.optimize import least_squares, brentq
 
 from models.short_rate import (_forward_swap_rate, black_swaption_price,
-                               HullWhite, calibrate_hull_white)
+                               calibrate_hull_white)
 from models.g2pp import G2pp
 from models.black_karasinski import BlackKarasinski
 from models.cheyette import Cheyette
@@ -122,7 +122,7 @@ def calibrate_lmm_swaptions(curve, cube, instruments, freq=2, notional=1.0,
 def calibrate_bk(curve, cube, instruments, freq=2, notional=1.0, steps_per_year=16):
     """Calibrate Black-Karasinski (a, σ) to the ATM swaption surface (tree)."""
     strikes, market = _atm_market(curve, cube, instruments, freq, notional)
-    end = max(T_opt + T_swap for T_opt, T_swap in instruments)
+    max(T_opt + T_swap for T_opt, T_swap in instruments)
 
     def model_prices(p):
         a, s = p
@@ -160,7 +160,6 @@ def calibrate_cheyette_skew(curve, a, sigma, T_opt, T_swap, strikes, market_vols
     """Calibrate the Cheyette local-vol skew to a swaption smile (one expiry ×
     tenor), holding (a, σ) from the ATM/HW fit. Common random numbers (fixed
     seed) keep the MC objective smooth in the single skew parameter."""
-    from models.cheyette import Cheyette
     from models.black_scholes import black76
     S0, ann = _forward_swap_rate(curve, T_opt, T_swap, freq)
 

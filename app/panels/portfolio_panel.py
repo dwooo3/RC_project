@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QTabWidget
 
 from app.panels.session import shared_portfolio
 from domain.portfolio import Position
-from services.portfolio_service import PortfolioService
+from services.portfolio_service import PortfolioService  # noqa: F401  (service-boundary marker)
 from ui.components import DataSourceChip, DenseTable, KpiStrip, StatusChip, WarningBanner, WorkstationPanel, make_action
 from ui.layouts import WorkstationWorkspace
 

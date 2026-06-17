@@ -45,7 +45,7 @@ def complex_chooser(S: float, Kc: float, Kp: float,
     b  = r - q
     sv_c = sigma*np.sqrt(Tc); sv_p = sigma*np.sqrt(Tp)
     sv_t = sigma*np.sqrt(T_choose)
-    d    = (np.log(S/S) + (b + sigma**2/2)*T_choose) / sv_t  # approximate
+    (np.log(S/S) + (b + sigma**2/2)*T_choose) / sv_t  # approximate
 
     # Solve critical S* numerically
     from scipy.optimize import brentq
@@ -99,8 +99,6 @@ def compound_option(S: float, K_outer: float, K_inner: float,
     except ValueError:
         Ss = S
 
-    phi1 = 1 if outer == "call" else -1
-    phi2 = 1 if inner == "call" else -1
 
     d1 = (np.log(S/Ss)     + (b + sigma**2/2)*T1) / sv1
     d2 = (np.log(S/K_inner) + (b + sigma**2/2)*T2) / sv2
@@ -165,7 +163,7 @@ def shout_option_mc(S: float, K: float, T: float, r: float, sigma: float,
     """
     paths = gbm_paths(S, r, q, sigma, T, steps, n_sims, seed=seed)
     dt    = T / steps
-    disc  = np.exp(-r*dt)
+    np.exp(-r*dt)
 
     # payoff if we shout at step i: guaranteed max(S_i-K,0) + call on residual
     # simplified: shout when in-the-money, compare to BSM continuation
@@ -174,7 +172,6 @@ def shout_option_mc(S: float, K: float, T: float, r: float, sigma: float,
     else:
         iv_fn = lambda x: np.maximum(K - x, 0)
 
-    tau = T  # remaining time
     shout_pv = np.zeros(n_sims)
     shouted  = np.zeros(n_sims, dtype=bool)
 
@@ -190,7 +187,7 @@ def shout_option_mc(S: float, K: float, T: float, r: float, sigma: float,
             cont_arr = np.zeros(n_sims)
 
         should_shout = (~shouted) & (iv > cont_arr) & (iv > 0)
-        final_payoff = np.maximum(iv_fn(paths[:, -1]), iv)  # guarantee the shout floor
+        np.maximum(iv_fn(paths[:, -1]), iv)  # guarantee the shout floor
         shout_pv = np.where(should_shout & ~shouted,
                             np.exp(-r*(i*dt))*iv + np.exp(-r*T)*np.maximum(iv_fn(paths[:,-1]) - iv, 0),
                             shout_pv)

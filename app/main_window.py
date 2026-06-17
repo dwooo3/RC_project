@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QMainWindow, QPushButton, QSizeGrip, QVBoxLayout, QWidget,
 )
 
-from ui.shell import NAV_ITEMS, WorkspaceShell
+from ui.shell import NAV_ITEMS, WorkspaceShell  # noqa: F401  (NAV_ITEMS re-exported for callers/tests)
 from ui.theme import PALETTE, WORKSTATION_STYLE
 
 

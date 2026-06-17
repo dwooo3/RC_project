@@ -10,7 +10,7 @@ Historical simulation VaR (Hull Ch. 22):
 """
 
 import numpy as np
-from scipy.stats import norm, chi2
+from scipy.stats import norm
 
 from risk.var import (
     _as_finite_1d,

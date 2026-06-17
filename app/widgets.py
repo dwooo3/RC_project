@@ -4,15 +4,15 @@ Compatibility module for existing panels. Shared component ownership lives in
 `ui.components`; this module keeps historical imports stable.
 """
 
-from PySide6.QtWidgets import (
+from PySide6.QtWidgets import (  # noqa: F401  (legacy compat shim — keep the Qt surface)
     QWidget, QLabel, QDoubleSpinBox, QSpinBox, QComboBox,
     QFrame, QVBoxLayout, QHBoxLayout, QScrollArea, QPushButton,
     QGroupBox, QLineEdit
 )
 from PySide6.QtCore import Qt, QLocale
-from ui.components import KpiCard as MetricCard
-from ui.components import ModelStatus, StatusChip as ModelStatusBadge
-from ui.components import WarningBanner as Banner
+from ui.components import KpiCard as MetricCard  # noqa: F401  (backward-compat re-export)
+from ui.components import ModelStatus, StatusChip as ModelStatusBadge  # noqa: F401
+from ui.components import WarningBanner as Banner  # noqa: F401
 
 
 # ── Force period decimal separator system-wide ───────────

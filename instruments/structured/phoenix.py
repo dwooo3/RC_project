@@ -48,7 +48,7 @@ def phoenix(
 
     # observation step indices
     obs_steps = [min(int(round(t/dt)), steps) for t in obs_dates]
-    dt_obs    = obs_dates[0] if obs_dates else T  # first coupon period
+    obs_dates[0] if obs_dates else T  # first coupon period
 
     payoffs = np.zeros(n_sims)
     alive   = np.ones(n_sims, dtype=bool)
@@ -203,7 +203,7 @@ def worst_of_barrier_rc(
     Barrier is monitored on the WORST performer continuously.
     At maturity: if barrier touched AND worst_S_T < S0 → pay worst S_T/S0
     """
-    n = len(S0_list)
+    len(S0_list)
     S0  = np.array(S0_list, dtype=float)
     sig = np.array(sigma_list, dtype=float)
     q   = np.array(q_list, dtype=float)

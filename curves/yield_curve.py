@@ -9,7 +9,7 @@ from scipy.optimize import minimize, brentq
 from scipy.interpolate import CubicSpline, interp1d
 from dataclasses import dataclass
 from datetime import date
-from typing import Literal, Optional
+from typing import Literal
 
 from domain.market_data import MarketDataSource
 

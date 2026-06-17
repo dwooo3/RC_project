@@ -7,7 +7,7 @@ by the bootstrap and by the pricer (instruments.credit.cds_curve), so the
 round-trip is exact by construction.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 from scipy.optimize import brentq

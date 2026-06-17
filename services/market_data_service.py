@@ -106,7 +106,7 @@ class MoexProvider(ProviderInterface):
         if quality == QUALITY_REJECTED:
             raise ValueError(f"MOEX snapshot rejected: {'; '.join(warnings)}")
 
-        meta_row = db.get_snapshot_meta(snapshot_id) or {}
+        db.get_snapshot_meta(snapshot_id) or {}
         iss_urls = []
         metadata = {
             "quality_warnings": warnings,

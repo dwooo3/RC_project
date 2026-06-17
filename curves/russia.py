@@ -10,8 +10,7 @@ Data is entered manually (MOEX ISS integration pending).
 Typical tenor structure for Russia: O/N, 1W, 1M, 3M, 6M, 1Y, 2Y, 3Y, 5Y, 7Y, 10Y, 15Y, 20Y
 """
 
-import numpy as np
-from curves.yield_curve import YieldCurve, NSCurve, SvenssonCurve, rate_to_df
+from curves.yield_curve import YieldCurve, NSCurve, SvenssonCurve
 from domain.market_data import MarketDataSource
 
 

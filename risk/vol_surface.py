@@ -70,11 +70,9 @@ class VolSurface:
     def get_vol_delta(self, delta: float, T: float, r: float = 0.05,
                       q: float = 0.0, opt: str = "call") -> float:
         """Get vol for a given delta (invert delta → strike first)."""
-        from models.implied_vol import VolSurface as _VS
         # Simple approximation: delta → strike via ATM vol
         atm_vol = self.get_vol(self.S0, T)
         from scipy.stats import norm
-        from scipy.optimize import brentq
         sign = 1 if opt == "call" else -1
 
         def eq(K):

@@ -63,8 +63,6 @@ class G2pp:
     def zcb_option(self, T_opt, T_bond, K, opt="call"):
         """European option on P(T_opt, T_bond), strike K (closed form)."""
         a, b, s, e, rho = self.a, self.b, self.sigma, self.eta, self.rho
-        Ba = self._B(a, T_opt, T_bond)
-        Bb = self._B(b, T_opt, T_bond)
         # Σ²: variance of ln P(T_opt,T_bond) under the T_opt-forward measure
         Sigma2 = (s**2 / (2 * a**3)) * (1 - np.exp(-a * (T_bond - T_opt)))**2 * (1 - np.exp(-2 * a * T_opt)) \
             + (e**2 / (2 * b**3)) * (1 - np.exp(-b * (T_bond - T_opt)))**2 * (1 - np.exp(-2 * b * T_opt)) \

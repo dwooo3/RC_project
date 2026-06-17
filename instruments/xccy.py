@@ -12,7 +12,6 @@ Conventions: receive the domestic leg, pay the foreign leg (sign flips via
 the RUB-USD market quotes the basis on the RUB side.
 """
 
-import numpy as np
 
 from curves.yield_curve import YieldCurve
 

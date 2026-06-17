@@ -8,7 +8,7 @@ Closed-form pricing models:
 
 import numpy as np
 from scipy.stats import norm
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 
@@ -80,7 +80,7 @@ def bsm(S: float, K: float, T: float, r: float, sigma: float,
     d1, d2 = _d1d2(F, K, T, sigma)
     sv  = sigma * np.sqrt(T)
 
-    Nd1, Nd2   = norm.cdf(d1), norm.cdf(d2)
+    _Nd1, _Nd2   = norm.cdf(d1), norm.cdf(d2)
     nd1        = norm.pdf(d1)
 
     sign = 1 if opt == "call" else -1

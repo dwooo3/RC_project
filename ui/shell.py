@@ -5,7 +5,6 @@ from collections.abc import Callable
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,

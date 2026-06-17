@@ -9,7 +9,6 @@ Includes:
 import numpy as np
 from scipy.integrate import quad
 from scipy.optimize import minimize
-from models.black_scholes import bsm
 
 
 # ─────────────────────────────────────────────────────────

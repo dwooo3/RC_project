@@ -88,7 +88,6 @@ def convertible_bond(S: float, sigma: float, q: float,
     conversion_premium = price / parity - 1.0 if parity > 0 else float("inf")
 
     eps = S * 0.01
-    dt_scale = conv_ratio  # reuse _solve with bumped spot via closure rebuild
     def _solve_at(S0: float):
         nonlocal S
         S_orig = S

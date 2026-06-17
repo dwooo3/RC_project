@@ -11,7 +11,6 @@ Value at Risk:
 
 import numpy as np
 from scipy.stats import norm, t as t_dist, genpareto
-from scipy.optimize import minimize
 
 
 # ─────────────────────────────────────────────────────────
@@ -356,7 +355,7 @@ def christoffersen_test(exceptions: np.ndarray) -> dict:
     Christoffersen (1998) independence test for VaR exceptions.
     exceptions: binary array (1=exception, 0=no exception).
     """
-    n   = len(exceptions)
+    len(exceptions)
     T00 = np.sum((exceptions[:-1]==0) & (exceptions[1:]==0))
     T01 = np.sum((exceptions[:-1]==0) & (exceptions[1:]==1))
     T10 = np.sum((exceptions[:-1]==1) & (exceptions[1:]==0))

@@ -10,7 +10,6 @@ Volatility models (Hull Ch. 23):
 
 import numpy as np
 from scipy.optimize import minimize
-from scipy.stats import t as t_dist
 
 
 # ─────────────────────────────────────────────────────────

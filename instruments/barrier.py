@@ -93,7 +93,7 @@ def double_barrier_ko(S: float, K: float, L: float, U: float, T: float,
     L = lower barrier, U = upper barrier.
     """
     b  = r - q
-    F  = np.log(U / L)
+    np.log(U / L)
     mu1 = (b - sigma**2/2) / sigma**2
     mu2 = np.sqrt(mu1**2 + 2*r/sigma**2)
     sv  = sigma * np.sqrt(T)
@@ -107,9 +107,9 @@ def double_barrier_ko(S: float, K: float, L: float, U: float, T: float,
     for n in range(-n_terms, n_terms+1):
         d1n = (np.log(S * U**(2*n) / (K * L**(2*n))) / sv + (1+mu1)*sv)
         d2n = d1n - sv
-        d3n = (np.log(S * U**(2*n) / (L * L**(2*n)*U**0)) / sv + (1+mu1)*sv)  # for barriers
-        lam = (U/L)**(n*mu1)
-        lam2= (U/S)**(2*n*mu2)
+        (np.log(S * U**(2*n) / (L * L**(2*n)*U**0)) / sv + (1+mu1)*sv)  # for barriers
+        (U/L)**(n*mu1)
+        (U/S)**(2*n*mu2)
 
         term  = sign * (S*np.exp(-q*T)*(U/L)**(n*(2*mu1+1)) * N(sign*d1n)
                         - K*disc*(U/L)**(n*2*mu1) * N(sign*d2n))

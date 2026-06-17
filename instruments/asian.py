@@ -48,7 +48,7 @@ def geometric_asian_discrete(S: float, K: float, T: float, r: float,
     """
     Geometric average rate option — discrete monitoring (n fixings).
     """
-    dt   = T / n
+    T / n
     sigma_g = sigma * np.sqrt((n+1)*(2*n+1)/(6*n**2))
     b_g  = (r - q - sigma**2/2) * (n+1)/(2*n) + sigma_g**2/2
     d1   = (np.log(S/K) + (b_g + 0.5*sigma_g**2)*T) / (sigma_g*np.sqrt(T))

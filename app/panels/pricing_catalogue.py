@@ -6,7 +6,7 @@ to become a portfolio Position. The 7 Pricing categories are driven entirely by
 this list, so adding a product needs no UI code.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable
 
 CATEGORIES = ["Fixed Income", "Option", "Equity", "FX", "Swaps", "Structured Notes", "Credit"]
