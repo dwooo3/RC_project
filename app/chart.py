@@ -1,4 +1,4 @@
-"""Embedded matplotlib charts — dark Claude-style theme."""
+"""Embedded matplotlib charts — light theme (matches the workstation LIGHT palette)."""
 
 import numpy as np
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QSizePolicy
@@ -7,26 +7,26 @@ from matplotlib.figure import Figure
 import matplotlib as mpl
 import matplotlib.ticker as mtick
 
-# ── Dark palette ──────────────────────────────────────────────────────────
-_BG0  = "#0f0f11"   # figure background
-_BG1  = "#1a1a1e"   # axes background
-_BG2  = "#242428"   # card / elevated
-_GRID = "#2e2e33"   # grid lines
-_EDGE = "#38383d"   # spine / border
-_TXT  = "#a0a0a8"   # labels, ticks
-_TXT0 = "#f0f0f2"   # titles
-_LEG  = "#1e1e22"   # legend bg
+# ── Light palette (aligned with ui.theme LIGHT) ───────────────────────────
+_BG0  = "#FFFFFF"   # figure background
+_BG1  = "#FFFFFF"   # axes background
+_BG2  = "#F5F7FA"   # card / elevated
+_GRID = "#D8DEE9"   # grid lines
+_EDGE = "#C4CCD8"   # spine / border
+_TXT  = "#5A6172"   # labels, ticks
+_TXT0 = "#1C2026"   # titles
+_LEG  = "#FFFFFF"   # legend bg
 
-# ── Color palette ─────────────────────────────────────────────────────────
+# ── Series colors (tuned for a white background) ──────────────────────────
 C_ACCENT = "#d97757"   # Claude orange — main accent
-C_BLUE   = "#5ac8fa"   # teal-blue — secondary
-C_GREEN  = "#30d158"   # green — positive
-C_RED    = "#ff453a"   # red — negative / risk
-C_PURPLE = "#bf5af2"   # purple — model
-C_AMBER  = "#ffd60a"   # yellow — highlight
-C_TEAL   = "#34aadc"   # teal — curves
-C_GREY   = "#48484a"   # neutral lines
-C_SLATE  = "#606068"   # muted references
+C_BLUE   = "#1f8fd6"   # blue — secondary
+C_GREEN  = "#2ca02c"   # green — positive
+C_RED    = "#e23b30"   # red — negative / risk
+C_PURPLE = "#9b3fd4"   # purple — model
+C_AMBER  = "#d6a400"   # gold — highlight
+C_TEAL   = "#2389b8"   # teal — curves
+C_GREY   = "#6b7280"   # neutral lines
+C_SLATE  = "#8a91a0"   # muted references
 
 # ── Global rcParams ───────────────────────────────────────────────────────
 mpl.rcParams.update({
