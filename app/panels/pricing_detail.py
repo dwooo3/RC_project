@@ -260,11 +260,23 @@ class PricingDetailScreen(QWidget):
         self._engine_combo = None
         self._engine_inputs = {}
         self._engine_param_host = None
+        self._model_summary = None
         engines = self.product.engines()
         if engines:
             self._engine_combo = QComboBox()
             self._engine_combo.addItems(engines)
-            _place(self._field_cell("Engine", self._engine_combo), wide=True)
+            label = "Model" if len(engines) > 1 else "Model (single)"
+            _place(self._field_cell(label, self._engine_combo), wide=True)
+            # always-visible model summary (name + governance status) + popup editor
+            self._model_summary = QLabel()
+            self._model_summary.setWordWrap(True)
+            self._model_summary.setStyleSheet(
+                f"color:{PALETTE.txt2};font-size:11px;background:transparent;")
+            _place(self._model_summary, wide=True)
+            btn = QPushButton("Model & parameters…")
+            btn.setObjectName("model_params_button")
+            btn.clicked.connect(self._open_model_dialog)
+            _place(btn, wide=True)
             host = QWidget()
             host.setStyleSheet("background:transparent;")
             self._engine_param_layout = QGridLayout(host)
@@ -319,6 +331,37 @@ class PricingDetailScreen(QWidget):
             self._engine_inputs[spec.key] = (w, spec)
             lay.addWidget(self._field_cell(f"{spec.label}  ·{spec.group}", w), row // 2, row % 2)
             row += 1
+        self._update_model_summary()
+
+    def _update_model_summary(self):
+        """Refresh the model-name + governance-status caption under the selector."""
+        if self._model_summary is None or self._engine_combo is None:
+            return
+        from app.panels.model_params_dialog import model_metadata
+        m = model_metadata(self._engine_combo.currentText())
+        self._model_summary.setText(
+            f"{m['name']} · status: {m['status']} · {m['family']}/{m['method']}")
+
+    def _open_model_dialog(self):
+        """Open the pop-up model selector + parameter editor; sync edits back."""
+        from PySide6.QtWidgets import QComboBox as _QC
+        from app.panels.model_params_dialog import ModelParamsDialog
+        cur = {k: (w.currentText() if isinstance(w, _QC) else w.text())
+               for k, (w, _s) in self._engine_inputs.items()}
+        dlg = ModelParamsDialog(self.product.engines(), self._engine_combo.currentText(),
+                                cur, self)
+        if dlg.exec():
+            res = dlg.result_values()
+            eng = res.get("__engine")
+            if eng and eng != self._engine_combo.currentText():
+                self._engine_combo.setCurrentText(eng)     # triggers param rebuild
+            for key, (w, _s) in self._engine_inputs.items():
+                if key in res:
+                    if isinstance(w, _QC):
+                        w.setCurrentText(str(res[key]))
+                    else:
+                        w.setText(str(res[key]))
+            self._update_model_summary()
 
     def _field_cell(self, label_text: str, widget: QWidget) -> QWidget:
         cell = QWidget()

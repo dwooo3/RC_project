@@ -40,13 +40,22 @@ class Product:
     def __post_init__(self):
         if self.curve_roles is None:
             self.curve_roles = []
+        if self.instrument is None:          # auto-resolve so every product shows its model
+            self.instrument = _INSTRUMENT_BY_ID.get(self.id)
 
     def engines(self) -> list[str]:
-        """Selectable engine ids for this product (empty if single-engine)."""
+        """Selectable engine/model ids for this product. Multi-model instruments
+        return their ENGINES list; a single-model instrument returns just itself,
+        so the UI always has at least one model to display."""
         if not self.instrument:
             return []
-        from models.taxonomy import engines_for
-        return engines_for(self.instrument)
+        from models.taxonomy import ENGINES
+        return ENGINES.get(self.instrument, [self.instrument])
+
+    def primary_model(self) -> str | None:
+        """Default model id (first engine) for the model summary label."""
+        eng = self.engines()
+        return eng[0] if eng else None
 
 
 def _disc(s, v):
@@ -136,6 +145,88 @@ def _swaption_engine(s, v):
                                          int(v.get("n_sims", 50000)),
                                          int(v.get("steps", 100)), curve=_disc(s, v))
     return s.price_swaption(N, K, To, Ts, freq, v["sigma"], opt, curve=_disc(s, v))
+
+
+# ── engine-aware dispatchers for the other multi-model products ──────
+_AMERICAN_ENGINE_ARG = {"pde_cn": "pde", "binomial_crr": "binomial",
+                        "binomial_lr": "binomial_lr", "trinomial": "trinomial",
+                        "mc_lsm": "lsm", "baw": "baw",
+                        "bjerksund_stensland": "bjerksund_stensland"}
+
+
+def _american_engine(s, v):
+    """American option: lattice/PDE/LSM or the BAW / Bjerksund-Stensland analytic
+    approximations — selected via the engine dropdown."""
+    model = _AMERICAN_ENGINE_ARG.get(v.get("__engine", "pde_cn"), "pde")
+    return s.price_american_option(v["S"], v["K"], v["T"], v["r"], v["sigma"],
+                                   v["q"], v["opt"], model)
+
+
+def _barrier_engine(s, v):
+    """Barrier option: Reiner-Rubinstein closed form (barrier) or Crank-Nicolson PDE."""
+    if v.get("__engine") == "pde_cn":
+        return s.price_barrier_option_pde(v["S"], v["K"], v["H"], v["T"], v["r"],
+                                          v["sigma"], v["q"], v["opt"], v["barrier_type"])
+    return s.price_barrier_option(v["S"], v["K"], v["H"], v["T"], v["r"], v["sigma"],
+                                  v["q"], v["opt"], v["barrier_type"])
+
+
+def _capfloor_engine(s, v):
+    """Cap/floor: Black-76 caplet strip (capfloor) or the LIBOR market model (lmm)."""
+    if v.get("__engine") == "lmm":
+        return s.price_lmm_cap(v["notional"], v["K"], v["T"], int(v["freq"]),
+                               v.get("vol", v["vol"]), "cap" if v["opt"] == "cap" else "floor",
+                               curve=_disc(s, v))
+    return s.price_cap_floor(v["notional"], v["K"], v["T"], int(v["freq"]), v["vol"],
+                             v["opt"], curve=_disc(s, v), proj_curve=_proj(v))
+
+
+def _convertible_engine(s, v):
+    """Convertible: Tsiveriotis-Fernandes (convertible_bond) or AFV / Andersen-Buffum
+    equity-linked default (afv_convertible)."""
+    if v.get("__engine") == "afv_convertible":
+        return s.price_afv_convertible(v["S"], v["sigma"], v["q"], v["face"], v["coupon"],
+                                       int(v["freq"]), v["T"], v["conv_ratio"], v["r"],
+                                       v.get("lam0", 0.02), v.get("alpha", 1.2),
+                                       v.get("recovery", 0.4), int(v.get("N", 400)))
+    return s.price_convertible_bond(v["S"], v["sigma"], v["q"], v["face"], v["coupon"],
+                                    int(v["freq"]), v["T"], v["conv_ratio"],
+                                    v["credit_spread"], curve=_disc(s, v))
+
+
+def _cds_engine(s, v):
+    """CDS: flat-hazard closed form (cds), hazard-curve bootstrap (cds_curve) or
+    the ISDA standard upfront model (cds_isda)."""
+    eng = v.get("__engine", "cds")
+    if eng == "cds_curve":
+        return s.price_cds_curve(v["notional"], v["spread"], v["T"], int(v["freq"]),
+                                 hazard_id=v.get("hazard_id", "hazard_1t_demo"))
+    if eng == "cds_isda":
+        return s.price_isda_cds(v["notional"], v.get("coupon", 0.01), v["spread"],
+                                v["T"], int(v["freq"]), v["r"], v["recovery"])
+    return s.price_cds(v["notional"], v["spread"], v["T"], int(v["freq"]),
+                       v["hazard"], v["r"], v["recovery"])
+
+
+# product.id -> instrument/model key, so every product shows its model. Multi-model
+# instruments (ENGINES keys) get a selector; the rest surface their single model.
+_INSTRUMENT_BY_ID = {
+    "bond": "fixed_bond", "zcb": "fixed_bond", "custom_bond": "fixed_bond",
+    "amortizing": "fixed_bond", "step_bond": "fixed_bond", "perpetual": "fixed_bond",
+    "inflation_linked": "inflation_linked_bond", "frn": "frn",
+    "fra": "fra", "irs": "irs", "deposit": "mm_deposit", "stir_future": "stir_future",
+    "treasury_bill": "treasury_bill", "commercial_paper": "commercial_paper",
+    "bond_future": "bond_future", "callable": "callable_bond", "putable": "callable_bond",
+    "cap_floor": "cap_floor", "american": "american_option", "merton": "merton_jump",
+    "barrier": "barrier_option", "asian": "asian", "digital": "digital",
+    "lookback": "lookback", "spread": "spread", "fx_forward": "fx_forward",
+    "fx_option": "garman_kohlhagen", "fx_option_smile": "fx_smile", "ndf": "ndf",
+    "xccy": "xccy_swap", "zciis": "inflation_swap", "yoyiis": "inflation_swap",
+    "bermudan_swaption": "bermudan_swaption", "cms_swap": "cms_swap",
+    "cds": "cds", "cds_curve": "cds_curve", "risky_bond": "risky_bond",
+    "convertible": "convertible_bond", "autocall": "structured_autocall",
+    "basket_note": "structured_basket_note",
+}
 
 
 def parse_cashflows(text) -> list:
@@ -293,11 +384,11 @@ PRODUCTS: list[Product] = [
             [F("notional", "Notional", 1_000_000), F("K", "Strike", 0.10), F("T", "Maturity (y)", 3),
              F("freq", "Freq/y", 2), F("vol", "Vol", 0.20), F("r", "Flat rate", 0.10),
              F("opt", "Type", "cap", ["cap", "floor"])],
-            lambda s, v: s.price_cap_floor(v["notional"], v["K"], v["T"], int(v["freq"]), v["vol"],
-                                           v["opt"], curve=_disc(s, v), proj_curve=_proj(v)),
+            _capfloor_engine,
             lambda v: ("cap_floor", dict(notional=v["notional"], K=v["K"], T=v["T"],
                                          freq=int(v["freq"]), vol=v["vol"], r=v["r"], opt=v["opt"]),
-                       "Cap/Floor")),
+                       "Cap/Floor"),
+            instrument="cap_floor"),
 
     # ── Option ────────────────────────────────────────────
     Product("vanilla", "Vanilla Option", "Option",
@@ -308,16 +399,16 @@ PRODUCTS: list[Product] = [
             lambda v: ("option", dict(S=v["S"], K=v["K"], T=v["T"], r=v["r"], sigma=v["sigma"],
                                       q=v["q"], opt=v["opt"]), "Vanilla Option"),
             instrument="european_option"),
-    Product("american", "American Option (PDE)", "Option",
+    Product("american", "American Option", "Option",
             [F("S", "Spot", 100), F("K", "Strike", 100), F("T", "Maturity (y)", 1),
              F("r", "Rate", 0.05), F("sigma", "Vol", 0.20), F("q", "Div yld", 0.0),
-             F("opt", "Type", "put", _OPT),
-             F("model", "Engine", "pde", ["pde", "binomial", "binomial_lr", "trinomial", "lsm"])],
-            lambda s, v: s.price_american_option(v["S"], v["K"], v["T"], v["r"], v["sigma"],
-                                                 v["q"], v["opt"], v["model"]),
+             F("opt", "Type", "put", _OPT)],
+            _american_engine,
             lambda v: ("american", dict(S=v["S"], K=v["K"], T=v["T"], r=v["r"],
                                         sigma=v["sigma"], q=v["q"], opt=v["opt"],
-                                        model=v["model"]), "American Option")),
+                                        model=_AMERICAN_ENGINE_ARG.get(v.get("__engine", "pde_cn"), "pde")),
+                       "American Option"),
+            instrument="american_option"),
     Product("merton", "Merton Jump Option", "Option",
             [F("S", "Spot", 100), F("K", "Strike", 100), F("T", "Maturity (y)", 1),
              F("r", "Rate", 0.05), F("sigma", "Diff vol", 0.20), F("q", "Div yld", 0.0),
@@ -335,11 +426,11 @@ PRODUCTS: list[Product] = [
              F("T", "Maturity (y)", 1), F("r", "Rate", 0.05), F("sigma", "Vol", 0.20),
              F("q", "Div yld", 0.0), F("opt", "Type", "call", _OPT),
              F("barrier_type", "Barrier", "down-out", ["down-out", "down-in", "up-out", "up-in"])],
-            lambda s, v: s.price_barrier_option(v["S"], v["K"], v["H"], v["T"], v["r"], v["sigma"],
-                                                v["q"], v["opt"], v["barrier_type"]),
+            _barrier_engine,
             lambda v: ("barrier", dict(S=v["S"], K=v["K"], H=v["H"], T=v["T"], r=v["r"],
                                        sigma=v["sigma"], q=v["q"], opt=v["opt"],
-                                       barrier_type=v["barrier_type"]), "Barrier Option")),
+                                       barrier_type=v["barrier_type"]), "Barrier Option"),
+            instrument="barrier_option"),
     Product("asian", "Asian Option", "Option",
             [F("S", "Spot", 100), F("K", "Strike", 100), F("T", "Maturity (y)", 1),
              F("r", "Rate", 0.05), F("sigma", "Vol", 0.20), F("q", "Div yld", 0.0),
@@ -544,11 +635,11 @@ PRODUCTS: list[Product] = [
             [F("notional", "Notional", 1_000_000), F("spread", "Spread", 0.01),
              F("T", "Maturity (y)", 5), F("freq", "Freq/y", 4), F("hazard", "Hazard", 0.02),
              F("r", "Rate", 0.05), F("recovery", "Recovery", 0.4)],
-            lambda s, v: s.price_cds(v["notional"], v["spread"], v["T"], int(v["freq"]),
-                                     v["hazard"], v["r"], v["recovery"]),
+            _cds_engine,
             lambda v: ("cds", dict(notional=v["notional"], spread=v["spread"], T=v["T"],
                                    freq=int(v["freq"]), r=v["r"], recovery=v["recovery"]),
-                       "CDS")),
+                       "CDS"),
+            instrument="cds"),
     Product("cds_curve", "CDS (Hazard Curve)", "Credit",
             [F("notional", "Notional", 10_000_000), F("spread", "Spread", 0.012),
              F("T", "Maturity (y)", 5), F("freq", "Freq/y", 4),
@@ -574,15 +665,13 @@ PRODUCTS: list[Product] = [
              F("face", "Face", 1000), F("coupon", "Coupon", 0.05), F("freq", "Freq/y", 2),
              F("T", "Maturity (y)", 5), F("conv_ratio", "Conv ratio", 10),
              F("credit_spread", "Credit spread", 0.02), F("r", "Flat rate", 0.10)],
-            lambda s, v: s.price_convertible_bond(v["S"], v["sigma"], v["q"], v["face"],
-                                                  v["coupon"], int(v["freq"]), v["T"],
-                                                  v["conv_ratio"], v["credit_spread"],
-                                                  curve=_disc(s, v)),
+            _convertible_engine,
             lambda v: ("convertible", dict(S=v["S"], sigma=v["sigma"], q=v["q"], face=v["face"],
                                            coupon=v["coupon"], freq=int(v["freq"]), T=v["T"],
                                            conv_ratio=v["conv_ratio"],
                                            credit_spread=v["credit_spread"], r=v["r"]),
-                       "Convertible Bond")),
+                       "Convertible Bond"),
+            instrument="convertible_bond"),
 ]
 
 
