@@ -52,8 +52,13 @@ struct MarketScreen: View {
                 if curve.isEmpty {
                     Text("Curve unavailable").font(.caption).foregroundStyle(.secondary).frame(height: 220)
                 } else {
+                    let rates = curve.map { $0.rate * 100 }
+                    let lo = (rates.min() ?? 0), hi = (rates.max() ?? 1)
+                    let pad = max((hi - lo) * 0.15, 0.2)
+                    let floor = lo - pad
                     Chart(curve) { p in
-                        AreaMark(x: .value("Tenor", p.tenor), y: .value("Rate", p.rate * 100))
+                        AreaMark(x: .value("Tenor", p.tenor),
+                                 yStart: .value("Floor", floor), yEnd: .value("Rate", p.rate * 100))
                             .foregroundStyle(.linearGradient(
                                 colors: [Theme.accent.opacity(0.30), Theme.accent.opacity(0.02)],
                                 startPoint: .top, endPoint: .bottom))
@@ -68,7 +73,7 @@ struct MarketScreen: View {
                     }
                     .chartXAxisLabel("Tenor (years)")
                     .chartYAxisLabel("Zero rate (%)")
-                    .chartYScale(domain: .automatic(includesZero: false))
+                    .chartYScale(domain: floor...(hi + pad))
                     .frame(height: 240)
                 }
             }

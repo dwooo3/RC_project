@@ -39,7 +39,14 @@ def snapshot_meta(ctx) -> dict:
 
 
 def market(ctx) -> dict:
-    overview = _safe(lambda: mv.market_overview(ctx.market_db, ctx.snapshot), {})
+    raw = _safe(lambda: mv.market_overview(ctx.market_db, ctx.snapshot), {})
+    # Always emit the full key set with safe defaults so a thin / partial
+    # (e.g. weekend) snapshot degrades gracefully instead of breaking the client.
+    overview = {
+        "kbd": raw.get("kbd", {}), "fx": raw.get("fx", {}),
+        "key_vols": raw.get("key_vols", {}), "key_rate": raw.get("key_rate"),
+        "top_movers": raw.get("top_movers", []), "most_active": raw.get("most_active", []),
+    }
     curve = _safe(lambda: _ofz_curve(ctx), [])
     return {"snapshot": snapshot_meta(ctx), "overview": overview, "curve": curve}
 

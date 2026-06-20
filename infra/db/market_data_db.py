@@ -133,7 +133,10 @@ class MarketDataDB:
             self.conn = conn
             self.dialect = dialect
         else:
-            self.conn = sqlite3.connect(path)
+            # check_same_thread=False: the API bridge serves requests from a
+            # uvicorn thread pool and rebinds this connection after a background
+            # ingest, so the (read-mostly) connection must be usable cross-thread.
+            self.conn = sqlite3.connect(path, check_same_thread=False)
             self.conn.row_factory = sqlite3.Row
             self.dialect = "sqlite"
         self.ph = "%s" if self.dialect == "postgres" else "?"

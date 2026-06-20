@@ -357,13 +357,16 @@ struct HistoryResponse: Decodable, Sendable {
 
 struct HistoryPoint: Decodable, Sendable, Identifiable {
     let date: String
+    let open: Double?
+    let high: Double?
+    let low: Double?
     let close: Double
     let yld: Double?
     let volume: Double?
     var id: String { date }
 
     enum CodingKeys: String, CodingKey {
-        case date, close, volume
+        case date, open, high, low, close, volume
         case yld = "yield"
     }
 }

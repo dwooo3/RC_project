@@ -41,7 +41,11 @@ def trade_history(category: str, secid: str, days: int = 180) -> dict:
         prev = by_date.get(d)
         if prev is None or vol >= (prev.get("volume") or 0.0):
             by_date[d] = {
-                "date": d, "close": close,
+                "date": d,
+                "open": _num(r.get("OPEN")) or close,
+                "high": _num(r.get("HIGH")) or close,
+                "low": _num(r.get("LOW")) or close,
+                "close": close,
                 "yield": _num(r.get("YIELDCLOSE")),
                 "volume": vol, "numtrades": _num(r.get("NUMTRADES")),
             }
