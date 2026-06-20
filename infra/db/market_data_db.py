@@ -365,6 +365,32 @@ class MarketDataDB:
                 WHERE b.snapshot_id={self.ph} AND b.ytm IS NOT NULL AND i.mat_date IS NOT NULL""",
             (snapshot_id,))
 
+    def get_real_bonds(self, snapshot_id, board=None, limit=None) -> list[dict]:
+        """Tradeable bonds = market quote joined with the instrument reference."""
+        sql = (
+            f"SELECT b.secid, b.clean_price, b.dirty_price, b.accruedint, b.ytm, b.volume, b.board, "
+            f"i.isin, i.facevalue, i.coupon_percent, i.coupon_period, i.next_coupon, i.mat_date, "
+            f"i.offer_date, i.issuer, i.list_level, i.currency "
+            f"FROM bond_quotes b LEFT JOIN instruments i ON b.secid = i.secid "
+            f"WHERE b.snapshot_id={self.ph} AND b.clean_price IS NOT NULL"
+        )
+        params = [snapshot_id]
+        if board:
+            sql += f" AND b.board={self.ph}"
+            params.append(board)
+        sql += " ORDER BY b.volume DESC"
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        return self._query(sql, tuple(params))
+
+    def get_bond_ref(self, secid) -> dict | None:
+        return self._query_one(f"SELECT * FROM instruments WHERE secid={self.ph}", (secid,))
+
+    def get_bond_quote(self, snapshot_id, secid) -> dict | None:
+        return self._query_one(
+            f"SELECT * FROM bond_quotes WHERE snapshot_id={self.ph} AND secid={self.ph}",
+            (snapshot_id, secid))
+
     def get_equity_quotes(self, snapshot_id) -> list[dict]:
         return self._query(f"SELECT * FROM equity_quotes WHERE snapshot_id={self.ph}", (snapshot_id,))
 

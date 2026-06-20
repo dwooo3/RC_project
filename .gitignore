@@ -8,3 +8,9 @@ dist/
 .venv/
 venv/
 .env
+
+# Swift / Xcode (macapp)
+macapp/.build/
+macapp/.swiftpm/
+*.xcuserstate
+xcuserdata/
