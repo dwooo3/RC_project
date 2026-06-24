@@ -162,12 +162,23 @@ class CbrClient:
         return parse_keyrate_html(payload) or parse_rate_records(payload)
 
     def get_ruonia(self, from_date: date, till_date: date | None = None) -> list[tuple[str, float]]:
-        """CBR RUONIA from hd_base/ruonia (transposed HTML table; same fallback)."""
+        """CBR RUONIA from hd_base/ruonia/dynamics.
+
+        The plain ``hd_base/ruonia`` page is a TRANSPOSED table that only renders
+        a couple of days regardless of the requested range (browser pagination),
+        so a multi-year backfill there yields ~2 rows. The ``/dynamics`` view is
+        a vertical date|rate table (col 0 = date, col 1 = RUONIA %) that honours
+        From/To, so we read it with the vertical parser. Falls back to the
+        transposed parser and then to parse_rate_records so injected fixtures
+        still work.
+        """
         till_date = till_date or from_date
-        url = (f"{self.base_url}/hd_base/ruonia/?UniDbQuery.Posted=True"
+        url = (f"{self.base_url}/hd_base/ruonia/dynamics/?UniDbQuery.Posted=True"
                f"&UniDbQuery.From={self._ddmm(from_date)}&UniDbQuery.To={self._ddmm(till_date)}")
         payload = self._fetch(url)
-        return parse_ruonia_html(payload) or parse_rate_records(payload)
+        return (parse_keyrate_html(payload)
+                or parse_ruonia_html(payload)
+                or parse_rate_records(payload))
 
     def get_official_rates(self, on_date: date,
                            codes: tuple = ("USD", "EUR", "CNY")) -> dict[str, float]:
