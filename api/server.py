@@ -30,6 +30,7 @@ from api import (
     history,
     ingest_job,
     instruments,
+    market_entity,
     marketdata,
     payloads,
     realbonds,
@@ -222,6 +223,25 @@ def timeseries_catalog() -> dict:
 @app.get("/timeseries")
 def timeseries_series(factor_id: str, frm: str | None = None, till: str | None = None) -> dict:
     return jsonable(timeseries.series(CONTEXT, factor_id, frm=frm, till=till))
+
+
+# ── instrument-entity market data (continuously-accumulated store) ────────
+@app.get("/md/list/{category}")
+def md_list(category: str) -> dict:
+    return jsonable(market_entity.list_instruments(CONTEXT, category))
+
+
+@app.get("/md/instrument/{category}/{secid}")
+def md_instrument(category: str, secid: str) -> dict:
+    try:
+        return jsonable(market_entity.instrument(CONTEXT, category, secid))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/md/history/{secid}")
+def md_history(secid: str, market: str = "bonds", range: str = "5Y") -> dict:
+    return jsonable(market_entity.history(CONTEXT, secid, market=market, rng=range))
 
 
 @app.post("/price")

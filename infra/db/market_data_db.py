@@ -60,6 +60,17 @@ _TABLES = {
                          ["snapshot_id", "secid"]),
     "dividends": (["secid", "registry_date", "value", "currency"],
                   ["secid", "registry_date"]),
+    # Continuously-accumulated store (no snapshots): one row per security per day.
+    "price_history": (
+        ["secid", "market", "dt", "open", "high", "low", "close",
+         "volume", "value", "yield", "numtrades"],
+        ["secid", "market", "dt"]),
+    # Full per-instrument reference (latest ISS description + day stats).
+    "instrument_ref": (
+        ["secid", "category", "market", "board", "isin", "issuer_ru", "name_ru",
+         "sec_type", "list_level", "currency", "asset_code", "last_trade_date",
+         "is_active", "last", "change_pct", "as_of", "day_json", "ref_json"],
+        ["secid"]),
 }
 
 
@@ -119,6 +130,17 @@ def _schema_statements(dialect: str) -> list[str]:
         """CREATE TABLE IF NOT EXISTS dividends (
             secid TEXT NOT NULL, registry_date TEXT NOT NULL, value REAL, currency TEXT,
             PRIMARY KEY (secid, registry_date))""",
+        """CREATE TABLE IF NOT EXISTS price_history (
+            secid TEXT NOT NULL, market TEXT NOT NULL, dt TEXT NOT NULL,
+            open REAL, high REAL, low REAL, close REAL, volume REAL, value REAL,
+            yield REAL, numtrades REAL, PRIMARY KEY (secid, market, dt))""",
+        "CREATE INDEX IF NOT EXISTS idx_price_history_secid ON price_history (secid, dt)",
+        """CREATE TABLE IF NOT EXISTS instrument_ref (
+            secid TEXT PRIMARY KEY, category TEXT, market TEXT, board TEXT, isin TEXT,
+            issuer_ru TEXT, name_ru TEXT, sec_type TEXT, list_level INTEGER, currency TEXT,
+            asset_code TEXT, last_trade_date TEXT, is_active INTEGER, last REAL,
+            change_pct REAL, as_of TEXT, day_json TEXT, ref_json TEXT)""",
+        "CREATE INDEX IF NOT EXISTS idx_instrument_ref_cat ON instrument_ref (category)",
         f"""CREATE TABLE IF NOT EXISTS ingest_log (
             run_id {serial_pk}, endpoint TEXT, status TEXT, rows INTEGER,
             started_at TEXT, finished_at TEXT, error TEXT)""",
@@ -447,3 +469,50 @@ class MarketDataDB:
             "SELECT factor_id, kind, COUNT(*) AS points, "
             "MIN(dt) AS start, MAX(dt) AS end "
             "FROM time_series GROUP BY factor_id, kind ORDER BY factor_id")
+
+    # -- continuously-accumulated store (price_history + instrument_ref) ----
+    def save_price_history(self, rows: list[dict]) -> None:
+        """Idempotent append of daily OHLCV rows (PK secid+market+dt)."""
+        self._upsert_many("price_history", rows)
+
+    def price_history_max_dt(self, secid, market) -> str | None:
+        row = self._query_one(
+            f"SELECT MAX(dt) AS dt FROM price_history WHERE secid={self.ph} AND market={self.ph}",
+            (secid, market))
+        return row["dt"] if row else None
+
+    def get_price_history(self, secid, market=None, frm=None, till=None) -> list[dict]:
+        sql = ("SELECT dt, open, high, low, close, volume, value, yield, numtrades "
+               "FROM price_history WHERE secid=" + self.ph)
+        params = [secid]
+        if market:
+            sql += f" AND market={self.ph}"
+            params.append(market)
+        if frm:
+            sql += f" AND dt>={self.ph}"
+            params.append(frm)
+        if till:
+            sql += f" AND dt<={self.ph}"
+            params.append(till)
+        sql += " ORDER BY dt"
+        return self._query(sql, tuple(params))
+
+    def save_instrument_ref(self, row: dict) -> None:
+        self._upsert("instrument_ref", row)
+
+    def get_instrument_ref(self, secid) -> dict | None:
+        return self._query_one(
+            f"SELECT * FROM instrument_ref WHERE secid={self.ph}", (secid,))
+
+    def list_instrument_refs(self, category, *, active_only=False) -> list[dict]:
+        sql = f"SELECT * FROM instrument_ref WHERE category={self.ph}"
+        params = [category]
+        if active_only:
+            sql += " AND is_active=1"
+        sql += " ORDER BY issuer_ru, secid"
+        return self._query(sql, tuple(params))
+
+    def futures_chain(self, asset_code) -> list[dict]:
+        return self._query(
+            f"SELECT * FROM instrument_ref WHERE asset_code={self.ph} ORDER BY last_trade_date",
+            (asset_code,))

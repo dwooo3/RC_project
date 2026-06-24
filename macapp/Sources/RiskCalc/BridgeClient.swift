@@ -151,6 +151,23 @@ actor BridgeClient {
         return try JSONDecoder().decode(TSSeriesData.self, from: data)
     }
 
+    func mdList(category: String) async throws -> MDListResponse {
+        try await get("md/list/\(category)")
+    }
+
+    func mdInstrument(category: String, secid: String) async throws -> MDEntity {
+        try await get("md/instrument/\(category)/\(secid)")
+    }
+
+    func mdHistory(secid: String, market: String, range: String) async throws -> MDHistory {
+        var comps = URLComponents(url: base.appending(path: "md/history/\(secid)"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "market", value: market),
+                            URLQueryItem(name: "range", value: range)]
+        let (data, response) = try await session.data(from: comps.url!)
+        try Self.check(response, data)
+        return try JSONDecoder().decode(MDHistory.self, from: data)
+    }
+
     func market() async throws -> MarketData { try await get("market") }
     func portfolio() async throws -> PortfolioData { try await get("portfolio") }
     func risk() async throws -> RiskData { try await get("risk") }

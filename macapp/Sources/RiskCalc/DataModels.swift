@@ -482,6 +482,141 @@ struct TSPoint: Decodable, Sendable, Identifiable {
     var id: String { date }
 }
 
+// MARK: - Instrument-entity market data (/md/*)
+
+struct MDListResponse: Decodable, Sendable {
+    let category: String
+    let instruments: [MDListItem]
+    let count: Int
+}
+
+struct MDListItem: Decodable, Sendable, Identifiable {
+    let secid: String
+    let issuerRu: String?
+    let isin: String?
+    let last: Double?
+    let changePct: Double?
+    let asOf: String?
+    let secType: String?
+    let currency: String?
+    let board: String?
+    var id: String { secid }
+
+    enum CodingKeys: String, CodingKey {
+        case secid, isin, last, currency, board
+        case issuerRu = "issuer_ru"
+        case changePct = "change_pct"
+        case asOf = "as_of"
+        case secType = "sec_type"
+    }
+}
+
+struct MDEntity: Decodable, Sendable {
+    let secid: String
+    let category: String?
+    let issuerRu: String?
+    let nameRu: String?
+    let isin: String?
+    let secType: String?
+    let listLevel: Int?
+    let currency: String?
+    let board: String?
+    let last: Double?
+    let changePct: Double?
+    let asOf: String?
+    let fields: [MDField]
+    let day: MDDay?
+    let dividends: [MDDividend]?
+
+    enum CodingKeys: String, CodingKey {
+        case secid, category, isin, currency, board, last, fields, day, dividends
+        case issuerRu = "issuer_ru"
+        case nameRu = "name_ru"
+        case secType = "sec_type"
+        case listLevel = "list_level"
+        case changePct = "change_pct"
+        case asOf = "as_of"
+    }
+}
+
+struct MDDividend: Decodable, Sendable, Identifiable {
+    let registryDate: String
+    let value: Double?
+    let currency: String?
+    var id: String { registryDate }
+
+    enum CodingKeys: String, CodingKey {
+        case value, currency
+        case registryDate = "registry_date"
+    }
+}
+
+/// One ISS description field; value can arrive as string/number/bool — flattened to a display string.
+struct MDField: Decodable, Sendable, Identifiable {
+    let name: String
+    let title: String?
+    let value: String?
+    var id: String { name }
+
+    enum CodingKeys: String, CodingKey { case name, title, value }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        title = try? c.decode(String.self, forKey: .title)
+        if let s = try? c.decode(String.self, forKey: .value) {
+            value = s
+        } else if let n = try? c.decode(Double.self, forKey: .value) {
+            value = n == n.rounded() ? String(Int(n)) : String(n)
+        } else if let b = try? c.decode(Bool.self, forKey: .value) {
+            value = b ? "1" : "0"
+        } else {
+            value = nil
+        }
+    }
+}
+
+struct MDDay: Decodable, Sendable {
+    let date: String?
+    let open: Double?
+    let high: Double?
+    let low: Double?
+    let close: Double?
+    let volume: Double?
+    let value: Double?
+    let yield: Double?
+    let numtrades: Double?
+}
+
+struct MDHistory: Decodable, Sendable {
+    let secid: String
+    let market: String
+    let range: String
+    let points: [MDBar]
+    let count: Int
+}
+
+struct MDBar: Decodable, Sendable, Identifiable {
+    let date: String
+    let open: Double?
+    let high: Double?
+    let low: Double?
+    let close: Double
+    let volume: Double?
+    let yld: Double?
+    var id: String { date }
+
+    enum CodingKeys: String, CodingKey {
+        case date, open, high, low, close, volume
+        case yld = "yield"
+    }
+
+    private static let parser: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = Locale(identifier: "en_US_POSIX"); return f
+    }()
+    var dateValue: Date { Self.parser.date(from: date) ?? Date() }
+}
+
 struct AuditRow: Decodable, Sendable, Identifiable {
     let timestamp: String
     let event: String

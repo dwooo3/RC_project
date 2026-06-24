@@ -139,51 +139,59 @@ final class MarketBrowserViewModel {
 
 struct MarketScreen: View {
     @State private var vm = MarketBrowserViewModel()
-    @State private var specRow: CatRow?
+    @State private var category = "bonds"
+
+    // New category set (instrument-entity model). Bonds/Equities/Futures/Options/FX
+    // route to the master/detail entity browser; Curves/Vol surface keep the
+    // curve view for now (refined later).
+    private let categories: [(String, String)] = [
+        ("bonds", "Bonds"), ("equities", "Equities"), ("futures", "Futures"),
+        ("options", "Options"), ("fx", "FX"), ("curves", "Curves"), ("vols", "Vol surface"),
+    ]
 
     var body: some View {
-        ScreenScaffold {
-            PageHeader("Market Data", subtitle: "Browse all market data by snapshot date") {
-                snapshotPicker
-            }
-            if vm.serverDown {
-                ContentUnavailableView("Bridge offline", systemImage: "bolt.horizontal.circle")
-                    .frame(height: 200)
-            } else {
-                sectionPicker
-                if vm.section == "curves" {
-                    curvesSection
-                } else if vm.section == "history" {
-                    historySection
-                } else {
-                    tableSection
-                }
-            }
+        VStack(spacing: 0) {
+            header
+            Divider()
+            content
         }
         .navigationTitle("Market Data")
         .task { if vm.snapshots.isEmpty { await vm.start() } }
-        .sheet(item: $specRow) { row in SpecSheet(row: row, category: vm.section) }
     }
 
-    // MARK: top controls
-
-    private var snapshotPicker: some View {
-        HStack(spacing: Theme.s2) {
-            Image(systemName: "calendar").foregroundStyle(.secondary).font(.system(size: 12))
-            Picker("Snapshot", selection: Binding(get: { vm.snapshotID }, set: { vm.changeSnapshot($0) })) {
-                ForEach(vm.snapshots) { s in
-                    Text("\(s.valuationDate)\(s.quality == "PARTIAL" ? "  ⚠ partial" : "")").tag(s.snapshotID)
+    private var header: some View {
+        VStack(alignment: .leading, spacing: Theme.s3) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Market Data").font(.system(size: 26, weight: .bold))
+                Spacer()
+                if let s = vm.snapshots.first(where: { $0.active }) {
+                    Text("данные на \(s.valuationDate)").font(.caption).foregroundStyle(.tertiary)
                 }
             }
-            .labelsHidden().fixedSize()
+            Picker("Category", selection: $category) {
+                ForEach(categories, id: \.0) { Text($0.1).tag($0.0) }
+            }
+            .pickerStyle(.segmented).labelsHidden()
         }
+        .padding(.horizontal, Theme.s5).padding(.top, Theme.s5).padding(.bottom, Theme.s3)
     }
 
-    private var sectionPicker: some View {
-        Picker("Section", selection: Binding(get: { vm.section }, set: { vm.changeSection($0) })) {
-            ForEach(vm.sections) { Text($0.label).tag($0.id) }
+    @ViewBuilder
+    private var content: some View {
+        switch category {
+        case "curves":
+            ScreenScaffold {
+                if vm.serverDown {
+                    ContentUnavailableView("Bridge offline", systemImage: "bolt.horizontal.circle").frame(height: 200)
+                } else {
+                    curvesSection
+                }
+            }
+        case "vols":
+            ContentUnavailableView("Vol Surface — позже", systemImage: "square.grid.3x3")
+        default:
+            MarketEntityView(category: category).id(category)   // fresh VM per category
         }
-        .pickerStyle(.segmented).labelsHidden()
     }
 
     // MARK: curves
@@ -359,76 +367,6 @@ struct MarketScreen: View {
                 .frame(height: 280)
             }
         }
-    }
-
-    // MARK: generic data table
-
-    @ViewBuilder
-    private var tableSection: some View {
-        HStack(spacing: Theme.s3) {
-            if !vm.boards.isEmpty {
-                Picker("Filter", selection: Binding(get: { vm.board }, set: { vm.board = $0; Task { await vm.loadSection() } })) {
-                    Text("All").tag("")
-                    ForEach(vm.boards, id: \.self) { Text($0).tag($0) }
-                }
-                .labelsHidden().fixedSize()
-            }
-            TextField("Search…", text: $vm.search)
-                .textFieldStyle(.roundedBorder).frame(maxWidth: 280)
-                .onSubmit { Task { await vm.loadSection() } }
-            Spacer()
-            if vm.isLoading { ProgressView().controlSize(.small) }
-            if let n = vm.catalog?.rows.count { Text("\(n) rows").font(.caption).foregroundStyle(.tertiary) }
-        }
-        if let resp = vm.catalog, !resp.columns.isEmpty {
-            GlassCard(padding: Theme.s2) {
-                VStack(spacing: 0) {
-                    HStack(spacing: Theme.s2) {
-                        ForEach(resp.columns) { col in
-                            Button { vm.toggleSort(col.key) } label: {
-                                HStack(spacing: 3) {
-                                    Text(col.label.uppercased())
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .foregroundStyle(vm.sort == col.key ? Theme.accent : .secondary)
-                                    if vm.sort == col.key {
-                                        Image(systemName: vm.sortDesc ? "chevron.down" : "chevron.up")
-                                            .font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.accent)
-                                    }
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.horizontal, Theme.s2).padding(.vertical, Theme.s2)
-                    Divider()
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(resp.rows.enumerated()), id: \.offset) { _, row in
-                                Button { specRow = row } label: { dataRow(row) }.buttonStyle(.plain)
-                                Divider().opacity(0.35)
-                            }
-                        }
-                    }
-                    .frame(height: 520)
-                }
-            }
-        } else if !vm.isLoading {
-            Text("No data in this group for the selected snapshot")
-                .font(.caption).foregroundStyle(.secondary).frame(height: 120)
-        }
-    }
-
-    private func dataRow(_ row: CatRow) -> some View {
-        HStack(spacing: Theme.s2) {
-            ForEach(Array(row.cells.enumerated()), id: \.offset) { idx, c in
-                Text(c).font(.system(size: 12, weight: idx == 0 ? .medium : .regular))
-                    .monospacedDigit().lineLimit(1)
-                    .foregroundStyle(idx == 0 ? .primary : .secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(.horizontal, Theme.s2).padding(.vertical, 5).contentShape(Rectangle())
     }
 
     private func tableHead(_ t: String) -> some View {
