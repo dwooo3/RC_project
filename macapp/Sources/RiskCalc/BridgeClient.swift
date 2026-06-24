@@ -95,16 +95,35 @@ actor BridgeClient {
         try await get("catalog/categories", as: CatalogCategoriesResponse.self).categories
     }
 
+    func snapshots() async throws -> SnapshotsResponse { try await get("snapshots") }
+
+    func marketCurves(snapshotID: String?) async throws -> MarketCurvesResponse {
+        var comps = URLComponents(url: base.appending(path: "marketcurves"), resolvingAgainstBaseURL: false)!
+        if let snapshotID, !snapshotID.isEmpty { comps.queryItems = [URLQueryItem(name: "snapshot_id", value: snapshotID)] }
+        let (data, response) = try await session.data(from: comps.url!)
+        try Self.check(response, data)
+        return try JSONDecoder().decode(MarketCurvesResponse.self, from: data)
+    }
+
+    func catalogCategories(snapshotID: String?) async throws -> [CatalogCategory] {
+        var comps = URLComponents(url: base.appending(path: "catalog/categories"), resolvingAgainstBaseURL: false)!
+        if let snapshotID, !snapshotID.isEmpty { comps.queryItems = [URLQueryItem(name: "snapshot_id", value: snapshotID)] }
+        let (data, response) = try await session.data(from: comps.url!)
+        try Self.check(response, data)
+        return try JSONDecoder().decode(CatalogCategoriesResponse.self, from: data).categories
+    }
+
     func catalog(_ category: String, search: String?, board: String? = nil,
-                 sort: String? = nil, desc: Bool = false) async throws -> CatalogResponse {
+                 sort: String? = nil, desc: Bool = false, snapshotID: String? = nil) async throws -> CatalogResponse {
         var comps = URLComponents(url: base.appending(path: "catalog/\(category)"), resolvingAgainstBaseURL: false)!
-        var items = [URLQueryItem(name: "limit", value: "500")]
+        var items = [URLQueryItem(name: "limit", value: "1000")]
         if let search, !search.isEmpty { items.append(URLQueryItem(name: "search", value: search)) }
         if let board, !board.isEmpty { items.append(URLQueryItem(name: "board", value: board)) }
         if let sort, !sort.isEmpty {
             items.append(URLQueryItem(name: "sort", value: sort))
             items.append(URLQueryItem(name: "desc", value: desc ? "true" : "false"))
         }
+        if let snapshotID, !snapshotID.isEmpty { items.append(URLQueryItem(name: "snapshot_id", value: snapshotID)) }
         comps.queryItems = items
         let (data, response) = try await session.data(from: comps.url!)
         try Self.check(response, data)

@@ -25,7 +25,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from api import catalog, history, ingest_job, instruments, payloads, realbonds
+from api import catalog, history, ingest_job, instruments, marketdata, payloads, realbonds
 from api.catalogue import build_catalogue, find_pricer
 from api.context import CONTEXT
 from api.serialization import jsonable
@@ -176,16 +176,27 @@ def ingest_status() -> dict:
     return jsonable(ingest_job.status())
 
 
+@app.get("/snapshots")
+def snapshots() -> dict:
+    return jsonable(marketdata.snapshots(CONTEXT))
+
+
+@app.get("/marketcurves")
+def market_curves(snapshot_id: str | None = None) -> dict:
+    return jsonable(marketdata.curves(CONTEXT, snapshot_id=snapshot_id))
+
+
 @app.get("/catalog/categories")
-def catalog_categories() -> dict:
-    return jsonable(catalog.categories(CONTEXT))
+def catalog_categories(snapshot_id: str | None = None) -> dict:
+    return jsonable(catalog.categories(CONTEXT, snapshot_id=snapshot_id))
 
 
 @app.get("/catalog/{category}")
 def catalog_category(category: str, search: str | None = None, limit: int = 500,
-                     board: str | None = None, sort: str | None = None, desc: bool = False) -> dict:
+                     board: str | None = None, sort: str | None = None, desc: bool = False,
+                     snapshot_id: str | None = None) -> dict:
     return jsonable(catalog.catalog(CONTEXT, category, search=search, limit=limit,
-                                    board=board, sort=sort, desc=desc))
+                                    board=board, sort=sort, desc=desc, snapshot_id=snapshot_id))
 
 
 @app.get("/history/{category}/{secid}")

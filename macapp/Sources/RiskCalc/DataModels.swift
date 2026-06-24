@@ -326,6 +326,50 @@ struct LimitationRow: Decodable, Sendable, Identifiable {
     }
 }
 
+// MARK: - Market-data browser (snapshots + curves)
+
+struct SnapshotsResponse: Decodable, Sendable {
+    let active: String
+    let snapshots: [SnapshotInfo]
+}
+
+struct SnapshotInfo: Decodable, Sendable, Identifiable {
+    let snapshotID: String
+    let valuationDate: String
+    let source: String?
+    let quality: String?
+    let active: Bool
+    var id: String { snapshotID }
+
+    enum CodingKeys: String, CodingKey {
+        case snapshotID = "snapshot_id"
+        case valuationDate = "valuation_date"
+        case source, quality, active
+    }
+}
+
+struct MarketCurvesResponse: Decodable, Sendable {
+    let snapshotID: String
+    let curves: [CurveSeries]
+    enum CodingKeys: String, CodingKey {
+        case snapshotID = "snapshot_id"
+        case curves
+    }
+}
+
+struct CurveSeries: Decodable, Sendable, Identifiable {
+    let id: String
+    let label: String
+    let points: [CurveNode]
+}
+
+struct CurveNode: Decodable, Sendable, Identifiable {
+    let tenor: Double
+    let zero: Double?
+    let discount: Double?
+    var id: Double { tenor }
+}
+
 // MARK: - Instrument catalog (Market Data)
 
 struct CatalogCategoriesResponse: Decodable, Sendable {

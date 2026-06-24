@@ -356,6 +356,21 @@ class MarketDataDB:
         return {r["pair"]: r["rate"] for r in self._query(
             f"SELECT pair, rate FROM fx_rates WHERE snapshot_id={self.ph}", (snapshot_id,))}
 
+    def get_fx_quotes(self, snapshot_id) -> list[dict]:
+        return self._query(
+            f"SELECT pair, rate, source, trade_time FROM fx_rates WHERE snapshot_id={self.ph} ORDER BY pair",
+            (snapshot_id,))
+
+    def get_all_dividends(self, limit: int = 2000) -> list[dict]:
+        return self._query(
+            f"SELECT secid, registry_date, value, currency FROM dividends "
+            f"ORDER BY registry_date DESC LIMIT {int(limit)}")
+
+    def list_snapshots(self) -> list[dict]:
+        return self._query(
+            "SELECT snapshot_id, valuation_date, source, quality FROM market_data_snapshots "
+            "ORDER BY valuation_date DESC")
+
     def get_bond_quotes(self, snapshot_id) -> list[dict]:
         return self._query(f"SELECT * FROM bond_quotes WHERE snapshot_id={self.ph}", (snapshot_id,))
 

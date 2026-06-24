@@ -43,29 +43,33 @@ def _spec(pairs) -> list[dict]:
     return [{"label": label, "value": ("—" if value is None else str(value))} for label, value in pairs]
 
 
-def categories(ctx) -> dict:
+def categories(ctx, snapshot_id: str | None = None) -> dict:
     db = ctx.market_db
-    sid = ctx.snapshot.snapshot_id
+    sid = snapshot_id or ctx.snapshot.snapshot_id
     out = []
     if db is not None:
         out = [
             {"id": "bonds", "label": "Bonds", "count": len(db.get_real_bonds(sid, limit=None))},
             {"id": "equities", "label": "Equities", "count": len(db.get_equity_quotes(sid))},
+            {"id": "fx", "label": "FX", "count": len(db.get_fx_quotes(sid))},
             {"id": "commodities", "label": "Commodities", "count": len(db.get_commodity_quotes(sid))},
-            {"id": "fx", "label": "FX", "count": len(db.get_fx_rates(sid))},
+            {"id": "vols", "label": "Vol surface", "count": len(db.get_vol_points(sid))},
+            {"id": "dividends", "label": "Dividends", "count": len(db.get_all_dividends())},
         ]
     return {"categories": [c for c in out if c["count"] > 0]}
 
 
 def catalog(ctx, category: str, search: str | None = None, limit: int = 500,
-            board: str | None = None, sort: str | None = None, desc: bool = False) -> dict:
+            board: str | None = None, sort: str | None = None, desc: bool = False,
+            snapshot_id: str | None = None) -> dict:
     db = ctx.market_db
-    sid = ctx.snapshot.snapshot_id
+    sid = snapshot_id or ctx.snapshot.snapshot_id
     if db is None:
         return {"category": category, "columns": [], "rows": [], "boards": []}
     builder = {
         "bonds": _bonds, "equities": _equities,
         "commodities": _commodities, "fx": _fx,
+        "vols": _vols, "dividends": _dividends,
     }.get(category)
     if builder is None:
         return {"category": category, "columns": [], "rows": [], "boards": []}
@@ -172,13 +176,48 @@ def _commodities(db, sid):
 
 
 def _fx(db, sid):
-    columns = [{"key": k, "label": v} for k, v in [("pair", "Pair"), ("rate", "Rate")]]
+    columns = [{"key": k, "label": v} for k, v in [
+        ("pair", "Pair"), ("rate", "Rate"), ("source", "Source"), ("time", "Trade time")]]
     rows = []
-    for pair, rate in sorted(db.get_fx_rates(sid).items()):
+    for r in db.get_fx_quotes(sid):
         rows.append({
-            "id": pair, "board": None,
-            "cells": [pair, _f(rate, 4)],
-            "sort": [pair, _num(rate)],
-            "spec": _spec([("Pair", pair), ("Rate", rate)]),
+            "id": r["pair"], "board": r.get("source"),
+            "cells": [r["pair"], _f(r.get("rate"), 4), r.get("source") or "", r.get("trade_time") or "—"],
+            "sort": [r["pair"], _num(r.get("rate")), r.get("source") or "", r.get("trade_time") or ""],
+            "spec": _spec([("Pair", r.get("pair")), ("Rate", r.get("rate")),
+                           ("Source", r.get("source")), ("Trade time", r.get("trade_time"))]),
+        })
+    return columns, rows
+
+
+def _vols(db, sid):
+    columns = [{"key": k, "label": v} for k, v in [
+        ("underlying", "Underlying"), ("expiry", "Expiry"), ("strike", "Strike"), ("iv", "Implied vol")]]
+    rows = []
+    for r in sorted(db.get_vol_points(sid),
+                    key=lambda x: (x.get("underlying") or "", x.get("expiry") or "", x.get("strike") or 0)):
+        rows.append({
+            "id": f"{r.get('underlying')}-{r.get('expiry')}-{r.get('strike')}", "board": r.get("underlying"),
+            "cells": [r.get("underlying") or "", r.get("expiry") or "—",
+                      _f(r.get("strike")), _pct(r.get("iv"))],
+            "sort": [r.get("underlying") or "", r.get("expiry") or "", _num(r.get("strike")), _num(r.get("iv"))],
+            "spec": _spec([("Underlying", r.get("underlying")), ("Expiry", r.get("expiry")),
+                           ("Strike", r.get("strike")), ("Implied vol", r.get("iv"))]),
+        })
+    return columns, rows
+
+
+def _dividends(db, sid):
+    columns = [{"key": k, "label": v} for k, v in [
+        ("secid", "SECID"), ("registry", "Registry date"), ("value", "Dividend"), ("ccy", "Currency")]]
+    rows = []
+    for r in db.get_all_dividends():
+        rows.append({
+            "id": f"{r.get('secid')}-{r.get('registry_date')}", "board": r.get("currency"),
+            "cells": [r.get("secid") or "", r.get("registry_date") or "—",
+                      _f(r.get("value")), r.get("currency") or ""],
+            "sort": [r.get("secid") or "", r.get("registry_date") or "", _num(r.get("value")), r.get("currency") or ""],
+            "spec": _spec([("SECID", r.get("secid")), ("Registry date", r.get("registry_date")),
+                           ("Dividend", r.get("value")), ("Currency", r.get("currency"))]),
         })
     return columns, rows
