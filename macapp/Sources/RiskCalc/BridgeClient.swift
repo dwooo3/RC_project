@@ -138,6 +138,19 @@ actor BridgeClient {
         try Self.check(response, data)
         return try JSONDecoder().decode(HistoryResponse.self, from: data)
     }
+    func timeseriesCatalog() async throws -> TSCatalog { try await get("timeseries/catalog") }
+
+    func timeseries(factorID: String, frm: String? = nil, till: String? = nil) async throws -> TSSeriesData {
+        var comps = URLComponents(url: base.appending(path: "timeseries"), resolvingAgainstBaseURL: false)!
+        var items = [URLQueryItem(name: "factor_id", value: factorID)]
+        if let frm, !frm.isEmpty { items.append(URLQueryItem(name: "frm", value: frm)) }
+        if let till, !till.isEmpty { items.append(URLQueryItem(name: "till", value: till)) }
+        comps.queryItems = items
+        let (data, response) = try await session.data(from: comps.url!)
+        try Self.check(response, data)
+        return try JSONDecoder().decode(TSSeriesData.self, from: data)
+    }
+
     func market() async throws -> MarketData { try await get("market") }
     func portfolio() async throws -> PortfolioData { try await get("portfolio") }
     func risk() async throws -> RiskData { try await get("risk") }

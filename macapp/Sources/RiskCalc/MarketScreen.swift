@@ -25,6 +25,13 @@ final class MarketBrowserViewModel {
     var curves: [CurveSeries] = []
     var selectedCurveID = ""
 
+    // History (5y backfill store) — snapshot-independent series.
+    var tsCatalog: TSCatalog?
+    var tsGroup = "indices"
+    var tsSeriesID = ""
+    var tsData: TSSeriesData?
+    var tsYears = 5                 // lookback window; 0 = all
+
     var isLoading = false
     var serverDown = false
 
@@ -32,6 +39,22 @@ final class MarketBrowserViewModel {
 
     var boards: [String] { catalog?.boards ?? [] }
     var selectedCurve: CurveSeries? { curves.first { $0.id == selectedCurveID } }
+
+    var tsGroupSeries: [TSSeriesInfo] {
+        tsCatalog?.groups.first { $0.id == tsGroup }?.series ?? []
+    }
+
+    /// Points within the selected lookback window (client-side filter).
+    var tsPoints: [TSPoint] {
+        guard let pts = tsData?.points, tsYears > 0 else { return tsData?.points ?? [] }
+        let cutoff = Calendar.current.date(byAdding: .year, value: -tsYears, to: Date()) ?? .distantPast
+        let key = MarketBrowserViewModel.isoDay.string(from: cutoff)
+        return pts.filter { $0.date >= key }
+    }
+
+    static let isoDay: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = Locale(identifier: "en_US_POSIX"); return f
+    }()
 
     func start() async {
         do {
@@ -43,6 +66,7 @@ final class MarketBrowserViewModel {
             serverDown = true
             return
         }
+        tsCatalog = try? await client.timeseriesCatalog()
         await loadSnapshot()
     }
 
@@ -53,17 +77,42 @@ final class MarketBrowserViewModel {
         var secs: [SectionItem] = []
         if !curves.isEmpty { secs.append(.init(id: "curves", label: "Curves")) }
         secs += cats.map { .init(id: $0.id, label: $0.label) }
+        if let ts = tsCatalog, !ts.groups.isEmpty { secs.append(.init(id: "history", label: "History")) }
         sections = secs
         if !secs.contains(where: { $0.id == section }) { section = secs.first?.id ?? "curves" }
         if selectedCurveID.isEmpty || !curves.contains(where: { $0.id == selectedCurveID }) {
             selectedCurveID = curves.first(where: { $0.id == "GCURVE_RUB" })?.id ?? curves.first?.id ?? ""
         }
+        if tsSeriesID.isEmpty { ensureTSSelection() }
         isLoading = false
-        await loadSection()
+        if section == "history" { await loadTS() } else { await loadSection() }
+    }
+
+    private func ensureTSSelection() {
+        guard let ts = tsCatalog, !ts.groups.isEmpty else { return }
+        if !ts.groups.contains(where: { $0.id == tsGroup }) { tsGroup = ts.groups.first!.id }
+        if tsSeriesID.isEmpty || !tsGroupSeries.contains(where: { $0.id == tsSeriesID }) {
+            tsSeriesID = tsGroupSeries.first?.id ?? ""
+        }
+    }
+
+    func changeTSGroup(_ id: String) {
+        tsGroup = id
+        tsSeriesID = tsGroupSeries.first?.id ?? ""
+        Task { await loadTS() }
+    }
+
+    func changeTSSeries(_ id: String) { tsSeriesID = id; Task { await loadTS() } }
+
+    func loadTS() async {
+        guard !tsSeriesID.isEmpty else { tsData = nil; return }
+        isLoading = true
+        tsData = try? await client.timeseries(factorID: tsSeriesID)
+        isLoading = false
     }
 
     func loadSection() async {
-        guard section != "curves" else { return }
+        guard section != "curves", section != "history" else { return }
         isLoading = true
         catalog = try? await client.catalog(section, search: search.isEmpty ? nil : search,
                                             board: board.isEmpty ? nil : board,
@@ -75,7 +124,12 @@ final class MarketBrowserViewModel {
     func changeSection(_ id: String) {
         section = id; board = ""; sort = nil; sortDesc = false; search = ""
         catalog = nil
-        Task { await loadSection() }
+        if id == "history" {
+            ensureTSSelection()
+            Task { await loadTS() }
+        } else {
+            Task { await loadSection() }
+        }
     }
     func toggleSort(_ key: String) {
         if sort == key { sortDesc.toggle() } else { sort = key; sortDesc = false }
@@ -99,6 +153,8 @@ struct MarketScreen: View {
                 sectionPicker
                 if vm.section == "curves" {
                     curvesSection
+                } else if vm.section == "history" {
+                    historySection
                 } else {
                     tableSection
                 }
@@ -204,6 +260,89 @@ struct MarketScreen: View {
         }
     }
 
+    // MARK: history (5y backfill store)
+
+    @ViewBuilder
+    private var historySection: some View {
+        VStack(alignment: .leading, spacing: Theme.s3) {
+            if let cat = vm.tsCatalog, cat.groups.count > 1 {
+                Picker("Group", selection: Binding(get: { vm.tsGroup }, set: { vm.changeTSGroup($0) })) {
+                    ForEach(cat.groups) { Text($0.label).tag($0.id) }
+                }
+                .pickerStyle(.segmented).labelsHidden()
+            }
+            HStack(spacing: Theme.s3) {
+                Picker("Series", selection: Binding(get: { vm.tsSeriesID }, set: { vm.changeTSSeries($0) })) {
+                    ForEach(vm.tsGroupSeries) { Text($0.label).tag($0.id) }
+                }
+                .labelsHidden().fixedSize()
+                Spacer()
+                Picker("Period", selection: $vm.tsYears) {
+                    Text("1Y").tag(1); Text("3Y").tag(3); Text("5Y").tag(5); Text("All").tag(0)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                if vm.isLoading { ProgressView().controlSize(.small) }
+                if let d = vm.tsData { Text("\(vm.tsPoints.count) pts").font(.caption).foregroundStyle(.tertiary).help(d.factorID) }
+            }
+        }
+        if let d = vm.tsData, !vm.tsPoints.isEmpty {
+            historyChart(d, points: vm.tsPoints)
+            historyTable(d, points: vm.tsPoints)
+        } else if !vm.isLoading {
+            Text("No history for this series").font(.caption).foregroundStyle(.secondary).frame(height: 120)
+        }
+    }
+
+    private func historyChart(_ d: TSSeriesData, points: [TSPoint]) -> some View {
+        let scale = d.isRate ? 100.0 : 1.0
+        let ys = points.map { $0.value * scale }
+        let lo = ys.min() ?? 0, hi = ys.max() ?? 1
+        let pad = max((hi - lo) * 0.12, abs(hi) * 0.02 + 0.001)
+        return GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s3) {
+                BlockTitle("\(d.label) · history", icon: "chart.xyaxis.line")
+                Chart(points) { p in
+                    AreaMark(x: .value("Date", p.dateValue),
+                             yStart: .value("Floor", lo - pad), yEnd: .value("Value", p.value * scale))
+                        .foregroundStyle(.linearGradient(colors: [Theme.accent.opacity(0.18), Theme.accent.opacity(0.02)],
+                                                         startPoint: .top, endPoint: .bottom))
+                        .interpolationMethod(.monotone)
+                    LineMark(x: .value("Date", p.dateValue), y: .value("Value", p.value * scale))
+                        .foregroundStyle(Theme.accent).lineStyle(StrokeStyle(lineWidth: 1.8))
+                        .interpolationMethod(.monotone)
+                }
+                .chartYScale(domain: (lo - pad)...(hi + pad))
+                .chartYAxisLabel(d.isRate ? "Rate (%)" : "Level")
+                .frame(height: 280)
+            }
+        }
+    }
+
+    private func historyTable(_ d: TSSeriesData, points: [TSPoint]) -> some View {
+        GlassCard(padding: Theme.s2) {
+            VStack(spacing: 0) {
+                HStack(spacing: Theme.s2) {
+                    tableHead("Date"); tableHead(d.isRate ? "Rate" : "Value")
+                }
+                .padding(.horizontal, Theme.s2).padding(.vertical, Theme.s2)
+                Divider()
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(points.reversed())) { p in
+                            HStack(spacing: Theme.s2) {
+                                cell(p.date, weight: .medium, align: .leading)
+                                cell(d.isRate ? Fmt.percent(p.value * 100, digits: 2) : Fmt.number(p.value, digits: 2))
+                            }
+                            .padding(.horizontal, Theme.s2).padding(.vertical, 4)
+                            Divider().opacity(0.3)
+                        }
+                    }
+                }
+                .frame(height: 280)
+            }
+        }
+    }
+
     // MARK: generic data table
 
     @ViewBuilder
@@ -283,4 +422,11 @@ struct MarketScreen: View {
         Text(t).font(.system(size: 12, weight: weight)).monospacedDigit().lineLimit(1)
             .frame(maxWidth: .infinity, alignment: align)
     }
+}
+
+extension TSPoint {
+    private static let parser: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = Locale(identifier: "en_US_POSIX"); return f
+    }()
+    var dateValue: Date { Self.parser.date(from: date) ?? Date() }
 }

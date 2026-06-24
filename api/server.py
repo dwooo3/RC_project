@@ -25,7 +25,16 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from api import catalog, history, ingest_job, instruments, marketdata, payloads, realbonds
+from api import (
+    catalog,
+    history,
+    ingest_job,
+    instruments,
+    marketdata,
+    payloads,
+    realbonds,
+    timeseries,
+)
 from api.catalogue import build_catalogue, find_pricer
 from api.context import CONTEXT
 from api.serialization import jsonable
@@ -202,6 +211,17 @@ def catalog_category(category: str, search: str | None = None, limit: int = 500,
 @app.get("/history/{category}/{secid}")
 def trade_history(category: str, secid: str, days: int = 180) -> dict:
     return jsonable(history.trade_history(category, secid, days=days))
+
+
+# ── historical time series (5y backfill store) ───────────
+@app.get("/timeseries/catalog")
+def timeseries_catalog() -> dict:
+    return jsonable(timeseries.catalog(CONTEXT))
+
+
+@app.get("/timeseries")
+def timeseries_series(factor_id: str, frm: str | None = None, till: str | None = None) -> dict:
+    return jsonable(timeseries.series(CONTEXT, factor_id, frm=frm, till=till))
 
 
 @app.post("/price")

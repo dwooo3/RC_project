@@ -432,3 +432,10 @@ class MarketDataDB:
                 (factor_id, kind))
         return self._query(
             f"SELECT dt, value FROM time_series WHERE factor_id={self.ph} ORDER BY dt", (factor_id,))
+
+    def list_time_series_factors(self) -> list[dict]:
+        """Catalog of stored historical series: id, kind, point count, span."""
+        return self._query(
+            "SELECT factor_id, kind, COUNT(*) AS points, "
+            "MIN(dt) AS start, MAX(dt) AS end "
+            "FROM time_series GROUP BY factor_id, kind ORDER BY factor_id")

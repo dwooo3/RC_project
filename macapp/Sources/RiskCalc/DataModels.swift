@@ -433,6 +433,55 @@ struct SpecField: Decodable, Sendable, Identifiable {
     var id: String { label }
 }
 
+// MARK: - Historical time series (5y backfill store)
+
+struct TSCatalog: Decodable, Sendable {
+    let groups: [TSGroup]
+    let count: Int
+}
+
+struct TSGroup: Decodable, Sendable, Identifiable {
+    let id: String
+    let label: String
+    let series: [TSSeriesInfo]
+}
+
+struct TSSeriesInfo: Decodable, Sendable, Identifiable {
+    let id: String          // factor_id
+    let label: String
+    let kind: String
+    let isRate: Bool
+    let points: Int
+    let start: String
+    let end: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, kind, points, start, end
+        case isRate = "is_rate"
+    }
+}
+
+struct TSSeriesData: Decodable, Sendable {
+    let factorID: String
+    let label: String
+    let isRate: Bool
+    let unit: String
+    let points: [TSPoint]
+    let count: Int
+
+    enum CodingKeys: String, CodingKey {
+        case factorID = "factor_id"
+        case label, unit, points, count
+        case isRate = "is_rate"
+    }
+}
+
+struct TSPoint: Decodable, Sendable, Identifiable {
+    let date: String
+    let value: Double
+    var id: String { date }
+}
+
 struct AuditRow: Decodable, Sendable, Identifiable {
     let timestamp: String
     let event: String
