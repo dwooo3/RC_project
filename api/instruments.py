@@ -21,12 +21,20 @@ from models.parameters import P, ParameterSpec
 # Human labels for the live snapshot curve ids.
 CURVE_LABELS = {
     "GCURVE_RUB": "OFZ sovereign (GCURVE)",
+    "ZCB_OFZ_RUB": "OFZ zero (bootstrap)",
     "KEYRATE_RUB": "CBR key rate",
-    "RUONIA_RUB": "RUONIA",
+    "RUONIA_RUB": "RUONIA OIS (MOEX RUSFAR)",
+    "RUONIA-OIS-CBONDS": "RUONIA OIS (cbonds)",
     "REALCURVE_OFZIN": "OFZ-IN real",
     "CORP_T1": "Corporate tier 1",
     "CORP_T2": "Corporate tier 2",
     "CORP_T3": "Corporate tier 3",
+    "SOFR_USD": "USD SOFR (offshore)",
+    "ESTR_EUR": "EUR €STR (offshore)",
+    "CNH_CNY": "CNY CNH (offshore)",
+    "FXFWD_USD": "USD/RUB futures (Si)",
+    "FXFWD_EUR": "EUR/RUB futures (Eu)",
+    "FXFWD_CNY": "CNY/RUB futures",
 }
 
 _DAY_COUNTS = ["act365", "act360", "30360", "actact"]

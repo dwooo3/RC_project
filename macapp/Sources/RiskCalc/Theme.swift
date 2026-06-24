@@ -79,6 +79,25 @@ enum Fmt {
         (v >= 0 ? "+" : "") + percent(v, digits: digits)
     }
 
+    /// A tenor expressed in years rendered as a classic money-market / swap
+    /// label — O/N, 1W, 1M, 6M, 1Y, 10Y. Display only; the stored tenor stays
+    /// in years. Falls back to "{n}Y" / "{n}M" for off-grid values.
+    static func tenor(_ years: Double) -> String {
+        if years <= 0 { return "0" }
+        let days = years * 365.0
+        if days < 4.5 { return "\(max(1, Int(days.rounded())))D" }  // 1D (overnight)
+        if days < 26 {                                        // weeks
+            return "\(Int((days / 7.0).rounded()))W"
+        }
+        if years < 1 - 1e-6 {                                 // months
+            return "\(max(1, Int((years * 12.0).rounded())))M"
+        }
+        if abs(years - years.rounded()) < 0.02 {              // whole years
+            return "\(Int(years.rounded()))Y"
+        }
+        return "\(Int((years * 12.0).rounded()))M"            // off-grid fallback
+    }
+
     private static func round1(_ v: Double) -> String {
         v >= 100 ? String(Int(v.rounded())) : v.formatted(.number.precision(.fractionLength(1)))
     }

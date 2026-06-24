@@ -32,12 +32,12 @@ class CbrIngestor:
         return max(records, key=lambda r: r[0]) if records else None
 
     def _ingest_rate(self, *, snapshot_id, valuation_date, records, factor_id,
-                     curve_id, label, endpoint) -> int:
+                     curve_id, label, endpoint, write_curve: bool = True) -> int:
         started = datetime.now()
         try:
             self.db.save_time_series(factor_id, "rate", records)
             latest = self._latest(records)
-            if latest is not None:
+            if write_curve and latest is not None:
                 as_of, rate = latest
                 points = [(t, rate, math.exp(-rate * t)) for t in _SHORT_TENORS]
                 self.db.save_curve(
@@ -65,8 +65,11 @@ class CbrIngestor:
                       from_date: date | None = None, till_date: date | None = None) -> int:
         from_date = from_date or valuation_date
         records = self.client.get_ruonia(from_date, till_date)
+        # Only the time_series (the O/N fixing history) — the RUONIA_RUB *curve*
+        # is now the OIS bootstrap from MOEX RUSFAR (MoexIngestor.ingest_ruonia_ois),
+        # not a flat fixing proxy.
         return self._ingest_rate(
             snapshot_id=snapshot_id, valuation_date=valuation_date, records=records,
             factor_id="RUONIA:rate", curve_id="RUONIA_RUB",
-            label="RUONIA O/N fixing (flat proxy)", endpoint="cbr/ruonia",
+            label="RUONIA O/N fixing", endpoint="cbr/ruonia", write_curve=False,
         )

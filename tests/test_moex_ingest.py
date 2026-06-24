@@ -2,6 +2,7 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import math
 from datetime import date
 
 import pytest
@@ -81,7 +82,8 @@ def test_ingest_gcurve_writes_decimal_points_and_nss(setup):
     assert n == 5
     pts = db.get_curve_points(sid, "GCURVE_RUB")
     assert [p["tenor"] for p in pts] == [0.25, 0.5, 1.0, 2.0, 5.0]
-    assert pts[0]["zero_rate"] == pytest.approx(0.155)  # percent -> decimal
+    # КБД publishes EFFECTIVE-annual yields; stored as continuous (ln(1+y))
+    assert pts[0]["zero_rate"] == pytest.approx(math.log1p(0.155))
     # discount factors strictly decreasing
     dfs = [p["discount_factor"] for p in pts]
     assert all(b < a for a, b in zip(dfs, dfs[1:]))

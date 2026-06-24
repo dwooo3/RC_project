@@ -55,6 +55,13 @@ def _iss(fail_paths=()):
         "engines/stock/markets/bonds/boards/TQOB/securities": BONDS,
         "engines/stock/markets/shares/boards/TQBR/securities": SHARES,
         "engines/futures/markets/options/securities": OPTIONS,
+        "engines/stock/markets/index/boards/MMIX/securities": {"marketdata": [
+            {"SECID": "RUSFAR", "CURRENTVALUE": 14.16},
+            {"SECID": "RUSFAR1W", "CURRENTVALUE": 14.18},
+            {"SECID": "RUSFAR2W", "CURRENTVALUE": 14.09},
+            {"SECID": "RUSFAR1M", "CURRENTVALUE": 14.10},
+            {"SECID": "RUSFAR3M", "CURRENTVALUE": 14.01},
+        ]},
     }
     paginated = {
         "history/engines/stock/markets/index/securities/IMOEX":
@@ -80,10 +87,12 @@ def test_eod_job_runs_all_sources_and_builds_snapshot():
     assert s["equity_quotes"] == 1 and s["vol_surface"] == 1
     assert s["index:IMOEX"] == 1 and s["equity:SBER"] == 1
     assert s["cbr_key_rate"] == 1 and s["cbr_ruonia"] == 1
+    assert s["ruonia_ois"] == 5 and s["ruonia_ois_cbonds"] == 10
     snap = summary["snapshot"]
     assert snap["source"] == "MOEX" and snap["quality"] == "OK"
     assert "GCURVE_RUB" in snap["curves"]
     assert "KEYRATE_RUB" in snap["curves"] and "RUONIA_RUB" in snap["curves"]
+    assert "RUONIA-OIS-CBONDS" in snap["curves"]
     assert "SBER_FORTS" in snap["vol_surfaces"]
 
 

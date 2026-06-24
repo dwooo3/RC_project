@@ -49,27 +49,45 @@ def test_ingest_key_rate_curve_and_series():
     assert db.get_time_series("CBR_KEYRATE:rate", "rate")
 
 
-def test_ingest_ruonia_curve():
+def test_ingest_ruonia_writes_series_not_curve():
+    # RUONIA_RUB is now the RUSFAR OIS bootstrap (MoexIngestor.ingest_ruonia_ois);
+    # the CBR ruonia ingest only records the overnight fixing time_series.
     db = MarketDataDB(":memory:")
     sid = "moex-2026-06-02"
     client = _client([("2026-06-02", 0.153)])
     CbrIngestor(client, db).ingest_ruonia(sid, VAL)
-    assert "RUONIA_RUB" in db.list_curve_ids(sid)
-    meta = db.get_curve(sid, "RUONIA_RUB")
-    assert meta["method"] == "cbr_flat"
+    assert "RUONIA_RUB" not in db.list_curve_ids(sid)
+    assert db.get_time_series("RUONIA:rate", "rate")
 
 
 def test_cbr_curves_appear_in_moex_snapshot():
+    from infra.moex_iss.ingest import MoexIngestor
+
     db = MarketDataDB(":memory:")
     sid = "moex-2026-06-02"
-    # minimum for an OK-ish snapshot: a govt curve + fx, plus CBR curves
+    # minimum for an OK-ish snapshot: a govt curve + fx, the CBR key rate,
+    # plus the RUSFAR-bootstrapped RUONIA OIS curve.
     db.save_curve(sid, "GCURVE_RUB", method="points", nss_params={}, as_of=VAL,
                   points=[(0.5, 0.15, None), (1, 0.148, None), (2, 0.145, None),
                           (5, 0.138, None), (10, 0.132, None)])
     db.save_fx_rate(sid, "USD/RUB", 74.36)
     CbrIngestor(_client([("2026-06-02", 0.21)]), db).ingest_key_rate(sid, VAL)
     CbrIngestor(_client([("2026-06-02", 0.153)]), db).ingest_ruonia(sid, VAL)
+    MoexIngestor(_FakeIssRusfar(), db).ingest_ruonia_ois(sid, VAL)
     snap = MarketDataService(market_db=db).moex_snapshot(VAL)
     assert "KEYRATE_RUB" in snap.curves
     assert "RUONIA_RUB" in snap.curves
     assert snap.curves["KEYRATE_RUB"].rate(1.0) == pytest.approx(0.21, abs=1e-6)
+
+
+class _FakeIssRusfar:
+    """Minimal ISS stub returning RUSFAR term rates on the MMIX board."""
+
+    def get_blocks(self, path, params=None):
+        return {"marketdata": [
+            {"SECID": "RUSFAR", "CURRENTVALUE": 14.16},
+            {"SECID": "RUSFAR1W", "CURRENTVALUE": 14.18},
+            {"SECID": "RUSFAR2W", "CURRENTVALUE": 14.09},
+            {"SECID": "RUSFAR1M", "CURRENTVALUE": 14.10},
+            {"SECID": "RUSFAR3M", "CURRENTVALUE": 14.01},
+        ]}

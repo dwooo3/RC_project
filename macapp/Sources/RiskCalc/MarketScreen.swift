@@ -228,34 +228,52 @@ struct MarketScreen: View {
                     }
                 }
                 .chartYScale(domain: (lo - pad)...(hi + pad))
-                .chartXAxisLabel("Tenor (years)").chartYAxisLabel("Zero rate (%)")
+                .chartXAxis {
+                    AxisMarks(values: tenorAxisValues(c.points.map(\.tenor))) { value in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let y = value.as(Double.self) { Text(Fmt.tenor(y)) }
+                        }
+                    }
+                }
+                .chartXAxisLabel("Tenor").chartYAxisLabel("Zero rate (%)")
                 .frame(height: 260)
             }
         }
+    }
+
+    /// Greedily thin node tenors so classic labels never overlap on a linear
+    /// axis (short-end money-market nodes cluster near zero). Always keeps the
+    /// first and last node.
+    private func tenorAxisValues(_ tenors: [Double]) -> [Double] {
+        let sorted = tenors.sorted()
+        guard let lo = sorted.first, let hi = sorted.last, hi > lo else { return sorted }
+        let minGap = (hi - lo) * 0.06
+        var out: [Double] = []
+        for t in sorted where out.isEmpty || t - out[out.count - 1] >= minGap {
+            out.append(t)
+        }
+        if out.last != hi { out.append(hi) }
+        return out
     }
 
     private func curveTable(_ c: CurveSeries) -> some View {
         GlassCard(padding: Theme.s2) {
             VStack(spacing: 0) {
                 HStack(spacing: Theme.s2) {
-                    tableHead("Tenor (y)"); tableHead("Zero rate"); tableHead("Discount factor")
+                    tableHead("Tenor"); tableHead("Zero rate"); tableHead("Discount factor")
                 }
                 .padding(.horizontal, Theme.s2).padding(.vertical, Theme.s2)
                 Divider()
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(c.points) { p in
-                            HStack(spacing: Theme.s2) {
-                                cell(Fmt.number(p.tenor, digits: p.tenor < 1 ? 3 : 2), weight: .medium, align: .leading)
-                                cell(p.zero.map { Fmt.percent($0 * 100, digits: 3) } ?? "—")
-                                cell(p.discount.map { Fmt.number($0, digits: 6) } ?? "—")
-                            }
-                            .padding(.horizontal, Theme.s2).padding(.vertical, 4)
-                            Divider().opacity(0.3)
-                        }
+                ForEach(c.points) { p in
+                    HStack(spacing: Theme.s2) {
+                        cell(Fmt.tenor(p.tenor), weight: .medium, align: .leading)
+                        cell(p.zero.map { Fmt.percent($0 * 100, digits: 3) } ?? "—")
+                        cell(p.discount.map { Fmt.number($0, digits: 6) } ?? "—")
                     }
+                    .padding(.horizontal, Theme.s2).padding(.vertical, 4)
+                    Divider().opacity(0.3)
                 }
-                .frame(height: 240)
             }
         }
     }

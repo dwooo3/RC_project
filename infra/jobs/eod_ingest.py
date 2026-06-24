@@ -85,6 +85,17 @@ class EodIngestJob:
 
             step("cbr_official_fx", _official)
 
+        # RUONIA OIS curve bootstrapped from MOEX RUSFAR term rates (overwrites
+        # the legacy flat fixing proxy as RUONIA_RUB).
+        step("ruonia_ois", lambda: moex.ingest_ruonia_ois(sid, valuation_date))
+
+        # cbonds RUONIA OIS reference curve (manual capture) for cross-validation.
+        def _cbonds_ruonia():
+            from infra.cbonds import ingest_cbonds_ruonia_ois
+            return ingest_cbonds_ruonia_ois(self.db, sid)
+
+        step("ruonia_ois_cbonds", _cbonds_ruonia)
+
         # Stage I.4: FX forward curves from futures strips (anchored on fixes)
         def _fx_futures():
             spots = {**official, **self.db.get_fx_rates(sid)}
@@ -104,6 +115,12 @@ class EodIngestJob:
             return moex.ingest_bondization(secids)
 
         step("bondization", _bondization)
+
+        # Zero curve bootstrapped from OFZ-PD prices (needs schedules above).
+        step("ofz_zero", lambda: moex.ingest_ofz_zero(sid, valuation_date))
+
+        # Offshore FX funding curves (SOFR/€STR live; CNH via SOFR + MOEX crosses).
+        step("fx_offshore", lambda: moex.ingest_fx_offshore(sid, valuation_date))
 
         # Stage V.4: commodity futures curves + dividends for the liquid names
         step("commodity_futures", lambda: moex.ingest_commodity_futures(sid, valuation_date))

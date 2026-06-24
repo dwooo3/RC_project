@@ -107,7 +107,10 @@ class MoexIngestor:
                 pct = _to_float(row.get("value"))
                 if tenor is None or pct is None or tenor <= 0:
                     continue
-                zero = pct / 100.0  # ISS publishes percent; engine wants decimal continuous
+                # КБД (zcyc) publishes EFFECTIVE-annual zero yields. Convert to
+                # continuous compounding (the engine's convention) so DF=exp(-z·t)
+                # reprices OFZ correctly — verified against live OFZ dirty prices.
+                zero = math.log1p(pct / 100.0)
                 points.append((tenor, zero, math.exp(-zero * tenor)))
                 as_of = as_of or row.get("tradedate")
             params_rows = blocks.get("params", [])
@@ -126,6 +129,154 @@ class MoexIngestor:
             )
             self.db.log_ingest(endpoint, "ok", len(points), started, datetime.now())
             return len(points)
+        except Exception as exc:
+            self.db.log_ingest(endpoint, "error", 0, started, datetime.now(), str(exc))
+            raise
+
+    # -- RUONIA OIS (bootstrapped from MOEX RUSFAR term rates) -------------
+    # RUSFAR (МосБиржа secured funding rate) is the liquid RUB money-market
+    # term benchmark published on board MMIX. RUONIA futures are illiquid
+    # (monthly) or quoted as opaque index points (quarterly), so RUSFAR is the
+    # usable exchange source for an OIS short curve. ACT/365 tenors.
+    RUSFAR_OIS_TENORS = {
+        "RUSFAR": 1.0 / 365,      # overnight
+        "RUSFAR1W": 7.0 / 365,
+        "RUSFAR2W": 14.0 / 365,
+        "RUSFAR1M": 30.0 / 365,
+        "RUSFAR3M": 91.0 / 365,
+    }
+
+    def ingest_ruonia_ois(self, snapshot_id: str, valuation_date: date) -> int:
+        """Bootstrap an OIS zero curve from RUSFAR term rates → RUONIA_RUB."""
+        from infra.curves_ois import bootstrap_ois
+
+        started = datetime.now()
+        endpoint = "engines/stock/markets/index/boards/MMIX/securities"
+        try:
+            blocks = self.client.get_blocks(endpoint, {"iss.only": "marketdata"})
+            md = {r.get("SECID"): r for r in blocks.get("marketdata", [])}
+            pairs: list[tuple[float, float]] = []
+            quotes: dict[str, float] = {}
+            for secid, tenor in self.RUSFAR_OIS_TENORS.items():
+                row = md.get(secid)
+                if not row:
+                    continue
+                val = _to_float(row.get("CURRENTVALUE")) or _to_float(row.get("LASTVALUE"))
+                if not val:
+                    continue
+                pairs.append((tenor, val / 100.0))         # ISS publishes percent
+                quotes[secid] = val
+            if len(pairs) < 3:
+                raise ValueError(f"only {len(pairs)} RUSFAR tenors available")
+            pairs.sort()
+            points = bootstrap_ois([t for t, _ in pairs], [r for _, r in pairs])
+            errs = validate_curve_points(points)
+            if errs:
+                raise ValueError("; ".join(errs))
+            self.db.delete_curve(snapshot_id, "RUONIA_RUB")
+            self.db.save_curve(
+                snapshot_id, "RUONIA_RUB", method="ois_bootstrap",
+                nss_params={"source": "MOEX RUSFAR", "rusfar_quotes_pct": quotes,
+                            "convention": "money-market ACT/365, continuous zeros"},
+                as_of=valuation_date, points=points,
+            )
+            self.db.log_ingest(endpoint, "ok", len(points), started, datetime.now())
+            return len(points)
+        except Exception as exc:
+            self.db.log_ingest(endpoint, "error", 0, started, datetime.now(), str(exc))
+            raise
+
+    # -- OFZ zero curve bootstrapped from bond prices ----------------------
+    def ingest_ofz_zero(self, snapshot_id: str, valuation_date: date) -> int:
+        """Bootstrap a zero curve from liquid OFZ-PD prices → ZCB_OFZ_RUB.
+
+        Independent of the NSS-fitted КБД (GCURVE). Continuous zeros.
+        """
+        from infra.ofz_bootstrap import bootstrap_zero, ofz_cashflows, select_spanning
+
+        started = datetime.now()
+        endpoint = "ofz_zero_bootstrap"
+        try:
+            bonds = []
+            for r in self.db.get_real_bonds(snapshot_id, board="TQOB", limit=None):
+                secid = r["secid"]
+                ref = self.db.get_bond_ref(secid)
+                quote = self.db.get_bond_quote(snapshot_id, secid)
+                if not ref or not quote or quote.get("clean_price") is None:
+                    continue
+                cfs, T = ofz_cashflows(ref, self.db.get_bond_schedule(secid), valuation_date)
+                if cfs is None:
+                    continue
+                face = float(ref.get("facevalue") or 1000.0)
+                dirty = float(quote["clean_price"]) + float(quote.get("accruedint") or 0.0) / face * 100.0
+                bonds.append({"mat": T, "dirty": dirty, "cfs": cfs, "volume": quote.get("volume") or 0})
+            if len(bonds) < 4:
+                raise ValueError(f"only {len(bonds)} eligible OFZ-PD bonds")
+            points = bootstrap_zero(select_spanning(bonds))
+            errs = validate_curve_points(points)
+            if errs:
+                raise ValueError("; ".join(errs))
+            self.db.delete_curve(snapshot_id, "ZCB_OFZ_RUB")
+            self.db.save_curve(
+                snapshot_id, "ZCB_OFZ_RUB", method="ofz_bootstrap",
+                nss_params={"source": "MOEX OFZ-PD prices", "n_bonds": len(bonds),
+                            "convention": "continuous zero"},
+                as_of=valuation_date, points=points,
+            )
+            self.db.log_ingest(endpoint, "ok", len(points), started, datetime.now())
+            return len(points)
+        except Exception as exc:
+            self.db.log_ingest(endpoint, "error", 0, started, datetime.now(), str(exc))
+            raise
+
+    # -- FX offshore funding curves (USD SOFR / EUR €STR / CNY CNH) ---------
+    def ingest_fx_offshore(self, snapshot_id: str, valuation_date: date) -> int:
+        """USD SOFR + EUR €STR (live official feeds) and CNH = SOFR + USD/CNY
+        carry implied by MOEX Si/CNY crosses. Continuous zeros."""
+        from infra.offshore import build_offshore_curve, fetch_estr, fetch_sofr
+
+        started = datetime.now()
+        endpoint = "fx_offshore"
+        saved = 0
+
+        def _save(cid, points, source):
+            nonlocal saved
+            if len(points) >= 2 and not validate_curve_points(points):
+                self.db.delete_curve(snapshot_id, cid)
+                self.db.save_curve(snapshot_id, cid, method="offshore",
+                                   nss_params={"source": source, "convention": "continuous"},
+                                   as_of=valuation_date, points=points)
+                saved += 1
+
+        try:
+            sofr = build_offshore_curve(fetch_sofr())
+            _save("SOFR_USD", sofr, "NY Fed SOFR (O/N + 30/90/180d averages)")
+            _save("ESTR_EUR", build_offshore_curve(fetch_estr()), "ECB €STR (O/N + compounded averages)")
+
+            # CNH = SOFR + carry(USD/CNY), USD/CNY carry = carry(Si) − carry(CNY) (MOEX).
+            si = self.db.get_curve_points(snapshot_id, "FXFWD_USD")
+            cny = self.db.get_curve_points(snapshot_id, "FXFWD_CNY")
+            if sofr and si and cny:
+                def _interp(xs, ys, t):
+                    if t <= xs[0]:
+                        return ys[0]
+                    if t >= xs[-1]:
+                        return ys[-1]
+                    for x0, x1, y0, y1 in zip(xs, xs[1:], ys, ys[1:]):
+                        if x0 <= t <= x1:
+                            return y0 + (y1 - y0) * (t - x0) / (x1 - x0)
+                    return ys[-1]
+                sofr_x, sofr_y = [p[0] for p in sofr], [p[1] for p in sofr]
+                si_x, si_y = [p["tenor"] for p in si], [p["zero_rate"] for p in si]
+                cnh = []
+                for p in cny:
+                    t = p["tenor"]
+                    z = _interp(sofr_x, sofr_y, t) + _interp(si_x, si_y, t) - p["zero_rate"]
+                    cnh.append((t, z, math.exp(-z * t)))
+                _save("CNH_CNY", cnh, "SOFR + USD/CNY carry (MOEX Si/CNY cross)")
+
+            self.db.log_ingest(endpoint, "ok", saved, started, datetime.now())
+            return saved
         except Exception as exc:
             self.db.log_ingest(endpoint, "error", 0, started, datetime.now(), str(exc))
             raise

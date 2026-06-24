@@ -227,6 +227,14 @@ class MarketDataDB:
             for (t, z, df) in points
         ])
 
+    def delete_curve(self, snapshot_id, curve_id) -> None:
+        """Drop a curve and its points so a re-ingest with different tenors
+        does not leave stale nodes behind (curve_points upsert is per-tenor)."""
+        self._exec(f"DELETE FROM curve_points WHERE snapshot_id={self.ph} AND curve_id={self.ph}",
+                   (snapshot_id, curve_id))
+        self._exec(f"DELETE FROM yield_curves WHERE snapshot_id={self.ph} AND curve_id={self.ph}",
+                   (snapshot_id, curve_id))
+
     def save_fx_rate(self, snapshot_id, pair, rate, source="MOEX", trade_time=None) -> None:
         self._upsert("fx_rates", {"snapshot_id": snapshot_id, "pair": pair,
                                   "rate": float(rate), "source": source, "trade_time": trade_time})
