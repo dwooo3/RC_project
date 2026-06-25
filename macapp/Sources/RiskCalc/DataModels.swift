@@ -527,15 +527,45 @@ struct MDEntity: Decodable, Sendable {
     let fields: [MDField]
     let day: MDDay?
     let dividends: [MDDividend]?
+    let assetCode: String?
+    let chain: [MDChainContract]?
 
     enum CodingKeys: String, CodingKey {
-        case secid, category, isin, currency, board, last, fields, day, dividends
+        case secid, category, isin, currency, board, last, fields, day, dividends, chain
         case issuerRu = "issuer_ru"
         case nameRu = "name_ru"
         case secType = "sec_type"
         case listLevel = "list_level"
         case changePct = "change_pct"
         case asOf = "as_of"
+        case assetCode = "asset_code"
+    }
+}
+
+struct MDChainContract: Decodable, Sendable, Identifiable {
+    let secid: String
+    let shortname: String?
+    let last: Double?
+    let changePct: Double?
+    let lastTradeDate: String?
+    let isActive: Int?
+    var id: String { secid }
+
+    enum CodingKeys: String, CodingKey {
+        case secid, shortname, last
+        case changePct = "change_pct"
+        case lastTradeDate = "last_trade_date"
+        case isActive = "is_active"
+    }
+}
+
+/// Maps a UI category to its ISS market for /md/history.
+func mdMarket(_ category: String) -> String {
+    switch category {
+    case "equities": return "shares"
+    case "bonds": return "bonds"
+    case "futures", "options": return "forts"
+    default: return category
     }
 }
 

@@ -41,6 +41,9 @@ def main() -> int:
     elif category == "equities":
         log(f"preloading equities: {years}y daily history + refs + dividends (limit={limit})")
         log(f"done: {store.preload_equities(years=years, limit=limit, progress=log)}")
+    elif category == "futures":
+        log(f"preloading futures: full FORTS chain + history for active contracts ({years}y)")
+        log(f"done: {store.preload_futures(years=years, progress=log)}")
     else:
         log(f"category '{category}' not yet supported")
         return 1

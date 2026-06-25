@@ -56,6 +56,13 @@ def instrument(ctx, category: str, secid: str) -> dict:
         out["schedule"] = db.get_bond_schedule(secid)
     elif ref.get("category") == "equities":
         out["dividends"] = db.get_dividends(secid)
+    elif ref.get("category") == "futures" and ref.get("asset_code"):
+        out["asset_code"] = ref.get("asset_code")
+        out["chain"] = [{
+            "secid": c["secid"], "shortname": c.get("issuer_ru"),
+            "last": c.get("last"), "change_pct": c.get("change_pct"),
+            "last_trade_date": c.get("last_trade_date"), "is_active": c.get("is_active"),
+        } for c in db.futures_chain(ref["asset_code"])]
     return out
 
 

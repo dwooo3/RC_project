@@ -53,9 +53,10 @@ class MarketStore:
             "last_trade_date": desc.get("LSTTRADE") or desc.get("MATDATE"),
         }
 
-    def fetch_daily_history(self, secid: str, market: str, frm: _dt.date, till: _dt.date) -> list[dict]:
+    def fetch_daily_history(self, secid: str, market: str, frm: _dt.date, till: _dt.date,
+                            engine: str = "stock") -> list[dict]:
         """Daily OHLCV (+ yield) for a security over [frm, till], one row per day."""
-        endpoint = f"history/engines/stock/markets/{market}/securities/{secid}"
+        endpoint = f"history/engines/{engine}/markets/{market}/securities/{secid}"
         rows = self.iss.get_block_paginated(
             endpoint, "history", {"from": frm.isoformat(), "till": till.isoformat()})
         by_date: dict[str, dict] = {}
@@ -187,3 +188,62 @@ class MarketStore:
                          limit: int | None = None, progress=None) -> dict:
         return self._preload_list(self.equity_secids(board), category="equities", market="shares",
                                   years=years, limit=limit, progress=progress, with_dividends=True)
+
+    def preload_futures(self, *, years: int = 2, progress=None) -> dict:
+        """Ingest the whole FORTS chain: ref for every contract (so the card can
+        group the chain), mark the active contract per asset (nearest non-expired,
+        max open interest), and pull daily history for the active contracts only."""
+        today = _dt.date.today()
+        blocks = self.iss.get_blocks(
+            "engines/futures/markets/forts/securities", {"iss.meta": "off", "lang": "ru"})
+        md = {r.get("SECID"): r for r in blocks.get("marketdata", [])}
+        by_asset: dict[str, list] = {}
+        for r in blocks.get("securities", []):
+            sid, asset = r.get("SECID"), r.get("ASSETCODE")
+            if sid and asset:
+                by_asset.setdefault(asset, []).append(r)
+
+        assets = 0
+        added = 0
+        contracts = 0
+        for asset, rows in by_asset.items():
+            live = [c for c in rows if (c.get("LASTTRADEDATE") or "") >= today.isoformat()]
+            active = max(live, key=lambda c: _num(md.get(c.get("SECID"), {}).get("OPENPOSITION")) or 0.0) \
+                if live else None
+            if active:
+                assets += 1
+            for c in rows:
+                sid = c.get("SECID")
+                m = md.get(sid, {})
+                last = _num(m.get("LAST")) or _num(m.get("SETTLEPRICE")) or _num(c.get("PREVSETTLEPRICE"))
+                prev = _num(c.get("PREVSETTLEPRICE"))
+                chg = ((last - prev) / prev * 100.0) if (last and prev) else None
+                is_active = 1 if (active and sid == active.get("SECID")) else 0
+                as_of = today.isoformat() if is_active else c.get("LASTTRADEDATE")
+                ref = {"isin": None, "issuer_ru": c.get("SHORTNAME"),
+                       "name_ru": c.get("SECNAME") or c.get("SHORTNAME"), "sec_type": "Фьючерс",
+                       "list_level": None, "currency": None, "asset_code": asset,
+                       "last_trade_date": c.get("LASTTRADEDATE"),
+                       "raw": [{"name": k, "title": k, "value": c.get(k)} for k in c]}
+                if is_active:
+                    try:
+                        ref = self.fetch_ref(sid)          # full description for the card
+                    except Exception:
+                        pass
+                    start = self.db.price_history_max_dt(sid, "forts")
+                    frm = (_dt.date.fromisoformat(start) + _dt.timedelta(days=1)) if start \
+                        else today.replace(year=today.year - years)
+                    hist = self.fetch_daily_history(sid, "forts", frm, today, engine="futures") \
+                        if frm <= today else []
+                    if hist:
+                        self.db.save_price_history(hist)
+                        added += len(hist)
+                    full = self.db.get_price_history(sid, "forts")
+                    if full:
+                        last, chg, as_of = self._last_change(full)
+                self._store_ref(sid, category="futures", market="forts", board="forts",
+                                ref=ref, last=last, change_pct=chg, as_of=as_of, is_active=is_active)
+                contracts += 1
+            if progress and assets and assets % 20 == 0:
+                progress(f"  {assets} assets, {contracts} contracts, {added} hist rows")
+        return {"assets": assets, "contracts": contracts, "rows_added": added}

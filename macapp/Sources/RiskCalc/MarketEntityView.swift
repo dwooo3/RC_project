@@ -22,7 +22,7 @@ final class MarketEntityVM {
 
     init(category: String) { self.category = category }
 
-    var market: String { category == "equities" ? "shares" : category == "bonds" ? "bonds" : category }
+    var market: String { mdMarket(category) }
 
     var filtered: [MDListItem] {
         let q = search.lowercased().trimmingCharacters(in: .whitespaces)

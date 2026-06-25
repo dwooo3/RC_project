@@ -22,6 +22,9 @@ struct InstrumentCard: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: Theme.s4) {
                         specSection
+                        if category == "futures", let chain = entity?.chain, !chain.isEmpty {
+                            chainSection(chain)
+                        }
                         if category == "equities", let divs = entity?.dividends, !divs.isEmpty {
                             dividendsSection(divs)
                         }
@@ -43,7 +46,7 @@ struct InstrumentCard: View {
         loading = false
     }
 
-    private var market: String { category == "equities" ? "shares" : category == "bonds" ? "bonds" : category }
+    private var market: String { mdMarket(category) }
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: Theme.s3) {
@@ -74,6 +77,35 @@ struct InstrumentCard: View {
                         Spacer(minLength: 0)
                     }
                 }
+            }
+        }
+    }
+
+    // MARK: futures chain (all contracts by expiry)
+
+    private func chainSection(_ chain: [MDChainContract]) -> some View {
+        let sorted = chain.sorted { ($0.lastTradeDate ?? "") < ($1.lastTradeDate ?? "") }
+        return VStack(alignment: .leading, spacing: Theme.s2) {
+            BlockTitle("Контракты · \(chain.count)", icon: "square.stack.3d.up")
+            HStack(spacing: Theme.s2) { head("Контракт"); head("Экспирация"); head("Цена"); head("Δ день") }
+                .padding(.vertical, 4)
+            Divider()
+            ForEach(sorted) { c in
+                HStack(spacing: Theme.s2) {
+                    HStack(spacing: 4) {
+                        if c.isActive == 1 {
+                            Text("●").font(.system(size: 8)).foregroundStyle(Theme.positive)
+                        }
+                        Text(c.shortname ?? c.secid).font(.system(size: 11, weight: c.isActive == 1 ? .semibold : .regular))
+                        Spacer(minLength: 0)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    cell(c.lastTradeDate ?? "—")
+                    cell(c.last.map { Fmt.number($0, digits: 2) } ?? "—")
+                    cell(c.changePct.map { Fmt.signedPercent($0, digits: 2) } ?? "—",
+                         color: c.changePct.map { $0 >= 0 ? Theme.positive : Theme.negative })
+                }
+                .padding(.vertical, 3)
+                Divider().opacity(0.25)
             }
         }
     }

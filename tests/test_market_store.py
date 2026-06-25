@@ -55,6 +55,43 @@ class _FakeIss:
         ]
 
 
+class _FakeForts:
+    """FORTS stub: 3 Si contracts (2 live, 1 expired) + description + history."""
+    def get_blocks(self, path, params=None):
+        if path == "engines/futures/markets/forts/securities":
+            return {"securities": [
+                {"SECID": "SiU9", "SHORTNAME": "Si-9.99", "ASSETCODE": "Si",
+                 "LASTTRADEDATE": "2099-09-17", "PREVSETTLEPRICE": 76000},
+                {"SECID": "SiZ9", "SHORTNAME": "Si-12.99", "ASSETCODE": "Si",
+                 "LASTTRADEDATE": "2099-12-17", "PREVSETTLEPRICE": 78000},
+                {"SECID": "SiM0", "SHORTNAME": "Si-6.20", "ASSETCODE": "Si",
+                 "LASTTRADEDATE": "2020-06-01", "PREVSETTLEPRICE": 60000},
+            ], "marketdata": [
+                {"SECID": "SiU9", "LAST": 76373, "OPENPOSITION": 11_000_000},
+                {"SECID": "SiZ9", "LAST": 78140, "OPENPOSITION": 2_000_000},
+                {"SECID": "SiM0", "LAST": None, "OPENPOSITION": 0},
+            ]}
+        if path.startswith("securities/"):
+            return {"description": [{"name": "SHORTNAME", "title": "x", "value": "Si-9.99"},
+                                    {"name": "ASSETCODE", "title": "x", "value": "Si"},
+                                    {"name": "TYPENAME", "title": "x", "value": "Фьючерс"}]}
+        return {}
+
+    def get_block_paginated(self, path, block, params=None, **kw):
+        return [{"TRADEDATE": "2026-06-24", "CLOSE": 76373, "VOLUME": 1000}]
+
+
+def test_preload_futures_active_and_chain():
+    db = MarketDataDB(":memory:")
+    summ = MarketStore(db, _FakeForts()).preload_futures(years=1)
+    assert summ["assets"] == 1 and summ["contracts"] == 3
+    actives = db.list_instrument_refs("futures", active_only=True)
+    assert [a["secid"] for a in actives] == ["SiU9"]      # live + max OI
+    assert len(db.futures_chain("Si")) == 3               # full chain in card
+    assert len(db.get_price_history("SiU9", "forts")) == 1  # history only for active
+    assert db.get_price_history("SiM0", "forts") == []
+
+
 def test_market_store_preload_bond_idempotent():
     db = MarketDataDB(":memory:")
     st = MarketStore(db, _FakeIss())
