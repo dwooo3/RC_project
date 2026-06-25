@@ -13,6 +13,7 @@ implied_vol_black76, models.heston.sabr_vol.
 from __future__ import annotations
 
 import datetime as _dt
+import math
 
 R = 0.0                                   # margined futures options: no discounting
 # Fine call-delta grid for the surface plot (5%-step, 0.05 … 0.95).
@@ -43,22 +44,41 @@ def _call_delta(F: float, K: float, T: float, sigma: float) -> float:
 
 
 def _calibrate_sabr(F: float, T: float, strikes: list[float], ivs: list[float],
-                    beta: float = 1.0) -> dict:
+                    weights: list[float], beta: float = 1.0) -> dict:
+    """Liquidity-weighted SABR fit with a tenor-scaled vol-of-vol cap.
+
+    Weights ∝ √OI so liquid strikes anchor the fit and thin wings can't drag it.
+    ν (vol-of-vol) is bounded by ~1.5/√T: short-dated smiles may be very convex,
+    but a 1y smile with ν=20 only blows the wings up — this keeps far expiries sane.
+    """
     from models.heston import sabr_vol
     from scipy.optimize import least_squares
 
-    atm = sorted(ivs)[len(ivs) // 2]
+    finite = [v for v in ivs if math.isfinite(v)]
+    atm = sorted(finite)[len(finite) // 2] if finite else 0.2
+    nu_max = min(20.0, max(0.8, 1.2 / math.sqrt(max(T, 1e-3))))
+    w = [math.sqrt(max(x, 0.0) + 1.0) for x in weights]
+    fallback = {"alpha": float(atm), "beta": beta, "rho": 0.0, "nu": 0.3}
 
     def resid(p):
         a, rho, nu = p
-        return [sabr_vol(F, K, T, a, beta, rho, nu) - iv for K, iv in zip(strikes, ivs)]
+        out = []
+        for K, iv, wi in zip(strikes, ivs, w):
+            try:
+                m = sabr_vol(F, K, T, a, beta, rho, nu)
+            except Exception:
+                m = None
+            out.append((m - iv) * wi if (m is not None and math.isfinite(m)) else 1e3)
+        return out
 
     try:
-        sol = least_squares(resid, [max(atm, 0.05), -0.1, 0.6],
-                            bounds=([1e-4, -0.999, 1e-4], [5.0, 0.999, 20.0]), max_nfev=300)
-        return {"alpha": float(sol.x[0]), "beta": beta, "rho": float(sol.x[1]), "nu": float(sol.x[2])}
+        sol = least_squares(resid, [max(atm, 0.05), -0.1, min(0.6, nu_max)],
+                            bounds=([1e-4, -0.999, 1e-4], [5.0, 0.999, nu_max]), max_nfev=400)
+        if all(math.isfinite(x) for x in sol.x):
+            return {"alpha": float(sol.x[0]), "beta": beta, "rho": float(sol.x[1]), "nu": float(sol.x[2])}
+        return fallback
     except Exception:
-        return {"alpha": float(atm), "beta": beta, "rho": 0.0, "nu": 1e-4}
+        return fallback
 
 
 def _strike_for_delta(F: float, T: float, sabr: dict, target: float) -> float:
@@ -116,12 +136,14 @@ def surface(ctx, underlying: str) -> dict:
             d = _call_delta(F, K, T, iv)
             if d < 0.02 or d > 0.98:                      # drop noisy deep wings
                 continue
-            pts.append({"strike": K, "opt_type": typ, "quote": price, "iv": iv, "delta": d})
+            pts.append({"strike": K, "opt_type": typ, "quote": price, "iv": iv,
+                        "delta": d, "oi": o.get("oi") or 0.0})
         pts.sort(key=lambda x: x["strike"])
         if len(pts) < 3:
             continue
 
-        sabr = _calibrate_sabr(F, T, [p["strike"] for p in pts], [p["iv"] for p in pts])
+        sabr = _calibrate_sabr(F, T, [p["strike"] for p in pts], [p["iv"] for p in pts],
+                               [p["oi"] for p in pts])
         for p in pts:
             siv = sabr_vol(F, p["strike"], T, sabr["alpha"], sabr["beta"], sabr["rho"], sabr["nu"])
             opt = "call" if p["opt_type"] == "C" else "put"
