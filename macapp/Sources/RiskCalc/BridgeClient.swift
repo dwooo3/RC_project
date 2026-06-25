@@ -168,6 +168,12 @@ actor BridgeClient {
         return try JSONDecoder().decode(MDHistory.self, from: data)
     }
 
+    func volSurfaceList() async throws -> VolSurfaceList { try await get("md/volsurface") }
+
+    func volSurface(underlying: String) async throws -> VolSurface {
+        try await get("md/volsurface/\(underlying)")
+    }
+
     func market() async throws -> MarketData { try await get("market") }
     func portfolio() async throws -> PortfolioData { try await get("portfolio") }
     func risk() async throws -> RiskData { try await get("risk") }

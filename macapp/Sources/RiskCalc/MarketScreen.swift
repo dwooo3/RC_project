@@ -160,20 +160,17 @@ struct MarketScreen: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: Theme.s3) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Market Data").font(.system(size: 26, weight: .bold))
-                Spacer()
-                if let s = vm.snapshots.first(where: { $0.active }) {
-                    Text("данные на \(s.valuationDate)").font(.caption).foregroundStyle(.tertiary)
-                }
+        VStack(alignment: .leading, spacing: 6) {
+            if let s = vm.snapshots.first(where: { $0.active }) {
+                Text("данные на \(s.valuationDate)").font(.caption2).foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
             Picker("Category", selection: $category) {
                 ForEach(categories, id: \.0) { Text($0.1).tag($0.0) }
             }
             .pickerStyle(.segmented).labelsHidden()
         }
-        .padding(.horizontal, Theme.s5).padding(.top, Theme.s5).padding(.bottom, Theme.s3)
+        .padding(.horizontal, Theme.s5).padding(.top, Theme.s3).padding(.bottom, Theme.s3)
     }
 
     @ViewBuilder
@@ -188,7 +185,7 @@ struct MarketScreen: View {
                 }
             }
         case "vols":
-            ContentUnavailableView("Vol Surface — позже", systemImage: "square.grid.3x3")
+            VolSurfaceView()
         default:
             MarketEntityView(category: category).id(category)   // fresh VM per category
         }

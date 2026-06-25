@@ -70,14 +70,9 @@ struct RootView: View {
             Circle()
                 .fill(model.serverDown ? Theme.negative : (model.health?.live == true ? Theme.positive : Theme.warning))
                 .frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(model.serverDown ? "Bridge offline"
-                     : (model.health?.live == true ? "Live · MOEX" : "Demo data"))
-                    .font(.system(size: 11, weight: .medium))
-                if let snap = model.health?.snapshotID {
-                    Text(snap).font(.system(size: 9)).foregroundStyle(.tertiary)
-                }
-            }
+            Text(model.serverDown ? "Не в сети"
+                 : (model.health?.live == true ? "MOEX" : "Demo"))
+                .font(.system(size: 11, weight: .medium))
             Spacer()
         }
         .padding(Theme.s3)
@@ -99,12 +94,6 @@ struct RootView: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                if let snap = model.health?.snapshotID, !model.serverDown {
-                    SourceBadge(live: model.health?.live == true,
-                                label: model.health?.live == true ? "Live · \(snap)" : "Demo · \(snap)")
-                }
-            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     Task { await model.startIngest() }

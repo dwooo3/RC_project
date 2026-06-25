@@ -35,6 +35,7 @@ from api import (
     payloads,
     realbonds,
     timeseries,
+    volsurface,
 )
 from api.catalogue import build_catalogue, find_pricer
 from api.context import CONTEXT
@@ -242,6 +243,16 @@ def md_instrument(category: str, secid: str) -> dict:
 @app.get("/md/history/{secid}")
 def md_history(secid: str, market: str = "bonds", range: str = "5Y") -> dict:
     return jsonable(market_entity.history(CONTEXT, secid, market=market, rng=range))
+
+
+@app.get("/md/volsurface")
+def md_volsurface_list() -> dict:
+    return jsonable(volsurface.list_underlyings(CONTEXT))
+
+
+@app.get("/md/volsurface/{underlying}")
+def md_volsurface(underlying: str) -> dict:
+    return jsonable(volsurface.surface(CONTEXT, underlying))
 
 
 @app.post("/price")

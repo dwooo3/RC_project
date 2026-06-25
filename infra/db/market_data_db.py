@@ -474,6 +474,27 @@ class MarketDataDB:
             f"SELECT underlying, expiry, strike, iv FROM vol_points WHERE snapshot_id={self.ph} "
             f"ORDER BY underlying, expiry, strike", (snapshot_id,))
 
+    def latest_vol_snapshot(self) -> str | None:
+        row = self._query_one("SELECT MAX(snapshot_id) AS s FROM vol_points")
+        return row["s"] if row and row.get("s") else None
+
+    def vol_surface_underlyings(self) -> list[dict]:
+        sid = self.latest_vol_snapshot()
+        if not sid:
+            return []
+        return self._query(
+            f"SELECT underlying, COUNT(DISTINCT expiry) AS expiries, COUNT(*) AS points "
+            f"FROM vol_points WHERE snapshot_id={self.ph} GROUP BY underlying "
+            f"ORDER BY points DESC", (sid,))
+
+    def vol_surface_points(self, underlying) -> list[dict]:
+        sid = self.latest_vol_snapshot()
+        if not sid:
+            return []
+        return self._query(
+            f"SELECT expiry, strike, iv FROM vol_points WHERE snapshot_id={self.ph} "
+            f"AND underlying={self.ph} ORDER BY expiry, strike", (sid, underlying))
+
     def get_time_series(self, factor_id, kind=None) -> list[dict]:
         if kind:
             return self._query(

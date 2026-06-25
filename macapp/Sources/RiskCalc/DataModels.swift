@@ -568,6 +568,40 @@ struct MDOptionSide: Decodable, Sendable {
     let oi: Double?
 }
 
+// MARK: - Volatility surface (/md/volsurface)
+
+struct VolSurfaceList: Decodable, Sendable {
+    let asOf: String
+    let underlyings: [VolUnderlying]
+    let count: Int
+    enum CodingKeys: String, CodingKey { case underlyings, count; case asOf = "as_of" }
+}
+
+struct VolUnderlying: Decodable, Sendable, Identifiable {
+    let code: String
+    let expiries: Int
+    let points: Int
+    var id: String { code }
+}
+
+struct VolSurface: Decodable, Sendable {
+    let underlying: String
+    let expiries: [VolExpiry]
+}
+
+struct VolExpiry: Decodable, Sendable, Identifiable {
+    let expiry: String
+    let atm: Double?
+    let points: [VolPoint]
+    var id: String { expiry }
+}
+
+struct VolPoint: Decodable, Sendable, Identifiable {
+    let strike: Double
+    let iv: Double
+    var id: Double { strike }
+}
+
 struct MDChainContract: Decodable, Sendable, Identifiable {
     let secid: String
     let shortname: String?
