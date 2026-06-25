@@ -6,14 +6,22 @@ import Charts
 /// parent (it drives the history fetch); this renders whatever bars it's given.
 struct TradingChart: View {
     let bars: [MDBar]
-    var isBond: Bool = false
+    let isBond: Bool
+    let preferLine: Bool
 
     enum Mode: String, CaseIterable, Identifiable { case candle = "Candles", line = "Line", yield = "Yield"; var id: String { rawValue } }
 
-    @State private var mode: Mode = .candle
+    @State private var mode: Mode
     @State private var showSMA = true
     @State private var logScale = false
     @State private var hover: MDBar?
+
+    init(bars: [MDBar], isBond: Bool = false, preferLine: Bool = false) {
+        self.bars = bars
+        self.isBond = isBond
+        self.preferLine = preferLine
+        _mode = State(initialValue: preferLine ? .line : .candle)
+    }
 
     private var smaPeriod: Int { 20 }
 

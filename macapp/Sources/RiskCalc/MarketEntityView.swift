@@ -146,7 +146,7 @@ struct MarketEntityView: View {
                 VStack(alignment: .leading, spacing: Theme.s4) {
                     detailHeader(e)
                     rangeBar
-                    TradingChart(bars: vm.bars, isBond: category == "bonds")
+                    TradingChart(bars: vm.bars, isBond: category == "bonds", preferLine: category == "fx")
                     dayStats(e)
                     keyInfo(e)
                 }
@@ -214,10 +214,16 @@ struct MarketEntityView: View {
     }
 
     private func keyInfo(_ e: MDEntity) -> some View {
-        let keys = category == "bonds"
-            ? ["ISSUENAME", "MATDATE", "COUPONPERCENT", "COUPONVALUE", "COUPONFREQUENCY",
-               "FACEVALUE", "FACEUNIT", "LISTLEVEL", "ISSUESIZE", "BOND_TYPE"]
-            : ["ISSUENAME", "LATNAME", "ISSUESIZE", "LISTLEVEL", "FACEVALUE", "FACEUNIT", "ISSUEDATE"]
+        let keys: [String]
+        switch category {
+        case "bonds":
+            keys = ["ISSUENAME", "MATDATE", "COUPONPERCENT", "COUPONVALUE", "COUPONFREQUENCY",
+                    "FACEVALUE", "FACEUNIT", "LISTLEVEL", "ISSUESIZE", "BOND_TYPE"]
+        case "fx":
+            keys = ["pair", "code", "source"]
+        default:
+            keys = ["ISSUENAME", "LATNAME", "ISSUESIZE", "LISTLEVEL", "FACEVALUE", "FACEUNIT", "ISSUEDATE"]
+        }
         let info = e.fields.filter { keys.contains($0.name) && ($0.value ?? "").isEmpty == false }
         return GlassCard(padding: Theme.s3) {
             VStack(alignment: .leading, spacing: Theme.s2) {

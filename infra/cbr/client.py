@@ -201,3 +201,29 @@ class CbrClient:
             if code in codes and nominal > 0:
                 out[f"{code}/RUB"] = float(value.replace(",", ".")) / nominal
         return out
+
+    # CBR internal currency codes for the dynamics endpoint.
+    FX_CODES = {"USD/RUB": "R01235", "EUR/RUB": "R01239", "CNY/RUB": "R01375"}
+
+    def get_fx_history(self, char_code: str, from_date: date,
+                       till_date: date | None = None) -> list[tuple[str, float]]:
+        """Daily CBR official rate over [from, till] via XML_dynamic.asp.
+
+        ``char_code`` is the CBR internal id (e.g. R01235 for USD). Returns
+        ``[(iso_date, rate_per_unit)]`` (Value / Nominal).
+        """
+        till_date = till_date or date.today()
+        d1, d2 = from_date.strftime("%d/%m/%Y"), till_date.strftime("%d/%m/%Y")
+        payload = self._fetch(
+            f"{self.base_url}/scripts/XML_dynamic.asp"
+            f"?date_req1={d1}&date_req2={d2}&VAL_NM_RQ={char_code}")
+        out: list[tuple[str, float]] = []
+        for m in re.finditer(
+            r'<Record Date="([0-9.]+)"[^>]*>\s*<Nominal>(\d+)</Nominal>\s*<Value>([\d,\.]+)</Value>',
+            payload, re.DOTALL,
+        ):
+            iso = _ddmmyyyy_to_iso(m.group(1))
+            nominal = float(m.group(2))
+            if iso and nominal > 0:
+                out.append((iso, float(m.group(3).replace(",", ".")) / nominal))
+        return out

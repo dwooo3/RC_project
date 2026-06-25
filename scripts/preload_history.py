@@ -18,6 +18,7 @@ def main() -> int:
     limit = int(sys.argv[3]) if len(sys.argv) > 3 else None
 
     from app import runtime
+    from infra.cbr.client import CbrClient
     from infra.db.market_data_db import MarketDataDB
     from infra.market_store import MarketStore
     from infra.moex_iss.client import IssClient
@@ -33,7 +34,7 @@ def main() -> int:
     except Exception:
         pass
 
-    store = MarketStore(db, IssClient())
+    store = MarketStore(db, IssClient(), CbrClient())
     log = lambda m: print(m, flush=True)  # noqa: E731
     if category == "bonds":
         log(f"preloading bonds: {years}y daily history + refs (limit={limit})")
@@ -44,6 +45,9 @@ def main() -> int:
     elif category == "futures":
         log(f"preloading futures: full FORTS chain + history for active contracts ({years}y)")
         log(f"done: {store.preload_futures(years=years, progress=log)}")
+    elif category == "fx":
+        log(f"preloading FX: CBR daily rates USD/EUR/CNY ({years}y)")
+        log(f"done: {store.preload_fx(years=years, progress=log)}")
     else:
         log(f"category '{category}' not yet supported")
         return 1

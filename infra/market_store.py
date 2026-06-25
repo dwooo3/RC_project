@@ -29,10 +29,19 @@ def _num(v):
         return None
 
 
+# CBR-rate FX pairs: secid (slash-free for routing) -> (CBR code, RU name, pair label).
+FX_PAIRS = {
+    "USDRUB": ("R01235", "Доллар США", "USD/RUB"),
+    "EURRUB": ("R01239", "Евро", "EUR/RUB"),
+    "CNYRUB": ("R01375", "Китайский юань", "CNY/RUB"),
+}
+
+
 class MarketStore:
-    def __init__(self, db, iss_client):
+    def __init__(self, db, iss_client, cbr_client=None):
         self.db = db
         self.iss = iss_client
+        self.cbr = cbr_client
 
     # -- ISS fetch helpers -------------------------------------------------
     def fetch_ref(self, secid: str) -> dict:
@@ -247,3 +256,33 @@ class MarketStore:
             if progress and assets and assets % 20 == 0:
                 progress(f"  {assets} assets, {contracts} contracts, {added} hist rows")
         return {"assets": assets, "contracts": contracts, "rows_added": added}
+
+    def preload_fx(self, *, years: int = 5, progress=None) -> dict:
+        """CBR official daily rates for USD/EUR/CNY → fx instruments + history."""
+        if self.cbr is None:
+            raise ValueError("preload_fx needs a CBR client")
+        today = _dt.date.today()
+        added = 0
+        for secid, (code, name, pair) in FX_PAIRS.items():
+            start = self.db.price_history_max_dt(secid, "fx")
+            frm = (_dt.date.fromisoformat(start) + _dt.timedelta(days=1)) if start \
+                else today.replace(year=today.year - years)
+            rows = self.cbr.get_fx_history(code, frm, today) if frm <= today else []
+            hist = [{"secid": secid, "market": "fx", "dt": d, "open": r, "high": r,
+                     "low": r, "close": r, "volume": None, "value": None,
+                     "yield": None, "numtrades": None} for d, r in rows]
+            if hist:
+                self.db.save_price_history(hist)
+                added += len(hist)
+            last, chg, as_of = self._last_change(self.db.get_price_history(secid, "fx"))
+            ref = {"isin": None, "issuer_ru": name, "name_ru": f"{name} ({pair})",
+                   "sec_type": "Курс ЦБ РФ", "list_level": None, "currency": "RUB",
+                   "asset_code": pair, "last_trade_date": as_of,
+                   "raw": [{"name": "pair", "title": "Валютная пара", "value": pair},
+                           {"name": "code", "title": "Код ЦБ РФ", "value": code},
+                           {"name": "source", "title": "Источник", "value": "ЦБ РФ (XML_dynamic)"}]}
+            self._store_ref(secid, category="fx", market="fx", board="cbr",
+                            ref=ref, last=last, change_pct=chg, as_of=as_of)
+            if progress:
+                progress(f"  {pair}: {len(hist)} rows, last={last}")
+        return {"fx": len(FX_PAIRS), "rows_added": added}
