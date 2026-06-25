@@ -46,10 +46,13 @@ final class MarketEntityVM {
     func select(_ secid: String) async {
         selectedID = secid
         loadingDetail = true
-        async let e = try? await client.mdInstrument(category: category, secid: secid)
-        async let h = try? await client.mdHistory(secid: secid, market: market, range: range)
-        entity = await e
-        bars = (await h)?.points ?? []
+        let e = try? await client.mdInstrument(category: category, secid: secid)
+        if category == "options" {
+            bars = []                                   // options have no price series
+        } else {
+            bars = (try? await client.mdHistory(secid: secid, market: market, range: range))?.points ?? []
+        }
+        entity = e
         loadingDetail = false
     }
 
@@ -145,9 +148,13 @@ struct MarketEntityView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.s4) {
                     detailHeader(e)
-                    rangeBar
-                    TradingChart(bars: vm.bars, isBond: category == "bonds", preferLine: category == "fx")
-                    dayStats(e)
+                    if category == "options" {
+                        OptionChainView(chain: e.optionChain ?? [])
+                    } else {
+                        rangeBar
+                        TradingChart(bars: vm.bars, isBond: category == "bonds", preferLine: category == "fx")
+                        dayStats(e)
+                    }
                     keyInfo(e)
                 }
                 .padding(Theme.s4)

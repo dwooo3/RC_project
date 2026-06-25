@@ -48,6 +48,9 @@ def main() -> int:
     elif category == "fx":
         log(f"preloading FX: CBR daily rates USD/EUR/CNY ({years}y)")
         log(f"done: {store.preload_fx(years=years, progress=log)}")
+    elif category == "options":
+        log("preloading options: live FORTS option chain by underlying")
+        log(f"done: {store.preload_options(progress=log)}")
     else:
         log(f"category '{category}' not yet supported")
         return 1

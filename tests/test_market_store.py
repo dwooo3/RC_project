@@ -92,6 +92,42 @@ def test_preload_futures_active_and_chain():
     assert db.get_price_history("SiM0", "forts") == []
 
 
+class _FakeOptions:
+    """Options stub: Si calls/puts at two strikes + one expired contract."""
+    def get_blocks(self, path, params=None):
+        if path == "engines/futures/markets/options/securities":
+            base = {"ASSETCODE": "Si", "LASTTRADEDATE": "2099-09-17",
+                    "CENTRALSTRIKE": 76500.0, "UNDERLYINGASSET": "SiU9"}
+            return {"securities": [
+                {"SECID": "SiC76", "OPTIONTYPE": "C", "STRIKE": 76000.0, **base},
+                {"SECID": "SiP76", "OPTIONTYPE": "P", "STRIKE": 76000.0, **base},
+                {"SECID": "SiC77", "OPTIONTYPE": "C", "STRIKE": 77000.0, **base},
+                {"SECID": "SiCold", "OPTIONTYPE": "C", "STRIKE": 50000.0,
+                 "ASSETCODE": "Si", "LASTTRADEDATE": "2020-01-01", "CENTRALSTRIKE": 76500.0},
+            ], "marketdata": [
+                {"SECID": "SiC76", "LAST": 30, "OPENPOSITION": 9814},
+                {"SECID": "SiP76", "LAST": 0, "OPENPOSITION": 3128},
+                {"SECID": "SiC77", "LAST": 0, "OPENPOSITION": 11866},
+            ]}
+        return {}
+
+
+def test_preload_options_chain():
+    from api.market_entity import _option_chain
+
+    db = MarketDataDB(":memory:")
+    summ = MarketStore(db, _FakeOptions()).preload_options()
+    assert summ["underlyings"] == 1 and summ["options"] == 3   # expired dropped
+    assert [r["secid"] for r in db.list_instrument_refs("options")] == ["Si"]
+    grouped = _option_chain(db.get_option_chain("Si"))
+    assert len(grouped) == 1                                   # one live expiry
+    e = grouped[0]
+    assert e["central_strike"] == 76500.0
+    strikes = {s["strike"]: s for s in e["strikes"]}
+    assert strikes[76000.0]["call"]["oi"] == 9814 and strikes[76000.0]["put"]["oi"] == 3128
+    assert strikes[77000.0]["put"] is None                    # only a call at 77000
+
+
 def test_market_store_preload_bond_idempotent():
     db = MarketDataDB(":memory:")
     st = MarketStore(db, _FakeIss())

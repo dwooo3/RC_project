@@ -529,6 +529,7 @@ struct MDEntity: Decodable, Sendable {
     let dividends: [MDDividend]?
     let assetCode: String?
     let chain: [MDChainContract]?
+    let optionChain: [MDOptionExpiry]?
 
     enum CodingKeys: String, CodingKey {
         case secid, category, isin, currency, board, last, fields, day, dividends, chain
@@ -539,7 +540,32 @@ struct MDEntity: Decodable, Sendable {
         case changePct = "change_pct"
         case asOf = "as_of"
         case assetCode = "asset_code"
+        case optionChain = "option_chain"
     }
+}
+
+struct MDOptionExpiry: Decodable, Sendable, Identifiable {
+    let expiry: String
+    let centralStrike: Double?
+    let strikes: [MDOptionStrike]
+    var id: String { expiry }
+
+    enum CodingKeys: String, CodingKey {
+        case expiry, strikes
+        case centralStrike = "central_strike"
+    }
+}
+
+struct MDOptionStrike: Decodable, Sendable, Identifiable {
+    let strike: Double
+    let call: MDOptionSide?
+    let put: MDOptionSide?
+    var id: Double { strike }
+}
+
+struct MDOptionSide: Decodable, Sendable {
+    let last: Double?
+    let oi: Double?
 }
 
 struct MDChainContract: Decodable, Sendable, Identifiable {

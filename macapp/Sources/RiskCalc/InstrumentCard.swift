@@ -28,7 +28,7 @@ struct InstrumentCard: View {
                         if category == "equities", let divs = entity?.dividends, !divs.isEmpty {
                             dividendsSection(divs)
                         }
-                        historySection
+                        if !bars.isEmpty { historySection }
                     }
                     .padding(Theme.s4)
                 }

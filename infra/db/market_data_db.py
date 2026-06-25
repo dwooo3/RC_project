@@ -65,6 +65,11 @@ _TABLES = {
         ["secid", "market", "dt", "open", "high", "low", "close",
          "volume", "value", "yield", "numtrades"],
         ["secid", "market", "dt"]),
+    # Option chain quotes (current snapshot, one row per option contract).
+    "option_quotes": (
+        ["secid", "asset_code", "expiry", "strike", "opt_type", "last", "settle",
+         "oi", "volume", "central_strike", "underlying"],
+        ["secid"]),
     # Full per-instrument reference (latest ISS description + day stats).
     "instrument_ref": (
         ["secid", "category", "market", "board", "isin", "issuer_ru", "name_ru",
@@ -141,6 +146,11 @@ def _schema_statements(dialect: str) -> list[str]:
             asset_code TEXT, last_trade_date TEXT, is_active INTEGER, last REAL,
             change_pct REAL, as_of TEXT, day_json TEXT, ref_json TEXT)""",
         "CREATE INDEX IF NOT EXISTS idx_instrument_ref_cat ON instrument_ref (category)",
+        """CREATE TABLE IF NOT EXISTS option_quotes (
+            secid TEXT PRIMARY KEY, asset_code TEXT, expiry TEXT, strike REAL,
+            opt_type TEXT, last REAL, settle REAL, oi REAL, volume REAL,
+            central_strike REAL, underlying TEXT)""",
+        "CREATE INDEX IF NOT EXISTS idx_option_quotes_asset ON option_quotes (asset_code, expiry, strike)",
         f"""CREATE TABLE IF NOT EXISTS ingest_log (
             run_id {serial_pk}, endpoint TEXT, status TEXT, rows INTEGER,
             started_at TEXT, finished_at TEXT, error TEXT)""",
@@ -316,6 +326,15 @@ class MarketDataDB:
         return self._query(
             f"SELECT * FROM commodity_quotes WHERE snapshot_id={self.ph} ORDER BY asset, expiry",
             (snapshot_id,))
+
+    def save_option_quotes(self, rows: list[dict]) -> None:
+        self._upsert_many("option_quotes", rows)
+
+    def get_option_chain(self, asset_code) -> list[dict]:
+        return self._query(
+            f"SELECT secid, expiry, strike, opt_type, last, settle, oi, volume, "
+            f"central_strike, underlying FROM option_quotes WHERE asset_code={self.ph} "
+            f"ORDER BY expiry, strike", (asset_code,))
 
     def save_dividends(self, secid, rows: list[dict]) -> None:
         self._upsert_many("dividends", [

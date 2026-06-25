@@ -63,6 +63,27 @@ def instrument(ctx, category: str, secid: str) -> dict:
             "last": c.get("last"), "change_pct": c.get("change_pct"),
             "last_trade_date": c.get("last_trade_date"), "is_active": c.get("is_active"),
         } for c in db.futures_chain(ref["asset_code"])]
+    elif ref.get("category") == "options":
+        out["asset_code"] = secid
+        out["option_chain"] = _option_chain(db.get_option_chain(secid))
+    return out
+
+
+def _option_chain(rows: list[dict]) -> list[dict]:
+    """Group flat option quotes into [{expiry, central_strike, strikes:[{strike, call, put}]}]."""
+    by_exp: dict[str, dict] = {}
+    for o in rows:
+        e = by_exp.setdefault(o["expiry"], {"expiry": o["expiry"],
+                                            "central_strike": o.get("central_strike"), "strikes": {}})
+        if o.get("central_strike"):
+            e["central_strike"] = o["central_strike"]
+        s = e["strikes"].setdefault(o["strike"], {"strike": o["strike"], "call": None, "put": None})
+        side = {"last": o.get("last"), "oi": o.get("oi")}
+        s["call" if o.get("opt_type") == "C" else "put"] = side
+    out = []
+    for e in sorted(by_exp.values(), key=lambda x: x["expiry"] or ""):
+        strikes = sorted(e["strikes"].values(), key=lambda x: x["strike"] or 0)
+        out.append({"expiry": e["expiry"], "central_strike": e["central_strike"], "strikes": strikes})
     return out
 
 

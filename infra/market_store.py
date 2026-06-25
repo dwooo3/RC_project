@@ -286,3 +286,54 @@ class MarketStore:
             if progress:
                 progress(f"  {pair}: {len(hist)} rows, last={last}")
         return {"fx": len(FX_PAIRS), "rows_added": added}
+
+    def preload_options(self, *, progress=None) -> dict:
+        """Ingest the live FORTS option chain (one ref per underlying; the chain
+        itself lives in option_quotes). Options have no single price series, so
+        no history — the entity is the chain (strikes × expiries × call/put)."""
+        today = _dt.date.today().isoformat()
+        blocks = self.iss.get_blocks(
+            "engines/futures/markets/options/securities", {"iss.meta": "off"})
+        md = {r.get("SECID"): r for r in blocks.get("marketdata", [])}
+        by_asset: dict[str, list] = {}
+        for r in blocks.get("securities", []):
+            sid, asset, exp = r.get("SECID"), r.get("ASSETCODE"), r.get("LASTTRADEDATE")
+            if sid and asset and exp and exp >= today:     # live contracts only
+                by_asset.setdefault(asset, []).append(r)
+
+        underlyings = 0
+        options = 0
+        for asset, rows in by_asset.items():
+            quotes = []
+            for r in rows:
+                sid = r["SECID"]
+                m = md.get(sid, {})
+                quotes.append({
+                    "secid": sid, "asset_code": asset, "expiry": r.get("LASTTRADEDATE"),
+                    "strike": _num(r.get("STRIKE")), "opt_type": r.get("OPTIONTYPE"),
+                    "last": _num(m.get("LAST")), "settle": _num(m.get("SETTLEPRICE")) or _num(r.get("PREVSETTLEPRICE")),
+                    "oi": _num(m.get("OPENPOSITION")), "volume": _num(m.get("VOLTODAY")),
+                    "central_strike": _num(r.get("CENTRALSTRIKE")), "underlying": r.get("UNDERLYINGASSET"),
+                })
+            if not quotes:
+                continue
+            self.db.save_option_quotes(quotes)
+            underlyings += 1
+            options += len(quotes)
+            expiries = sorted({q["expiry"] for q in quotes})
+            central = next((q["central_strike"] for q in quotes if q["central_strike"]), None)
+            ref = {"isin": None, "issuer_ru": f"{asset} — опционы", "name_ru": f"Опционы на {asset}",
+                   "sec_type": "Опционы", "list_level": None, "currency": None, "asset_code": asset,
+                   "last_trade_date": expiries[0] if expiries else None,
+                   "raw": [{"name": "asset", "title": "Базовый актив", "value": asset},
+                           {"name": "contracts", "title": "Контрактов в обращении", "value": str(len(quotes))},
+                           {"name": "expiries", "title": "Серий (экспираций)", "value": str(len(expiries))},
+                           {"name": "nearest", "title": "Ближайшая экспирация",
+                            "value": expiries[0] if expiries else None},
+                           {"name": "central", "title": "Центральный страйк",
+                            "value": str(central) if central else None}]}
+            self._store_ref(asset, category="options", market="options", board="forts",
+                            ref=ref, last=central, change_pct=None, as_of=today, is_active=1)
+            if progress and underlyings % 20 == 0:
+                progress(f"  {underlyings} underlyings, {options} options")
+        return {"underlyings": underlyings, "options": options}
