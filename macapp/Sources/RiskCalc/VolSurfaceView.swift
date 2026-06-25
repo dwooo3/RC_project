@@ -29,8 +29,11 @@ final class VolSurfaceVM {
 
     func select(_ code: String) async {
         selected = code
+        surface = nil
+        loading = true
         surface = try? await client.volSurface(underlying: code)
         expiryID = surface?.expiries.first?.id
+        loading = false
     }
 
     var expiry: VolExpiry? { surface?.expiries.first { $0.id == expiryID } ?? surface?.expiries.first }
@@ -102,12 +105,19 @@ struct VolSurfaceView: View {
                 if section == "otc" {
                     ContentUnavailableView("OTC — позже", systemImage: "building.columns")
                         .frame(height: 220)
+                } else if vm.loading {
+                    HStack(spacing: Theme.s2) {
+                        ProgressView().controlSize(.small)
+                        Text("Калибровка поверхности…").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 240)
                 } else if let surf = vm.surface, !surf.expiries.isEmpty, let e = vm.expiry {
                     expiryChips(surf)
+                    surface3D(surf)
                     smileChart(surf, selected: e)
                     if !surf.surface.isEmpty { surfacePlot(surf) }
                     smileTable(e)
-                } else if !vm.loading {
+                } else {
                     Text("Нет данных").font(.caption).foregroundStyle(.secondary).frame(height: 120)
                 }
             }
@@ -132,6 +142,20 @@ struct VolSurfaceView: View {
                     }
                     .buttonStyle(.plain)
                 }
+            }
+        }
+    }
+
+    // MARK: 3D surface (SceneKit)
+
+    private func surface3D(_ surf: VolSurface) -> some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s2) {
+                BlockTitle("3D-поверхность · дельта × срок × IV", icon: "move.3d")
+                Surface3DView(underlying: surf.underlying, rows: surf.surface, deltas: surf.deltas)
+                    .frame(height: 340)
+                Text("крути мышью · X — call delta · Z — срок до экспирации · Y/цвет — IV")
+                    .font(.system(size: 9)).foregroundStyle(.tertiary)
             }
         }
     }

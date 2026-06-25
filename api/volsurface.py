@@ -19,6 +19,11 @@ R = 0.0                                   # margined futures options: no discoun
 # Fine call-delta grid for the surface plot (5%-step, 0.05 … 0.95).
 _DELTA_BUCKETS = [round(0.05 * i, 2) for i in range(1, 20)]
 
+# In-process surface cache keyed by (underlying, vol-snapshot). The surface is
+# expensive (per-option IV + SABR fit + delta inversion) but static until the
+# next ingest, so the first open computes and the rest are instant.
+_CACHE: dict = {}
+
 
 def list_underlyings(ctx) -> dict:
     db = ctx.market_db
@@ -85,7 +90,7 @@ def _strike_for_delta(F: float, T: float, sabr: dict, target: float) -> float:
     """Invert call-delta(K) == target via bisection on K (delta ↓ as K ↑)."""
     from models.heston import sabr_vol
     a, b = 0.3 * F, 3.0 * F
-    for _ in range(38):
+    for _ in range(24):
         mid = 0.5 * (a + b)
         iv = sabr_vol(F, mid, T, sabr["alpha"], sabr["beta"], sabr["rho"], sabr["nu"])
         if _call_delta(F, mid, T, iv) > target:
@@ -103,6 +108,9 @@ def surface(ctx, underlying: str) -> dict:
     db = ctx.market_db
     if db is None:
         return {"underlying": underlying, "expiries": [], "deltas": _DELTA_BUCKETS, "surface": []}
+    cache_key = (underlying, db.latest_vol_snapshot() or "")
+    if cache_key in _CACHE:
+        return _CACHE[cache_key]
     today = _dt.date.today()
     chain = db.get_option_chain(underlying)
     fut = {r["secid"]: r.get("last") for r in db.list_instrument_refs("futures")}
@@ -172,7 +180,11 @@ def surface(ctx, underlying: str) -> dict:
         for d in _DELTA_BUCKETS:
             K = _strike_for_delta(F, T, s, d)
             cells.append({"delta": d, "iv": sabr_vol(F, K, T, s["alpha"], s["beta"], s["rho"], s["nu"])})
-        grid.append({"expiry": e["expiry"], "cells": cells})
+        grid.append({"expiry": e["expiry"], "t": T, "cells": cells})
 
-    return {"underlying": underlying, "expiries": expiries,
-            "deltas": _DELTA_BUCKETS, "surface": grid}
+    result = {"underlying": underlying, "expiries": expiries,
+              "deltas": _DELTA_BUCKETS, "surface": grid}
+    if len(_CACHE) > 40:
+        _CACHE.clear()
+    _CACHE[cache_key] = result
+    return result

@@ -641,6 +641,7 @@ struct VolCurvePoint: Decodable, Sendable, Identifiable {
 
 struct VolSurfaceRow: Decodable, Sendable, Identifiable {
     let expiry: String
+    let t: Double?
     let cells: [VolSurfaceCell]
     var id: String { expiry }
 }
