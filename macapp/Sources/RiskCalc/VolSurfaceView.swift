@@ -105,6 +105,7 @@ struct VolSurfaceView: View {
                 } else if let surf = vm.surface, !surf.expiries.isEmpty, let e = vm.expiry {
                     expiryChips(surf)
                     smileChart(surf, selected: e)
+                    if !surf.surface.isEmpty { surfaceHeatmap(surf) }
                     smileTable(e)
                 } else if !vm.loading {
                     Text("Нет данных").font(.caption).foregroundStyle(.secondary).frame(height: 120)
@@ -123,7 +124,7 @@ struct VolSurfaceView: View {
                     Button { vm.expiryID = e.id } label: {
                         VStack(spacing: 1) {
                             Text(e.expiry).font(.system(size: 11, weight: on ? .semibold : .regular))
-                            if let a = e.atm { Text("ATM \(Fmt.percent(a * 100, digits: 1))").font(.system(size: 9)) }
+                            if let a = e.atmIv { Text("ATM \(Fmt.percent(a * 100, digits: 1))").font(.system(size: 9)) }
                         }
                         .foregroundStyle(on ? Theme.accent : .secondary)
                         .padding(.horizontal, Theme.s2).padding(.vertical, 4)
@@ -135,52 +136,104 @@ struct VolSurfaceView: View {
         }
     }
 
-    // MARK: smile chart — family of curves, selected expiry highlighted
+    // MARK: smile chart — IV vs delta, market points + calibrated SABR curve
 
     private func smileChart(_ surf: VolSurface, selected: VolExpiry) -> some View {
-        let ivs = surf.expiries.flatMap { $0.points }.map { $0.iv * 100 }
+        let ivs = surf.expiries.flatMap { $0.sabrCurve }.map { $0.iv * 100 }
         let lo = ivs.min() ?? 0, hi = ivs.max() ?? 1
         let pad = max((hi - lo) * 0.1, 1)
         return GlassCard {
             VStack(alignment: .leading, spacing: Theme.s3) {
-                BlockTitle("\(surf.underlying) · smile (IV / strike)", icon: "chart.xyaxis.line")
+                BlockTitle("\(surf.underlying) · smile по дельте (SABR)", icon: "chart.xyaxis.line")
                 Chart {
                     ForEach(surf.expiries.filter { $0.id != selected.id }) { e in
-                        ForEach(e.points) { p in
-                            LineMark(x: .value("Strike", p.strike), y: .value("IV", p.iv * 100),
+                        ForEach(e.sabrCurve) { p in
+                            LineMark(x: .value("Δ", p.delta), y: .value("IV", p.iv * 100),
                                      series: .value("e", e.expiry))
-                                .foregroundStyle(.gray.opacity(0.22)).interpolationMethod(.catmullRom)
+                                .foregroundStyle(.gray.opacity(0.18)).interpolationMethod(.catmullRom)
                         }
                     }
-                    ForEach(selected.points) { p in
-                        LineMark(x: .value("Strike", p.strike), y: .value("IV", p.iv * 100),
+                    ForEach(selected.sabrCurve) { p in
+                        LineMark(x: .value("Δ", p.delta), y: .value("IV", p.iv * 100),
                                  series: .value("e", "sel"))
                             .foregroundStyle(Theme.accent).lineStyle(.init(lineWidth: 2.4))
                             .interpolationMethod(.catmullRom)
-                        PointMark(x: .value("Strike", p.strike), y: .value("IV", p.iv * 100))
-                            .foregroundStyle(Theme.accent).symbolSize(18)
+                    }
+                    ForEach(selected.points) { p in
+                        if let d = p.delta {
+                            PointMark(x: .value("Δ", d), y: .value("IV", p.iv * 100))
+                                .foregroundStyle(Theme.warning).symbolSize(26)
+                        }
                     }
                 }
+                .chartXScale(domain: 0...1)
                 .chartYScale(domain: (lo - pad)...(hi + pad))
-                .chartXAxisLabel("Strike").chartYAxisLabel("IV %")
+                .chartXAxisLabel("Call delta").chartYAxisLabel("IV %")
                 .frame(height: 300)
+                Text("● рыночные точки   — калиброванный SABR")
+                    .font(.system(size: 9)).foregroundStyle(.tertiary)
             }
         }
+    }
+
+    // MARK: calibrated surface heatmap (expiry × delta → IV)
+
+    private func surfaceHeatmap(_ surf: VolSurface) -> some View {
+        let all = surf.surface.flatMap { $0.cells }.compactMap { $0.iv }
+        let lo = all.min() ?? 0, hi = all.max() ?? 1
+        return GlassCard(padding: Theme.s2) {
+            VStack(spacing: 0) {
+                BlockTitle("Поверхность (SABR) · IV по дельте", icon: "square.grid.3x3.fill")
+                    .padding(.bottom, Theme.s2)
+                HStack(spacing: 2) {
+                    Text("ЭКСП").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                        .frame(width: 78, alignment: .leading)
+                    ForEach(surf.deltas, id: \.self) { d in
+                        Text("Δ\(Int(d * 100))").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .padding(.vertical, 3)
+                ForEach(surf.surface) { row in
+                    HStack(spacing: 2) {
+                        Text(row.expiry).font(.system(size: 10)).monospacedDigit()
+                            .frame(width: 78, alignment: .leading)
+                        ForEach(Array(row.cells.enumerated()), id: \.offset) { _, c in
+                            Text(c.iv.map { Fmt.number($0 * 100, digits: 1) } ?? "—")
+                                .font(.system(size: 10, weight: .medium)).monospacedDigit()
+                                .frame(maxWidth: .infinity).padding(.vertical, 5)
+                                .background(heatColor(c.iv, lo, hi), in: RoundedRectangle(cornerRadius: 3))
+                        }
+                    }
+                    .padding(.vertical, 1)
+                }
+            }
+        }
+    }
+
+    private func heatColor(_ iv: Double?, _ lo: Double, _ hi: Double) -> Color {
+        guard let iv, hi > lo else { return Color.gray.opacity(0.12) }
+        let t = min(max((iv - lo) / (hi - lo), 0), 1)        // 0 low IV → 1 high IV
+        return Color(hue: (1 - t) * 0.62, saturation: 0.65, brightness: 0.55).opacity(0.55)  // blue→red
     }
 
     private func smileTable(_ e: VolExpiry) -> some View {
         GlassCard(padding: Theme.s2) {
             VStack(spacing: 0) {
-                HStack(spacing: Theme.s2) { head("Strike"); head("IV") }
-                    .padding(.horizontal, Theme.s2).padding(.vertical, Theme.s2)
+                HStack(spacing: Theme.s2) {
+                    head("Strike", .leading); head("Δ", .trailing); head("IV", .trailing)
+                    head("Котировка", .trailing); head("Fair Value", .trailing)
+                }
+                .padding(.horizontal, Theme.s2).padding(.vertical, Theme.s2)
                 Divider()
                 ForEach(e.points) { p in
                     HStack(spacing: Theme.s2) {
-                        Text(Fmt.number(p.strike, digits: p.strike < 100 ? 2 : 0))
-                            .font(.system(size: 11, weight: .medium)).monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Text(Fmt.percent(p.iv * 100, digits: 2)).font(.system(size: 11)).monospacedDigit()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        cell(Fmt.number(p.strike, digits: p.strike < 100 ? 2 : 0), .leading, .medium)
+                        cell(p.delta.map { Fmt.number($0, digits: 2) } ?? "—", .trailing)
+                        cell(Fmt.percent(p.iv * 100, digits: 2), .trailing)
+                        cell(p.quote.map { Fmt.number($0, digits: 1) } ?? "—", .trailing)
+                        cell(p.fairValue.map { Fmt.number($0, digits: 1) } ?? "—", .trailing,
+                             .regular, fairColor(p))
                     }
                     .padding(.horizontal, Theme.s2).padding(.vertical, 3)
                     Divider().opacity(0.25)
@@ -189,8 +242,19 @@ struct VolSurfaceView: View {
         }
     }
 
-    private func head(_ t: String) -> some View {
+    private func fairColor(_ p: VolPoint) -> Color {
+        guard let q = p.quote, let f = p.fairValue, q > 0 else { return .primary }
+        return f > q ? Theme.positive : (f < q ? Theme.negative : .primary)   // fair vs market
+    }
+
+    private func head(_ t: String, _ align: Alignment) -> some View {
         Text(t.uppercased()).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: t == "Strike" ? .leading : .trailing)
+            .frame(maxWidth: .infinity, alignment: align)
+    }
+
+    private func cell(_ t: String, _ align: Alignment, _ weight: Font.Weight = .regular,
+                      _ color: Color = .primary) -> some View {
+        Text(t).font(.system(size: 11, weight: weight)).monospacedDigit().foregroundStyle(color)
+            .frame(maxWidth: .infinity, alignment: align)
     }
 }

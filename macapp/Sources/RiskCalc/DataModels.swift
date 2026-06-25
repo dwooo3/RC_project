@@ -587,19 +587,59 @@ struct VolUnderlying: Decodable, Sendable, Identifiable {
 struct VolSurface: Decodable, Sendable {
     let underlying: String
     let expiries: [VolExpiry]
+    let deltas: [Double]
+    let surface: [VolSurfaceRow]
 }
 
 struct VolExpiry: Decodable, Sendable, Identifiable {
     let expiry: String
-    let atm: Double?
+    let t: Double?
+    let forward: Double?
+    let atmIv: Double?
     let points: [VolPoint]
+    let sabrCurve: [VolCurvePoint]
     var id: String { expiry }
+
+    enum CodingKeys: String, CodingKey {
+        case expiry, t, forward, points
+        case atmIv = "atm_iv"
+        case sabrCurve = "sabr_curve"
+    }
 }
 
 struct VolPoint: Decodable, Sendable, Identifiable {
     let strike: Double
+    let delta: Double?
     let iv: Double
+    let sabrIv: Double?
+    let quote: Double?
+    let fairValue: Double?
+    let optType: String?
     var id: Double { strike }
+
+    enum CodingKeys: String, CodingKey {
+        case strike, delta, iv, quote
+        case sabrIv = "sabr_iv"
+        case fairValue = "fair_value"
+        case optType = "opt_type"
+    }
+}
+
+struct VolCurvePoint: Decodable, Sendable, Identifiable {
+    let delta: Double
+    let iv: Double
+    var id: Double { delta }
+}
+
+struct VolSurfaceRow: Decodable, Sendable, Identifiable {
+    let expiry: String
+    let cells: [VolSurfaceCell]
+    var id: String { expiry }
+}
+
+struct VolSurfaceCell: Decodable, Sendable {
+    let delta: Double
+    let iv: Double?
 }
 
 struct MDChainContract: Decodable, Sendable, Identifiable {
