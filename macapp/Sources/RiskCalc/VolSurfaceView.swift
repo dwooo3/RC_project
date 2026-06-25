@@ -105,7 +105,7 @@ struct VolSurfaceView: View {
                 } else if let surf = vm.surface, !surf.expiries.isEmpty, let e = vm.expiry {
                     expiryChips(surf)
                     smileChart(surf, selected: e)
-                    if !surf.surface.isEmpty { surfaceHeatmap(surf) }
+                    if !surf.surface.isEmpty { surfacePlot(surf) }
                     smileTable(e)
                 } else if !vm.loading {
                     Text("Нет данных").font(.caption).foregroundStyle(.secondary).frame(height: 120)
@@ -198,38 +198,54 @@ struct VolSurfaceView: View {
         .background(Theme.accent.opacity(0.12), in: Capsule())
     }
 
-    // MARK: calibrated surface heatmap (expiry × delta → IV)
+    // MARK: calibrated surface plot (heatmap chart: delta × expiry → IV)
 
-    private func surfaceHeatmap(_ surf: VolSurface) -> some View {
+    private func surfacePlot(_ surf: VolSurface) -> some View {
         let all = surf.surface.flatMap { $0.cells }.compactMap { $0.iv }
         let lo = all.min() ?? 0, hi = all.max() ?? 1
-        return GlassCard(padding: Theme.s2) {
-            VStack(spacing: 0) {
-                BlockTitle("Поверхность (SABR) · IV по дельте", icon: "square.grid.3x3.fill")
-                    .padding(.bottom, Theme.s2)
-                HStack(spacing: 2) {
-                    Text("ЭКСП").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
-                        .frame(width: 78, alignment: .leading)
-                    ForEach(surf.deltas, id: \.self) { d in
-                        Text("Δ\(Int(d * 100))").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                    }
-                }
-                .padding(.vertical, 3)
-                ForEach(surf.surface) { row in
-                    HStack(spacing: 2) {
-                        Text(row.expiry).font(.system(size: 10)).monospacedDigit()
-                            .frame(width: 78, alignment: .leading)
-                        ForEach(Array(row.cells.enumerated()), id: \.offset) { _, c in
-                            Text(c.iv.map { Fmt.number($0 * 100, digits: 1) } ?? "—")
-                                .font(.system(size: 10, weight: .medium)).monospacedDigit()
-                                .frame(maxWidth: .infinity).padding(.vertical, 5)
-                                .background(heatColor(c.iv, lo, hi), in: RoundedRectangle(cornerRadius: 3))
+        let step = surf.deltas.count > 1 ? (surf.deltas[1] - surf.deltas[0]) : 0.05
+        let rows = surf.surface.map(\.expiry)
+        return GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s3) {
+                BlockTitle("Поверхность волатильности (SABR)", icon: "cube")
+                Chart {
+                    ForEach(surf.surface) { row in
+                        ForEach(row.cells, id: \.delta) { c in
+                            if let iv = c.iv {
+                                RectangleMark(
+                                    xStart: .value("Δ0", c.delta - step / 2),
+                                    xEnd: .value("Δ1", c.delta + step / 2),
+                                    y: .value("Экспирация", row.expiry)
+                                )
+                                .foregroundStyle(heatColor(iv, lo, hi))
+                            }
                         }
                     }
-                    .padding(.vertical, 1)
                 }
+                .chartXScale(domain: 0...1)
+                .chartYScale(domain: .automatic(reversed: true))
+                .chartXAxis { AxisMarks(values: [0.1, 0.25, 0.5, 0.75, 0.9]) { v in
+                    AxisGridLine(); AxisValueLabel { if let d = v.as(Double.self) { Text("Δ\(Int(d * 100))") } }
+                } }
+                .chartPlotStyle { $0.border(Color.gray.opacity(0.15)) }
+                .frame(height: CGFloat(max(rows.count, 1)) * 30 + 36)
+                .chartXAxisLabel("Call delta")
+                legend(lo, hi)
             }
+        }
+    }
+
+    private func legend(_ lo: Double, _ hi: Double) -> some View {
+        HStack(spacing: Theme.s2) {
+            Text("низкий IV").font(.system(size: 9)).foregroundStyle(.tertiary)
+            LinearGradient(
+                colors: [heatColor(lo, lo, hi), heatColor((lo + hi) / 2, lo, hi), heatColor(hi, lo, hi)],
+                startPoint: .leading, endPoint: .trailing)
+                .frame(width: 120, height: 8).clipShape(Capsule())
+            Text("высокий").font(.system(size: 9)).foregroundStyle(.tertiary)
+            Spacer()
+            Text("\(Fmt.percent(lo * 100, digits: 0)) … \(Fmt.percent(hi * 100, digits: 0))")
+                .font(.system(size: 9)).foregroundStyle(.secondary)
         }
     }
 

@@ -15,7 +15,8 @@ from __future__ import annotations
 import datetime as _dt
 
 R = 0.0                                   # margined futures options: no discounting
-_DELTA_BUCKETS = [0.10, 0.25, 0.50, 0.75, 0.90]   # call-delta columns of the surface
+# Fine call-delta grid for the surface plot (5%-step, 0.05 … 0.95).
+_DELTA_BUCKETS = [round(0.05 * i, 2) for i in range(1, 20)]
 
 
 def list_underlyings(ctx) -> dict:
