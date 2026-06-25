@@ -145,6 +145,19 @@ struct VolSurfaceView: View {
         return GlassCard {
             VStack(alignment: .leading, spacing: Theme.s3) {
                 BlockTitle("\(surf.underlying) · smile по дельте (SABR)", icon: "chart.xyaxis.line")
+                if let s = selected.sabr {
+                    HStack(spacing: Theme.s2) {
+                        sabrChip("α", s.alpha, 3); sabrChip("β", s.beta, 2)
+                        sabrChip("ρ", s.rho, 3); sabrChip("ν", s.nu, 3)
+                        Spacer(minLength: Theme.s2)
+                        if let f = selected.forward {
+                            Text("F \(Fmt.number(f, digits: 0))").font(.system(size: 10)).foregroundStyle(.tertiary)
+                        }
+                        if let a = selected.atmIv {
+                            Text("ATM \(Fmt.percent(a * 100, digits: 1))").font(.system(size: 10)).foregroundStyle(.tertiary)
+                        }
+                    }
+                }
                 Chart {
                     ForEach(surf.expiries.filter { $0.id != selected.id }) { e in
                         ForEach(e.sabrCurve) { p in
@@ -174,6 +187,15 @@ struct VolSurfaceView: View {
                     .font(.system(size: 9)).foregroundStyle(.tertiary)
             }
         }
+    }
+
+    private func sabrChip(_ name: String, _ value: Double, _ digits: Int) -> some View {
+        HStack(spacing: 3) {
+            Text(name).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+            Text(Fmt.number(value, digits: digits)).font(.system(size: 10, weight: .medium)).monospacedDigit()
+        }
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(Theme.accent.opacity(0.12), in: Capsule())
     }
 
     // MARK: calibrated surface heatmap (expiry × delta → IV)

@@ -596,15 +596,23 @@ struct VolExpiry: Decodable, Sendable, Identifiable {
     let t: Double?
     let forward: Double?
     let atmIv: Double?
+    let sabr: VolSABR?
     let points: [VolPoint]
     let sabrCurve: [VolCurvePoint]
     var id: String { expiry }
 
     enum CodingKeys: String, CodingKey {
-        case expiry, t, forward, points
+        case expiry, t, forward, points, sabr
         case atmIv = "atm_iv"
         case sabrCurve = "sabr_curve"
     }
+}
+
+struct VolSABR: Decodable, Sendable {
+    let alpha: Double
+    let beta: Double
+    let rho: Double
+    let nu: Double
 }
 
 struct VolPoint: Decodable, Sendable, Identifiable {
