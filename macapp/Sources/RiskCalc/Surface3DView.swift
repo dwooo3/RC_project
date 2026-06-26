@@ -155,7 +155,8 @@ struct Surface3DView: NSViewRepresentable {
         let (lo, hi) = t.boundingBox
         n.pivot = SCNMatrix4MakeTranslation((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, 0)
         n.position = pos
-        n.constraints = [SCNBillboardConstraint()]
+        // No billboard: labels are rigid parts of the frame so the axes don't
+        // jitter while orbiting — they rotate together with the surface.
         return n
     }
 
