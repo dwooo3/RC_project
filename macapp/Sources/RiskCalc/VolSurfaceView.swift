@@ -197,8 +197,8 @@ struct VolSurfaceView: View {
                             .interpolationMethod(.catmullRom)
                     }
                     ForEach(selected.points) { p in
-                        if let d = p.delta {
-                            PointMark(x: .value("Δ", d), y: .value("IV", p.iv * 100))
+                        if let d = p.delta, let iv = p.iv {
+                            PointMark(x: .value("Δ", d), y: .value("IV", iv * 100))
                                 .foregroundStyle(Theme.warning).symbolSize(26)
                         }
                     }
@@ -292,7 +292,7 @@ struct VolSurfaceView: View {
                     HStack(spacing: Theme.s2) {
                         cell(Fmt.number(p.strike, digits: p.strike < 100 ? 2 : 0), .leading, .medium)
                         cell(p.delta.map { Fmt.number($0, digits: 2) } ?? "—", .trailing)
-                        cell(Fmt.percent(p.iv * 100, digits: 2), .trailing)
+                        cell(p.iv.map { Fmt.percent($0 * 100, digits: 2) } ?? "—", .trailing)
                         cell(p.quote.map { Fmt.number($0, digits: 1) } ?? "—", .trailing)
                         cell(p.fairValue.map { Fmt.number($0, digits: 1) } ?? "—", .trailing,
                              .regular, fairColor(p))

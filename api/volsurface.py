@@ -139,10 +139,11 @@ def surface(ctx, underlying: str) -> dict:
                 iv = implied_vol_black76(price, F, K, T, R, opt)
             except Exception:
                 iv = None
-            if not iv or iv <= 1e-3 or iv > 5:
+            # NaN slips through plain comparisons (NaN<=x is False), so test finiteness.
+            if iv is None or not math.isfinite(iv) or iv <= 1e-3 or iv > 5:
                 continue
             d = _call_delta(F, K, T, iv)
-            if d < 0.02 or d > 0.98:                      # drop noisy deep wings
+            if not math.isfinite(d) or d < 0.02 or d > 0.98:   # drop noisy deep wings
                 continue
             pts.append({"strike": K, "opt_type": typ, "quote": price, "iv": iv,
                         "delta": d, "oi": o.get("oi") or 0.0})

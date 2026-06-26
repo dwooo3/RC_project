@@ -618,7 +618,7 @@ struct VolSABR: Decodable, Sendable {
 struct VolPoint: Decodable, Sendable, Identifiable {
     let strike: Double
     let delta: Double?
-    let iv: Double
+    let iv: Double?
     let sabrIv: Double?
     let quote: Double?
     let fairValue: Double?
