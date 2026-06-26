@@ -155,11 +155,16 @@ def surface(ctx, underlying: str) -> dict:
 
         sabr = _calibrate_sabr(F, T, [p["strike"] for p in pts], [p["iv"] for p in pts],
                                [p["oi"] for p in pts])
+        sq = n = 0
         for p in pts:
             siv = sabr_vol(F, p["strike"], T, sabr["alpha"], sabr["beta"], sabr["rho"], sabr["nu"])
             opt = "call" if p["opt_type"] == "C" else "put"
             p["sabr_iv"] = siv
             p["fair_value"] = float(black76(F, p["strike"], T, R, siv, opt).price)
+            if math.isfinite(siv):
+                sq += (siv - p["iv"]) ** 2
+                n += 1
+        rmse = math.sqrt(sq / n) if n else None
 
         # smooth SABR curve in delta space for the chart
         curve = []
@@ -172,7 +177,8 @@ def surface(ctx, underlying: str) -> dict:
         expiries.append({
             "expiry": exp, "t": T, "forward": F,
             "atm_iv": sabr_vol(F, F, T, sabr["alpha"], sabr["beta"], sabr["rho"], sabr["nu"]),
-            "sabr": sabr, "points": pts, "sabr_curve": curve,
+            "sabr": sabr, "rmse": rmse, "n_points": len(pts),
+            "points": pts, "sabr_curve": curve,
         })
 
     # calibrated surface: SABR IV at standard call-deltas, per expiry
@@ -185,8 +191,15 @@ def surface(ctx, underlying: str) -> dict:
             cells.append({"delta": d, "iv": sabr_vol(F, K, T, s["alpha"], s["beta"], s["rho"], s["nu"])})
         grid.append({"expiry": e["expiry"], "t": T, "cells": cells})
 
-    result = {"underlying": underlying, "expiries": expiries,
-              "deltas": _DELTA_BUCKETS, "surface": grid}
+    rmses = [e["rmse"] for e in expiries if e.get("rmse") is not None]
+    diagnostics = {
+        "fit_model": "SABR (β=1, OI-weighted)",
+        "n_expiries": len(expiries),
+        "n_points": sum(e["n_points"] for e in expiries),
+        "rmse": (sum(rmses) / len(rmses)) if rmses else None,   # mean across expiries
+    }
+    result = {"underlying": underlying, "expiries": expiries, "deltas": _DELTA_BUCKETS,
+              "surface": grid, "diagnostics": diagnostics}
     if len(_CACHE) > 40:
         _CACHE.clear()
     _CACHE[cache_key] = result

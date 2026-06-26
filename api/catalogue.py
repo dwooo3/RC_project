@@ -17,8 +17,12 @@ from models import registry
 from models.parameters import P, ParameterSpec, engine_params
 
 
+_MANUAL_VOL = "— вручную σ —"           # vol_surface_id sentinel: use the σ field
+
+
 # ── base contract + market specs shared by the equity-vanilla pricers ──
-def _base_specs(uses_sigma: bool = True) -> list[ParameterSpec]:
+def _base_specs(uses_sigma: bool = True,
+                surface_choices: list[str] | None = None) -> list[ParameterSpec]:
     specs = [
         P("S", "Spot / forward S", 100.0, "market", minimum=0.0,
           help="underlying spot (forward for Black-76)"),
@@ -31,7 +35,13 @@ def _base_specs(uses_sigma: bool = True) -> list[ParameterSpec]:
     ]
     if uses_sigma:
         specs.append(P("sigma", "Volatility σ", 0.20, "market",
-                       minimum=1e-6, maximum=5.0))
+                       minimum=1e-6, maximum=5.0,
+                       help="used when no vol surface is selected"))
+        if surface_choices:
+            specs.append(P("vol_surface_id", "Vol surface", _MANUAL_VOL, "market",
+                           dtype="choice", choices=[_MANUAL_VOL] + surface_choices,
+                           help="σ source — calibrated SABR smile/term structure; "
+                                f"'{_MANUAL_VOL}' = use σ above"))
     specs.append(P("opt", "Option type", "call", "contract",
                    dtype="choice", choices=["call", "put"]))
     return specs
@@ -49,27 +59,33 @@ class Pricer:
     uses_sigma: bool = True
     model_params: list[ParameterSpec] = field(default_factory=list)
 
-    def specs(self) -> list[ParameterSpec]:
-        return _base_specs(self.uses_sigma) + self.model_params
+    def specs(self, surface_choices: list[str] | None = None) -> list[ParameterSpec]:
+        return _base_specs(self.uses_sigma, surface_choices) + self.model_params
 
 
 # ── adapters: pull exactly the kwargs each service method expects ──
+# Adapters take (service, body, snapshot) — snapshot is needed for surface-aware
+# pricing; engines that don't use it simply ignore the argument.
 def _vanilla(model: str):
-    def call(svc, b):
+    def call(svc, b, snapshot=None):
+        surf = b.get("vol_surface_id")
+        use_surface = bool(surf) and surf != _MANUAL_VOL
         return svc.price_vanilla_option(
-            b["S"], b["K"], b["T"], b["r"], b.get("sigma"),
-            b.get("q", 0.0), b.get("opt", "call"), model=model)
+            b["S"], b["K"], b["T"], b["r"],
+            None if use_surface else b.get("sigma"),
+            b.get("q", 0.0), b.get("opt", "call"), model=model,
+            snapshot=snapshot, vol_surface_id=surf if use_surface else None)
     return call
 
 
-def _heston(svc, b):
+def _heston(svc, b, snapshot=None):
     return svc.price_heston_option(
         b["S"], b["K"], b["T"], b["r"], b.get("q", 0.0),
         b["v0"], b["kappa"], b["theta"], b["xi"], b["rho"],
         b.get("opt", "call"))
 
 
-def _merton(svc, b):
+def _merton(svc, b, snapshot=None):
     return svc.price_merton_option(
         b["S"], b["K"], b["T"], b["r"], b["sigma"], b.get("q", 0.0),
         b.get("lam", 0.1), b.get("mu_j", -0.1), b.get("delta_j", 0.15),
@@ -120,8 +136,13 @@ def _governance(model_id: str) -> dict:
     }
 
 
-def build_catalogue() -> list[dict]:
-    """Full vanilla catalogue: one entry per pricer with governance + specs."""
+def build_catalogue(surface_ids: list[str] | None = None) -> list[dict]:
+    """Full vanilla catalogue: one entry per pricer with governance + specs.
+
+    ``surface_ids`` (the active snapshot's vol surfaces) are injected as choices
+    for the ``vol_surface_id`` param so an option can be priced off a calibrated
+    smile/term structure instead of a hand-typed σ.
+    """
     return [
         {
             "id": p.id,
@@ -129,7 +150,7 @@ def build_catalogue() -> list[dict]:
             "name": p.name,
             "family": p.family,
             "governance": _governance(p.model_id),
-            "params": [_spec_dict(s) for s in p.specs()],
+            "params": [_spec_dict(s) for s in p.specs(surface_ids)],
         }
         for p in PRICERS
     ]

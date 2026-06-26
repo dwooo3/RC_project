@@ -201,6 +201,11 @@ class PricingService:
                 sigma, vol_warning = self._vol_from_surface(surface, K, T, S=S)
                 if vol_warning:
                     vol_warnings.append(vol_warning)
+                note = f"σ={sigma:.2%} from surface '{vol_surface_id}'"
+                rmse = getattr(surface, "rmse_at", lambda _t: None)(T)
+                if rmse is not None:
+                    note += f" · SABR fit RMSE {rmse:.2%}"
+                vol_warnings.append(note)
             raw = european(S, K, T, r, sigma, q, opt, model)
             if vol_surface_id is not None and isinstance(raw, dict):
                 raw["vol_surface_id"] = vol_surface_id

@@ -589,6 +589,20 @@ struct VolSurface: Decodable, Sendable {
     let expiries: [VolExpiry]
     let deltas: [Double]
     let surface: [VolSurfaceRow]
+    let diagnostics: VolDiagnostics?
+}
+
+struct VolDiagnostics: Decodable, Sendable {
+    let fitModel: String?
+    let nExpiries: Int?
+    let nPoints: Int?
+    let rmse: Double?
+    enum CodingKeys: String, CodingKey {
+        case rmse
+        case fitModel = "fit_model"
+        case nExpiries = "n_expiries"
+        case nPoints = "n_points"
+    }
 }
 
 struct VolExpiry: Decodable, Sendable, Identifiable {

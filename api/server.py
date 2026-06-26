@@ -92,9 +92,19 @@ def health() -> dict:
     }
 
 
+def _vol_surface_ids() -> list[str]:
+    """Surface ids in the active snapshot, FORTS first — choices for the pricer's
+    vol_surface_id selector."""
+    try:
+        ids = list(CONTEXT.snapshot.vol_surfaces.keys())
+    except Exception:
+        return []
+    return sorted(ids, key=lambda s: (not s.endswith("_FORTS"), s))
+
+
 @app.get("/catalogue")
 def catalogue() -> dict:
-    return {"pricers": build_catalogue()}
+    return {"pricers": build_catalogue(_vol_surface_ids())}
 
 
 # ── per-screen data endpoints ────────────────────────────
@@ -269,7 +279,8 @@ def price(req: PriceRequest) -> dict:
     if pricer is None:
         raise HTTPException(status_code=404, detail=f"unknown pricer '{req.pricer}'")
     try:
-        result = pricer.invoke(_svc, req.params)
+        _svc.market_data = CONTEXT.market          # live surfaces for surface-aware pricing
+        result = pricer.invoke(_svc, req.params, CONTEXT.snapshot)
     except KeyError as exc:
         raise HTTPException(status_code=422, detail=f"missing parameter {exc}")
     except (TypeError, ValueError) as exc:

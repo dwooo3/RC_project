@@ -114,6 +114,7 @@ struct VolSurfaceView: View {
                     .frame(maxWidth: .infinity, minHeight: 240)
                 } else if let surf = vm.surface, !surf.expiries.isEmpty {
                     surfacePlot
+                    if let d = surf.diagnostics { fitCaption(d) }
                     fullTable(surf)
                 } else {
                     Text("Нет данных").font(.caption).foregroundStyle(.secondary).frame(height: 120)
@@ -144,6 +145,20 @@ struct VolSurfaceView: View {
                 }
             }
         }
+    }
+
+    private func fitCaption(_ d: VolDiagnostics) -> some View {
+        HStack(spacing: Theme.s2) {
+            Image(systemName: "checkmark.seal").font(.system(size: 10)).foregroundStyle(.tertiary)
+            Text([d.fitModel,
+                  d.rmse.map { "RMSE \(Fmt.percent($0 * 100, digits: 2))" },
+                  d.nExpiries.map { "\($0) экс" },
+                  d.nPoints.map { "\($0) точек" }]
+                .compactMap { $0 }.joined(separator: " · "))
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, Theme.s1)
     }
 
     // MARK: flat table — every option across all expiries

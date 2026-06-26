@@ -246,6 +246,14 @@ class CalibratedSurface:
     def atm_term_structure(self) -> list[tuple]:
         return [(s["T"], s.get("atm")) for s in self.slices]
 
+    def rmse_at(self, T: float):
+        """Calibration RMSE of the expiry nearest T (None if unknown)."""
+        if not self.slices:
+            return None
+        s = min(self.slices, key=lambda s: abs(s["T"] - T))
+        rmse = s.get("rmse")
+        return None if rmse is None or (isinstance(rmse, float) and math.isnan(rmse)) else rmse
+
 
 def _smile_forward(strikes: list, ivs: list):
     """ATM-forward proxy = strike at the smile vertex (min IV) over the central
@@ -313,7 +321,8 @@ def calibrated_surface_from_points(points: list[dict], valuation_date, *,
             atm = params["alpha"]
         accepted += len(s["strikes"])
         slices.append({"T": s["T"], "F": s["F"], "kmin": min(s["strikes"]),
-                       "kmax": max(s["strikes"]), "atm": atm, **params})
+                       "kmax": max(s["strikes"]), "atm": atm,
+                       "rmse": None if math.isnan(rmse) else rmse, **params})
         diag.append({"expiry": s["exp"], "T": round(s["T"], 4), "forward": s["F"],
                      "n": len(s["strikes"]),
                      "rmse": None if math.isnan(rmse) else round(rmse, 5)})
