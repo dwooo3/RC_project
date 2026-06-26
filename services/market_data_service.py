@@ -845,7 +845,21 @@ class MarketDataService:
 
     def get_vol_surface(self, surface_id: str, snapshot: MarketDataSnapshot | None = None) -> Any:
         snapshot = snapshot or self.demo_snapshot()
-        return snapshot.vol_surfaces[surface_id]
+        surface = snapshot.vol_surfaces[surface_id]
+        # Raw listed-option grids ({UND}_FORTS) carry only points + a single
+        # median vol. Lazily upgrade them to a SABR-calibrated, interpolated
+        # surface so pricing/risk get a real smile + term structure instead of a
+        # flat median. Cached on the surface dict; falls back to the raw dict when
+        # the points are too thin to calibrate.
+        if isinstance(surface, dict) and surface.get("type") == "grid" and surface.get("points"):
+            cached = surface.get("_calibrated")
+            if cached is None:
+                from risk.vol_surface import calibrated_surface_from_points
+                cached = calibrated_surface_from_points(
+                    surface["points"], snapshot.valuation_date, label=surface_id) or surface
+                surface["_calibrated"] = cached
+            return cached
+        return surface
 
     def get_commodity_curve(self, asset: str,
                             snapshot: MarketDataSnapshot | None = None) -> dict:

@@ -198,7 +198,7 @@ class PricingService:
                     raise ValueError("Provide sigma or vol_surface_id")
                 snapshot = snapshot or self.market_data.demo_snapshot()
                 surface = self.market_data.get_vol_surface(vol_surface_id, snapshot)
-                sigma, vol_warning = self._vol_from_surface(surface, K, T)
+                sigma, vol_warning = self._vol_from_surface(surface, K, T, S=S)
                 if vol_warning:
                     vol_warnings.append(vol_warning)
             raw = european(S, K, T, r, sigma, q, opt, model)
@@ -309,18 +309,43 @@ class PricingService:
         return self.market_data.get_curve(proj_curve_id, snapshot), snapshot
 
     @staticmethod
-    def _vol_from_surface(surface, K: float, T: float):
-        """Resolve a vol from a snapshot surface object (VolSurface | dict)."""
-        from risk.vol_surface import VolSurface
-        if isinstance(surface, VolSurface):
-            return surface.get_vol(K, T), None
+    def _vol_from_surface(surface, K: float, T: float, S: float | None = None):
+        """Resolve a vol from a snapshot surface object.
+
+        Interpolated surfaces (``VolSurface`` / ``CalibratedSurface``) return a
+        strike- and tenor-aware vol — a real smile + term structure. ``rr_bf``
+        quote sets are expanded into a smile surface. A bare ``median_vol`` grid
+        is only used as a last resort (and flagged with a warning).
+        """
+        if hasattr(surface, "get_vol"):                       # VolSurface | CalibratedSurface
+            return float(surface.get_vol(K, T)), None
         if isinstance(surface, dict):
             if surface.get("type") == "flat":
                 return float(surface["vol"]), None
+            if surface.get("type") == "rr_bf":
+                vs = PricingService._surface_from_rr_bf(surface, S or K)
+                return float(vs.get_vol(K, T)), None
             if surface.get("median_vol") is not None:
                 return (float(surface["median_vol"]),
-                        "Vol surface has no strike/tenor interpolation; using median vol.")
+                        "Vol surface too thin to calibrate a smile; using median vol.")
         raise ValueError(f"Unsupported vol surface object: {type(surface).__name__}")
+
+    @staticmethod
+    def _surface_from_rr_bf(surface: dict, S0: float):
+        """Expand an ATM / 25Δ risk-reversal / butterfly quote set into a smile
+        surface: butterfly → curvature, risk-reversal → skew, on a moneyness grid
+        with a flat term structure. Robust placement (no delta root-finding)."""
+        import numpy as np
+        from risk.vol_surface import VolSurface
+        atm = float(surface["atm"])
+        rr = float(surface.get("rr", 0.0))
+        bf = float(surface.get("bf", 0.0))
+        m = np.array([0.90, 0.95, 1.0, 1.05, 1.10])      # K / S0
+        x = np.log(m) / np.log(1.10)                     # normalised log-moneyness
+        smile = np.clip(atm + bf * x**2 + 0.5 * rr * x, 0.01, None)
+        tenors = np.array([0.1, 0.25, 0.5, 1.0, 2.0])
+        V = np.tile(smile.reshape(-1, 1), (1, len(tenors)))
+        return VolSurface(S0 * m, tenors, V, S0=S0, label="rr_bf")
 
     @staticmethod
     def _vol_term_structure(vol):

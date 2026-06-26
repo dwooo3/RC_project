@@ -10,6 +10,8 @@ Volatility surface construction and models (Hull Ch. 20, 27):
   - Sticky-strike vs sticky-delta
 """
 
+import math
+
 import numpy as np
 from scipy.optimize import minimize, brentq
 from scipy.interpolate import RectBivariateSpline
@@ -136,6 +138,192 @@ class VolSurface:
                 v = griddata(pts, V_all, (ki, tj), method="linear")
                 V_grid[i,j] = float(v) if not np.isnan(v) else atm_vols[j//len(tenors)]
         return cls(np.array(K_unique), np.array(T_unique), V_grid, S0)
+
+
+# ─────────────────────────────────────────────────────────
+# SABR-calibrated multi-tenor surface (listed / FORTS options)
+# ─────────────────────────────────────────────────────────
+
+def calibrate_sabr_smile(F, T, strikes, ivs, weights=None, beta=1.0):
+    """Robust per-expiry SABR (Hagan 2002) fit → (params, rmse).
+
+    Liquidity-weighted residuals, a tenor-scaled vol-of-vol cap and a NaN-safe
+    flat fallback so a thin/illiquid wing can't blow the calibration up. Lives in
+    the quant layer (reuses the ``models.heston`` engine) so pricing/risk can
+    build adequate surfaces without depending on the display API.
+    """
+    from models.heston import sabr_vol
+    from scipy.optimize import least_squares
+
+    finite = [v for v in ivs if math.isfinite(v)]
+    if not finite or not strikes:
+        return {"alpha": 0.2, "beta": beta, "rho": 0.0, "nu": 0.3}, float("nan")
+    atm = sorted(finite)[len(finite) // 2]
+    nu_max = min(20.0, max(0.8, 1.2 / math.sqrt(max(T, 1e-3))))
+    weights = weights or [1.0] * len(strikes)
+    w = [math.sqrt(max(x, 0.0) + 1.0) for x in weights]
+    fallback = {"alpha": float(atm), "beta": beta, "rho": 0.0, "nu": 0.3}
+
+    def resid(p):
+        a, rho, nu = p
+        out = []
+        for K, iv, wi in zip(strikes, ivs, w):
+            try:
+                m = sabr_vol(F, K, T, a, beta, rho, nu)
+            except Exception:
+                m = None
+            out.append((m - iv) * wi if (m is not None and math.isfinite(m)) else 1e3)
+        return out
+
+    try:
+        sol = least_squares(resid, [max(atm, 0.05), -0.1, min(0.6, nu_max)],
+                            bounds=([1e-4, -0.999, 1e-4], [5.0, 0.999, nu_max]),
+                            max_nfev=400)
+        params = ({"alpha": float(sol.x[0]), "beta": beta,
+                   "rho": float(sol.x[1]), "nu": float(sol.x[2])}
+                  if all(math.isfinite(x) for x in sol.x) else fallback)
+    except Exception:
+        params = fallback
+
+    sq = n = 0
+    for K, iv in zip(strikes, ivs):
+        try:
+            m = sabr_vol(F, K, T, params["alpha"], beta, params["rho"], params["nu"])
+        except Exception:
+            continue
+        if m is not None and math.isfinite(m):
+            sq += (m - iv) ** 2
+            n += 1
+    rmse = math.sqrt(sq / n) if n else float("nan")
+    return params, rmse
+
+
+class CalibratedSurface:
+    """Multi-tenor SABR surface for listed options (e.g. FORTS).
+
+    Each expiry is an independent SABR slice ``{T, F, alpha, beta, rho, nu}``.
+    ``get_vol`` evaluates the slice's SABR at the requested strike and interpolates
+    across the two bracketing expiries in *total variance* (σ²·T — the standard
+    no-arbitrage-friendly term-structure interpolation). Unlike a flat median vol
+    this carries a real smile **and** term structure into pricing/risk.
+    """
+
+    def __init__(self, slices: list[dict], label: str = "surface",
+                 diagnostics: dict | None = None):
+        self.slices = sorted(slices, key=lambda s: s["T"])
+        self.label = label
+        self.diagnostics = diagnostics or {}
+
+    def _slice_vol(self, s: dict, K: float) -> float:
+        from models.heston import sabr_vol
+        lo, hi = s["kmin"], s["kmax"]
+        span = max(hi - lo, 1e-9)
+        Kc = min(max(K, lo - 0.5 * span), hi + 0.5 * span)   # bound deep extrapolation
+        try:
+            v = sabr_vol(s["F"], Kc, s["T"], s["alpha"], s["beta"], s["rho"], s["nu"])
+        except Exception:
+            v = None
+        if v is None or not math.isfinite(v) or v <= 0:
+            return float(s.get("atm", 0.2))
+        return float(v)
+
+    def get_vol(self, K: float, T: float) -> float:
+        if not self.slices:
+            return 0.2
+        if len(self.slices) == 1 or T <= self.slices[0]["T"]:
+            return max(self._slice_vol(self.slices[0], K), 1e-3)
+        if T >= self.slices[-1]["T"]:
+            return max(self._slice_vol(self.slices[-1], K), 1e-3)
+        for lo, hi in zip(self.slices, self.slices[1:]):
+            if lo["T"] <= T <= hi["T"]:
+                v_lo, v_hi = self._slice_vol(lo, K), self._slice_vol(hi, K)
+                w_lo, w_hi = v_lo * v_lo * lo["T"], v_hi * v_hi * hi["T"]
+                frac = (T - lo["T"]) / max(hi["T"] - lo["T"], 1e-9)
+                w = w_lo + frac * (w_hi - w_lo)
+                return max(math.sqrt(max(w, 1e-12) / max(T, 1e-9)), 1e-3)
+        return max(self._slice_vol(self.slices[-1], K), 1e-3)
+
+    def atm_term_structure(self) -> list[tuple]:
+        return [(s["T"], s.get("atm")) for s in self.slices]
+
+
+def _smile_forward(strikes: list, ivs: list):
+    """ATM-forward proxy = strike at the smile vertex (min IV) over the central
+    band of strikes — robust to noisy deep-OTM wings."""
+    pts = sorted(zip(strikes, ivs))
+    if not pts:
+        return None
+    lo = int(len(pts) * 0.2)
+    hi = max(lo + 1, int(len(pts) * 0.8))
+    band = pts[lo:hi] or pts
+    return min(band, key=lambda kv: kv[1])[0]
+
+
+def calibrated_surface_from_points(points: list[dict], valuation_date, *,
+                                   label: str = "surface", min_points: int = 4):
+    """Build a :class:`CalibratedSurface` from raw listed-option vol points.
+
+    ``points``: ``[{expiry, strike, iv}]`` (e.g. a ``build_vol_surfaces`` FORTS
+    grid). Cleans each expiry's smile, estimates the ATM forward, SABR-calibrates,
+    and drops expiries with too few points or an anomalous forward (handles the
+    mixed-scale quote glitch). Returns the surface, or ``None`` if nothing usable.
+    """
+    from datetime import date as _date
+    from models.heston import sabr_vol
+
+    by_exp: dict = {}
+    for p in points:
+        try:
+            iv, k = float(p["iv"]), float(p["strike"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if not math.isfinite(iv) or not (1e-3 < iv <= 5.0) or k <= 0:
+            continue
+        by_exp.setdefault(p["expiry"], []).append((k, iv))
+
+    raw, rejected = [], 0
+    for exp, pts in by_exp.items():
+        pts = sorted(set(pts))
+        if len(pts) < min_points:
+            rejected += len(pts)
+            continue
+        try:
+            T = max((_date.fromisoformat(str(exp)) - valuation_date).days, 1) / 365.0
+        except (ValueError, TypeError):
+            continue
+        strikes, ivs = [k for k, _ in pts], [v for _, v in pts]
+        F = _smile_forward(strikes, ivs)
+        if F:
+            raw.append({"exp": exp, "T": T, "F": F, "strikes": strikes, "ivs": ivs})
+
+    if not raw:
+        return None
+
+    med_F = sorted(s["F"] for s in raw)[len(raw) // 2]    # scale anchor
+    slices, diag, accepted = [], [], 0
+    for s in raw:
+        if not (0.2 * med_F <= s["F"] <= 5.0 * med_F):     # mixed-scale glitch
+            rejected += len(s["strikes"])
+            continue
+        params, rmse = calibrate_sabr_smile(s["F"], s["T"], s["strikes"], s["ivs"])
+        try:
+            atm = float(sabr_vol(s["F"], s["F"], s["T"], params["alpha"],
+                                 params["beta"], params["rho"], params["nu"]))
+        except Exception:
+            atm = params["alpha"]
+        accepted += len(s["strikes"])
+        slices.append({"T": s["T"], "F": s["F"], "kmin": min(s["strikes"]),
+                       "kmax": max(s["strikes"]), "atm": atm, **params})
+        diag.append({"expiry": s["exp"], "T": round(s["T"], 4), "forward": s["F"],
+                     "n": len(s["strikes"]),
+                     "rmse": None if math.isnan(rmse) else round(rmse, 5)})
+
+    if not slices:
+        return None
+    diagnostics = {"fit_model": "SABR(beta=1)", "n_expiries": len(slices),
+                   "accepted_points": accepted, "rejected_points": rejected,
+                   "slices": diag}
+    return CalibratedSurface(slices, label=label, diagnostics=diagnostics)
 
 
 # ─────────────────────────────────────────────────────────
