@@ -13,6 +13,7 @@ implied_vol_black76, models.heston.sabr_vol.
 from __future__ import annotations
 
 import datetime as _dt
+import io
 import math
 
 R = 0.0                                   # margined futures options: no discounting
@@ -23,6 +24,7 @@ _DELTA_BUCKETS = [round(0.05 * i, 2) for i in range(1, 20)]
 # expensive (per-option IV + SABR fit + delta inversion) but static until the
 # next ingest, so the first open computes and the rest are instant.
 _CACHE: dict = {}
+_PNG_CACHE: dict = {}                      # (underlying, snapshot) → rendered PNG bytes
 
 
 def list_underlyings(ctx) -> dict:
@@ -189,3 +191,84 @@ def surface(ctx, underlying: str) -> dict:
         _CACHE.clear()
     _CACHE[cache_key] = result
     return result
+
+
+def surface_png(ctx, underlying: str) -> bytes | None:
+    """Render the calibrated SABR surface as a static 3-axis chart (matplotlib
+    mplot3d): X = call delta, Y = time to expiry, Z = implied vol %. Returns PNG
+    bytes (transparent, dark-theme tick/labels) for display in the app, or None
+    when there isn't enough of a grid to draw.
+    """
+    db = ctx.market_db
+    snap = (db.latest_vol_snapshot() or "") if db is not None else ""
+    cache_key = (underlying, snap)
+    if cache_key in _PNG_CACHE:
+        return _PNG_CACHE[cache_key]
+
+    data = surface(ctx, underlying)
+    rows = [r for r in data["surface"] if r.get("t")]
+    deltas = data["deltas"]
+    if len(rows) < 2 or len(deltas) < 2:
+        return None
+    rows.sort(key=lambda r: r["t"])
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from matplotlib.ticker import FuncFormatter
+
+    fg = "#9aa0aa"                                       # tick / label colour
+    X = np.array(deltas, dtype=float)                    # call delta 0..1
+    Y = np.array([r["t"] for r in rows], dtype=float)    # years to expiry
+    Z = np.array([[((c.get("iv") or np.nan) * 100.0) for c in r["cells"]] for r in rows])
+    # fill the odd NaN cell by row-neighbour so plot_surface stays watertight
+    for i in range(Z.shape[0]):
+        row = Z[i]
+        if np.isnan(row).any() and not np.isnan(row).all():
+            idx = np.arange(len(row))
+            good = ~np.isnan(row)
+            row[~good] = np.interp(idx[~good], idx[good], row[good])
+    # Per-expiry SABR slices are fitted independently → adjacent expiries can
+    # disagree at the wings, leaving single-cell spikes. A light Gaussian smooth
+    # (display only — table/smile stay raw) tames them into a clean surface.
+    try:
+        from scipy.ndimage import gaussian_filter
+        if Z.shape[0] >= 3:
+            Z = gaussian_filter(Z, sigma=(0.7, 0.8), mode="nearest")
+    except Exception:
+        pass
+    Xg, Yg = np.meshgrid(X, Y)
+
+    fig = plt.figure(figsize=(8.8, 5.6), dpi=130)
+    fig.patch.set_alpha(0.0)
+    ax = fig.add_subplot(111, projection="3d")
+    ax.patch.set_alpha(0.0)
+    ax.plot_surface(Xg, Yg, Z, cmap="turbo", edgecolor="black", linewidth=0.25,
+                    antialiased=True, rstride=1, cstride=1, alpha=0.96)
+
+    ax.set_xlabel("Δ call", color=fg, labelpad=10, fontsize=10)
+    ax.set_ylabel("Срок, лет", color=fg, labelpad=12, fontsize=10)
+    ax.set_zlabel("IV, %", color=fg, labelpad=8, fontsize=10)
+    ax.set_title(f"{underlying} · поверхность волатильности (SABR)", color="#d6d9df",
+                 fontsize=12, pad=12)
+    ax.zaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.0f}"))
+    ax.view_init(elev=26, azim=-56)
+
+    # dark theme: transparent panes, faint light grid, light ticks
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.set_pane_color((1, 1, 1, 0.0))
+        axis.pane.set_edgecolor((1, 1, 1, 0.10))
+        axis._axinfo["grid"]["color"] = (1, 1, 1, 0.12)
+        axis._axinfo["grid"]["linewidth"] = 0.6
+    ax.tick_params(colors=fg, labelsize=8)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", transparent=True, bbox_inches="tight", pad_inches=0.15)
+    plt.close(fig)
+    png = buf.getvalue()
+
+    if len(_PNG_CACHE) > 40:
+        _PNG_CACHE.clear()
+    _PNG_CACHE[cache_key] = png
+    return png

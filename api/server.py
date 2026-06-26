@@ -21,7 +21,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -253,6 +253,14 @@ def md_volsurface_list() -> dict:
 @app.get("/md/volsurface/{underlying}")
 def md_volsurface(underlying: str) -> dict:
     return jsonable(volsurface.surface(CONTEXT, underlying))
+
+
+@app.get("/md/volsurface/{underlying}/plot")
+def md_volsurface_plot(underlying: str) -> Response:
+    png = volsurface.surface_png(CONTEXT, underlying)
+    if not png:
+        raise HTTPException(status_code=404, detail="no surface to plot")
+    return Response(content=png, media_type="image/png")
 
 
 @app.post("/price")

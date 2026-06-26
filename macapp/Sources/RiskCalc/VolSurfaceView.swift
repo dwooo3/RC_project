@@ -1,17 +1,17 @@
 import SwiftUI
-import Charts
+import AppKit
 import Observation
 
-/// Volatility-surface browser: underlyings (1/3) + the surface (2/3) as a family
-/// of smile curves (IV vs strike per expiry) + a per-expiry table. Market / OTC
-/// split (OTC is a placeholder for now). Styled after the option board.
+/// Volatility-surface browser: underlyings (1/3) + the calibrated SABR surface
+/// as a static 3-axis chart (rendered server-side) + one flat table holding every
+/// option across all expiries. Market / OTC split (OTC is a placeholder for now).
 @MainActor
 @Observable
 final class VolSurfaceVM {
     var underlyings: [VolUnderlying] = []
     var selected: String?
     var surface: VolSurface?
-    var expiryID: String?
+    var plotImage: NSImage?
     var loading = false
     var serverDown = false
 
@@ -30,13 +30,14 @@ final class VolSurfaceVM {
     func select(_ code: String) async {
         selected = code
         surface = nil
+        plotImage = nil
         loading = true
         surface = try? await client.volSurface(underlying: code)
-        expiryID = surface?.expiries.first?.id
+        if let data = try? await client.volSurfacePlot(underlying: code) {
+            plotImage = NSImage(data: data)
+        }
         loading = false
     }
-
-    var expiry: VolExpiry? { surface?.expiries.first { $0.id == expiryID } ?? surface?.expiries.first }
 }
 
 struct VolSurfaceView: View {
@@ -111,12 +112,9 @@ struct VolSurfaceView: View {
                         Text("Калибровка поверхности…").font(.caption).foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, minHeight: 240)
-                } else if let surf = vm.surface, !surf.expiries.isEmpty, let e = vm.expiry {
-                    expiryChips(surf)
-                    surface3D(surf)
-                    smileChart(surf, selected: e)
-                    if !surf.surface.isEmpty { surfacePlot(surf) }
-                    smileTable(e)
+                } else if let surf = vm.surface, !surf.expiries.isEmpty {
+                    surfacePlot
+                    fullTable(surf)
                 } else {
                     Text("Нет данных").font(.caption).foregroundStyle(.secondary).frame(height: 120)
                 }
@@ -126,171 +124,59 @@ struct VolSurfaceView: View {
         }
     }
 
-    private func expiryChips(_ surf: VolSurface) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Theme.s2) {
-                ForEach(surf.expiries) { e in
-                    let on = vm.expiry?.id == e.id
-                    Button { vm.expiryID = e.id } label: {
-                        VStack(spacing: 1) {
-                            Text(e.expiry).font(.system(size: 11, weight: on ? .semibold : .regular))
-                            if let a = e.atmIv { Text("ATM \(Fmt.percent(a * 100, digits: 1))").font(.system(size: 9)) }
-                        }
-                        .foregroundStyle(on ? Theme.accent : .secondary)
-                        .padding(.horizontal, Theme.s2).padding(.vertical, 4)
-                        .background(on ? Theme.accent.opacity(0.16) : Color.gray.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-    }
+    // MARK: surface chart (matplotlib mplot3d, rendered server-side)
 
-    // MARK: 3D surface (SceneKit)
-
-    private func surface3D(_ surf: VolSurface) -> some View {
+    @ViewBuilder
+    private var surfacePlot: some View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.s2) {
-                BlockTitle("3D-поверхность · дельта × срок × IV", icon: "move.3d")
-                Surface3DView(underlying: surf.underlying, rows: surf.surface, deltas: surf.deltas)
-                    .frame(height: 340)
-                Text("крути мышью · X — call delta · Z — срок до экспирации · Y/цвет — IV")
-                    .font(.system(size: 9)).foregroundStyle(.tertiary)
+                BlockTitle("Поверхность волатильности · дельта × срок × IV", icon: "cube")
+                if let img = vm.plotImage {
+                    Image(nsImage: img)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity)
+                        .frame(maxHeight: 440)
+                } else {
+                    Text("График недоступен").font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 200)
+                }
             }
         }
     }
 
-    // MARK: smile chart — IV vs delta, market points + calibrated SABR curve
+    // MARK: flat table — every option across all expiries
 
-    private func smileChart(_ surf: VolSurface, selected: VolExpiry) -> some View {
-        let ivs = surf.expiries.flatMap { $0.sabrCurve }.map { $0.iv * 100 }
-        let lo = ivs.min() ?? 0, hi = ivs.max() ?? 1
-        let pad = max((hi - lo) * 0.1, 1)
-        return GlassCard {
-            VStack(alignment: .leading, spacing: Theme.s3) {
-                BlockTitle("\(surf.underlying) · smile по дельте (SABR)", icon: "chart.xyaxis.line")
-                if let s = selected.sabr {
-                    HStack(spacing: Theme.s2) {
-                        sabrChip("α", s.alpha, 3); sabrChip("β", s.beta, 2)
-                        sabrChip("ρ", s.rho, 3); sabrChip("ν", s.nu, 3)
-                        Spacer(minLength: Theme.s2)
-                        if let f = selected.forward {
-                            Text("F \(Fmt.number(f, digits: 0))").font(.system(size: 10)).foregroundStyle(.tertiary)
-                        }
-                        if let a = selected.atmIv {
-                            Text("ATM \(Fmt.percent(a * 100, digits: 1))").font(.system(size: 10)).foregroundStyle(.tertiary)
-                        }
-                    }
-                }
-                Chart {
-                    ForEach(surf.expiries.filter { $0.id != selected.id }) { e in
-                        ForEach(e.sabrCurve) { p in
-                            LineMark(x: .value("Δ", p.delta), y: .value("IV", p.iv * 100),
-                                     series: .value("e", e.expiry))
-                                .foregroundStyle(.gray.opacity(0.18)).interpolationMethod(.catmullRom)
-                        }
-                    }
-                    ForEach(selected.sabrCurve) { p in
-                        LineMark(x: .value("Δ", p.delta), y: .value("IV", p.iv * 100),
-                                 series: .value("e", "sel"))
-                            .foregroundStyle(Theme.accent).lineStyle(.init(lineWidth: 2.4))
-                            .interpolationMethod(.catmullRom)
-                    }
-                    ForEach(selected.points) { p in
-                        if let d = p.delta, let iv = p.iv {
-                            PointMark(x: .value("Δ", d), y: .value("IV", iv * 100))
-                                .foregroundStyle(Theme.warning).symbolSize(26)
-                        }
-                    }
-                }
-                .chartXScale(domain: 0...1)
-                .chartYScale(domain: (lo - pad)...(hi + pad))
-                .chartXAxisLabel("Call delta").chartYAxisLabel("IV %")
-                .frame(height: 300)
-                Text("● рыночные точки   — калиброванный SABR")
-                    .font(.system(size: 9)).foregroundStyle(.tertiary)
+    private struct FlatRow: Identifiable {
+        let id: String
+        let expiry: String
+        let p: VolPoint
+    }
+
+    private func flatRows(_ surf: VolSurface) -> [FlatRow] {
+        surf.expiries
+            .sorted { ($0.t ?? 0) < ($1.t ?? 0) }
+            .flatMap { e in
+                e.points.map { FlatRow(id: "\(e.expiry)#\($0.strike)", expiry: e.expiry, p: $0) }
             }
-        }
     }
 
-    private func sabrChip(_ name: String, _ value: Double, _ digits: Int) -> some View {
-        HStack(spacing: 3) {
-            Text(name).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-            Text(Fmt.number(value, digits: digits)).font(.system(size: 10, weight: .medium)).monospacedDigit()
-        }
-        .padding(.horizontal, 6).padding(.vertical, 2)
-        .background(Theme.accent.opacity(0.12), in: Capsule())
-    }
-
-    // MARK: calibrated surface plot (heatmap chart: delta × expiry → IV)
-
-    private func surfacePlot(_ surf: VolSurface) -> some View {
-        let all = surf.surface.flatMap { $0.cells }.compactMap { $0.iv }
-        let lo = all.min() ?? 0, hi = all.max() ?? 1
-        let step = surf.deltas.count > 1 ? (surf.deltas[1] - surf.deltas[0]) : 0.05
-        let rows = surf.surface.map(\.expiry)
-        return GlassCard {
-            VStack(alignment: .leading, spacing: Theme.s3) {
-                BlockTitle("Поверхность волатильности (SABR)", icon: "cube")
-                Chart {
-                    ForEach(surf.surface) { row in
-                        ForEach(row.cells, id: \.delta) { c in
-                            if let iv = c.iv {
-                                RectangleMark(
-                                    xStart: .value("Δ0", c.delta - step / 2),
-                                    xEnd: .value("Δ1", c.delta + step / 2),
-                                    y: .value("Экспирация", row.expiry)
-                                )
-                                .foregroundStyle(heatColor(iv, lo, hi))
-                            }
-                        }
-                    }
-                }
-                .chartXScale(domain: 0...1)
-                .chartYScale(domain: .automatic(reversed: true))
-                .chartXAxis { AxisMarks(values: [0.1, 0.25, 0.5, 0.75, 0.9]) { v in
-                    AxisGridLine(); AxisValueLabel { if let d = v.as(Double.self) { Text("Δ\(Int(d * 100))") } }
-                } }
-                .chartPlotStyle { $0.border(Color.gray.opacity(0.15)) }
-                .frame(height: CGFloat(max(rows.count, 1)) * 30 + 36)
-                .chartXAxisLabel("Call delta")
-                legend(lo, hi)
-            }
-        }
-    }
-
-    private func legend(_ lo: Double, _ hi: Double) -> some View {
-        HStack(spacing: Theme.s2) {
-            Text("низкий IV").font(.system(size: 9)).foregroundStyle(.tertiary)
-            LinearGradient(
-                colors: [heatColor(lo, lo, hi), heatColor((lo + hi) / 2, lo, hi), heatColor(hi, lo, hi)],
-                startPoint: .leading, endPoint: .trailing)
-                .frame(width: 120, height: 8).clipShape(Capsule())
-            Text("высокий").font(.system(size: 9)).foregroundStyle(.tertiary)
-            Spacer()
-            Text("\(Fmt.percent(lo * 100, digits: 0)) … \(Fmt.percent(hi * 100, digits: 0))")
-                .font(.system(size: 9)).foregroundStyle(.secondary)
-        }
-    }
-
-    private func heatColor(_ iv: Double?, _ lo: Double, _ hi: Double) -> Color {
-        guard let iv, hi > lo else { return Color.gray.opacity(0.12) }
-        let t = min(max((iv - lo) / (hi - lo), 0), 1)        // 0 low IV → 1 high IV
-        return Color(hue: (1 - t) * 0.62, saturation: 0.65, brightness: 0.55).opacity(0.55)  // blue→red
-    }
-
-    private func smileTable(_ e: VolExpiry) -> some View {
-        GlassCard(padding: Theme.s2) {
+    private func fullTable(_ surf: VolSurface) -> some View {
+        let rows = flatRows(surf)
+        return GlassCard(padding: Theme.s2) {
             VStack(spacing: 0) {
                 HStack(spacing: Theme.s2) {
-                    head("Strike", .leading); head("Δ", .trailing); head("IV", .trailing)
-                    head("Котировка", .trailing); head("Fair Value", .trailing)
+                    head("Экспирация", .leading); head("Strike", .trailing); head("Δ", .trailing)
+                    head("IV", .trailing); head("Котировка", .trailing); head("Fair Value", .trailing)
                 }
                 .padding(.horizontal, Theme.s2).padding(.vertical, Theme.s2)
                 Divider()
-                ForEach(e.points) { p in
+                ForEach(rows) { r in
+                    let p = r.p
                     HStack(spacing: Theme.s2) {
-                        cell(Fmt.number(p.strike, digits: p.strike < 100 ? 2 : 0), .leading, .medium)
+                        cell(r.expiry, .leading, .regular, .secondary)
+                        cell(Fmt.number(p.strike, digits: p.strike < 100 ? 2 : 0), .trailing, .medium)
                         cell(p.delta.map { Fmt.number($0, digits: 2) } ?? "—", .trailing)
                         cell(p.iv.map { Fmt.percent($0 * 100, digits: 2) } ?? "—", .trailing)
                         cell(p.quote.map { Fmt.number($0, digits: 1) } ?? "—", .trailing)
