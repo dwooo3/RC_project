@@ -32,18 +32,21 @@ struct Surface3DView: NSViewRepresentable {
 
     // MARK: grid
 
-    private struct Grid { let xs: [Double]; let ts: [Double]; let iv: [[Double]]; let lo: Double; let hi: Double }
+    private struct Grid {
+        let xs: [Double]; let ts: [Double]; let labels: [String]
+        let iv: [[Double]]; let lo: Double; let hi: Double
+    }
 
     private func grid() -> Grid? {
-        let valid = rows.compactMap { r -> (Double, [VolSurfaceCell])? in
+        let valid = rows.compactMap { r -> (Double, String, [VolSurfaceCell])? in
             guard let t = r.t else { return nil }
-            return (t, r.cells)
+            return (t, r.expiry, r.cells)
         }.sorted { $0.0 < $1.0 }
         guard valid.count >= 2, deltas.count >= 2 else { return nil }
 
         var mat: [[Double]] = []
         var all: [Double] = []
-        for (_, cells) in valid {
+        for (_, _, cells) in valid {
             var row = [Double?](repeating: nil, count: deltas.count)
             for j in deltas.indices where j < cells.count {
                 if let iv = cells[j].iv, iv.isFinite { row[j] = iv }
@@ -59,7 +62,8 @@ struct Surface3DView: NSViewRepresentable {
             all += filled.filter { $0 > 0 }
         }
         let lo = all.min() ?? 0, hi = all.max() ?? 1
-        return Grid(xs: deltas, ts: valid.map(\.0), iv: mat, lo: lo, hi: max(hi, lo + 1e-6))
+        return Grid(xs: deltas, ts: valid.map(\.0), labels: valid.map(\.1),
+                    iv: mat, lo: lo, hi: max(hi, lo + 1e-6))
     }
 
     // MARK: scene
@@ -67,16 +71,96 @@ struct Surface3DView: NSViewRepresentable {
     private func scene() -> SCNScene {
         let s = SCNScene()
         guard let g = grid() else { return s }
+        s.rootNode.addChildNode(axisFrame(g))
         s.rootNode.addChildNode(surfaceNode(g))
         s.rootNode.addChildNode(wireNode(g))
         let cam = SCNNode()
         cam.camera = SCNCamera()
-        cam.camera!.fieldOfView = 40
-        cam.position = SCNVector3(2.6, 2.1, 3.0)
-        cam.look(at: SCNVector3(0, 0.35, 0))
+        cam.camera!.fieldOfView = 42
+        cam.position = SCNVector3(3.2, 2.6, 3.7)
+        cam.look(at: SCNVector3(0, 0.45, 0))
         s.rootNode.addChildNode(cam)
         return s
     }
+
+    private let yMax = 1.2
+
+    /// Axis box: floor grid, back/left IV walls, emphasised X/Y/Z axes, tick
+    /// labels (Δ, IV %, expiries) and axis titles — so it reads as a 3D chart.
+    private func axisFrame(_ g: Grid) -> SCNNode {
+        let root = SCNNode()
+        let grid = NSColor.white.withAlphaComponent(0.14)
+        let axis = NSColor.white.withAlphaComponent(0.40)
+
+        // floor grid (y = 0)
+        for d in stride(from: 0.0, through: 1.0, by: 0.25) {
+            root.addChildNode(line(vec(d * 2 - 1, 0, -1), vec(d * 2 - 1, 0, 1), grid))
+        }
+        for k in 0...4 {
+            let z = Double(k) / 4 * 2 - 1
+            root.addChildNode(line(vec(-1, 0, z), vec(1, 0, z), grid))
+        }
+        // IV gridlines on the back (z=-1) and left (x=-1) walls
+        for k in 0...3 {
+            let y = Double(k) / 3 * yMax
+            root.addChildNode(line(vec(-1, y, -1), vec(1, y, -1), grid))
+            root.addChildNode(line(vec(-1, y, -1), vec(-1, y, 1), grid))
+        }
+        // emphasised axes: delta along the front-bottom, tenor along the left-
+        // bottom, IV up the back-left vertical edge (kept on separate edges).
+        root.addChildNode(line(vec(-1, 0, 1), vec(1, 0, 1), axis))      // X — delta (front)
+        root.addChildNode(line(vec(-1, 0, 1), vec(-1, 0, -1), axis))    // Z — tenor (left)
+        root.addChildNode(line(vec(-1, 0, -1), vec(-1, yMax, -1), axis))  // Y — IV (back-left)
+
+        // X — delta: front-bottom edge
+        for d in [0.0, 0.5, 1.0] {
+            root.addChildNode(label(d == 0 ? "0" : (d == 1 ? "1.0" : "0.5"), vec(d * 2 - 1, -0.08, 1.16)))
+        }
+        root.addChildNode(label("Δ call", vec(0.35, -0.22, 1.4), 0.14))
+
+        // Y — IV: back-left vertical edge
+        for k in 0...2 {
+            let frac = Double(k) / 2
+            root.addChildNode(label(pct(g.lo + frac * (g.hi - g.lo)), vec(-1.18, frac * yMax, -1.12)))
+        }
+        root.addChildNode(label("IV %", vec(-1.2, yMax + 0.16, -1.12), 0.14))
+
+        // Z — tenor: left-bottom edge running into depth
+        root.addChildNode(label(short(g.labels.first ?? ""), vec(-1.34, -0.1, 1.0)))
+        root.addChildNode(label(short(g.labels.last ?? ""), vec(-1.34, -0.1, -1.0)))
+        root.addChildNode(label("срок", vec(-1.62, -0.22, 0), 0.14))
+        return root
+    }
+
+    private func line(_ a: SCNVector3, _ b: SCNVector3, _ color: NSColor, _ r: CGFloat = 0.005) -> SCNNode {
+        let dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z
+        let len = CGFloat(sqrt(Double(dx * dx + dy * dy + dz * dz)))
+        let cyl = SCNCylinder(radius: r, height: max(len, 1e-4))
+        let m = SCNMaterial(); m.diffuse.contents = color; m.lightingModel = .constant
+        cyl.materials = [m]
+        let node = SCNNode(geometry: cyl)
+        node.position = SCNVector3((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2)
+        node.look(at: b, up: SCNVector3(0, 1, 0), localFront: SCNVector3(0, 1, 0))
+        return node
+    }
+
+    private func label(_ s: String, _ pos: SCNVector3, _ size: CGFloat = 0.1) -> SCNNode {
+        let t = SCNText(string: s, extrusionDepth: 0)
+        t.font = NSFont.systemFont(ofSize: 1)
+        t.flatness = 0.3
+        let m = SCNMaterial(); m.diffuse.contents = NSColor.white.withAlphaComponent(0.8); m.lightingModel = .constant
+        t.materials = [m]
+        let n = SCNNode(geometry: t)
+        n.scale = SCNVector3(size, size, size)
+        let (lo, hi) = t.boundingBox
+        n.pivot = SCNMatrix4MakeTranslation((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, 0)
+        n.position = pos
+        n.constraints = [SCNBillboardConstraint()]
+        return n
+    }
+
+    private func pct(_ v: Double) -> String { "\(Int((v * 100).rounded()))%" }
+    private func short(_ s: String) -> String { s.count >= 5 ? String(s.suffix(5)) : s }
 
     private func vec(_ x: Double, _ y: Double, _ z: Double) -> SCNVector3 {
         SCNVector3(CGFloat(x), CGFloat(y), CGFloat(z))
