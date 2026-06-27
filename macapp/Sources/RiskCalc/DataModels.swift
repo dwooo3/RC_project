@@ -592,6 +592,39 @@ struct VolSurface: Decodable, Sendable {
     let diagnostics: VolDiagnostics?
 }
 
+// MARK: - Raw data browser + data dictionary
+
+struct RawTableList: Decodable, Sendable { let tables: [RawTableInfo] }
+
+struct RawTableInfo: Decodable, Sendable, Identifiable {
+    let name: String
+    let rows: Int
+    var id: String { name }
+}
+
+struct RawTable: Decodable, Sendable {
+    let table: String
+    let columns: [String]
+    let rows: [[String]]
+    let count: Int
+    let shown: Int
+}
+
+struct DataDictionary: Decodable, Sendable { let tables: [DictTable] }
+
+struct DictTable: Decodable, Sendable, Identifiable {
+    let table: String
+    let fields: [DictField]
+    var id: String { table }
+}
+
+struct DictField: Decodable, Sendable, Identifiable {
+    let name: String
+    let type: String
+    let meaning: String
+    var id: String { name }
+}
+
 // MARK: - Data health
 
 struct DataHealth: Decodable, Sendable {

@@ -8,7 +8,7 @@ struct DataControlsScreen: View {
     @State private var tab = "health"
 
     private let tabs: [(String, String)] = [
-        ("health", "Качество"),
+        ("health", "Качество"), ("tables", "Таблицы"), ("dictionary", "Словарь"),
     ]
 
     var body: some View {
@@ -22,8 +22,10 @@ struct DataControlsScreen: View {
                 Divider()
             }
             switch tab {
-            case "health": DataHealthView()
-            default:       DataHealthView()
+            case "health":     DataHealthView()
+            case "tables":     RawDataView()
+            case "dictionary": DataDictionaryView()
+            default:           DataHealthView()
             }
         }
         .navigationTitle("Контроль данных")

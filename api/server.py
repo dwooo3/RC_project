@@ -34,6 +34,7 @@ from api import (
     market_entity,
     marketdata,
     payloads,
+    rawdata,
     realbonds,
     timeseries,
     volsurface,
@@ -264,6 +265,21 @@ def md_overview() -> dict:
 @app.get("/md/health")
 def md_health() -> dict:
     return jsonable(datahealth.health(CONTEXT))
+
+
+@app.get("/md/raw/tables")
+def md_raw_tables() -> dict:
+    return jsonable(rawdata.tables(CONTEXT))
+
+
+@app.get("/md/raw/dictionary")
+def md_raw_dictionary() -> dict:
+    return jsonable(rawdata.dictionary(CONTEXT))
+
+
+@app.get("/md/raw/{table}")
+def md_raw_table(table: str, limit: int = 200) -> dict:
+    return jsonable(rawdata.rows(CONTEXT, table, limit))
 
 
 @app.get("/md/volsurface")

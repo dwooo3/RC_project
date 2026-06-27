@@ -172,6 +172,17 @@ actor BridgeClient {
 
     func dataHealth() async throws -> DataHealth { try await get("md/health") }
 
+    func rawTables() async throws -> RawTableList { try await get("md/raw/tables") }
+    func dataDictionary() async throws -> DataDictionary { try await get("md/raw/dictionary") }
+
+    func rawTable(_ name: String, limit: Int = 200) async throws -> RawTable {
+        var comps = URLComponents(url: base.appending(path: "md/raw/\(name)"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "limit", value: "\(limit)")]
+        let (data, response) = try await session.data(from: comps.url!)
+        try Self.check(response, data)
+        return try JSONDecoder().decode(RawTable.self, from: data)
+    }
+
     func volSurfaceList() async throws -> VolSurfaceList { try await get("md/volsurface") }
 
     func volSurface(underlying: String) async throws -> VolSurface {

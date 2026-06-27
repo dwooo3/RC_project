@@ -555,6 +555,23 @@ class MarketDataDB:
         sql += " ORDER BY issuer_ru, secid"
         return self._query(sql, tuple(params))
 
+    def table_columns(self, table: str) -> list[dict]:
+        if not table.isidentifier():
+            return []
+        return [{"name": r["name"], "type": r["type"]}
+                for r in self._query(f"PRAGMA table_info({table})")]
+
+    def table_count(self, table: str) -> int:
+        if not table.isidentifier():
+            return 0
+        row = self._query_one(f"SELECT COUNT(*) AS n FROM {table}")
+        return int(row["n"]) if row else 0
+
+    def table_rows(self, table: str, limit: int = 200) -> list[dict]:
+        if not table.isidentifier():
+            return []
+        return self._query(f"SELECT * FROM {table} LIMIT {int(limit)}")
+
     def count_instrument_refs(self, category, *, active_only=False) -> int:
         sql = f"SELECT COUNT(*) AS n FROM instrument_ref WHERE category={self.ph}"
         if active_only:
