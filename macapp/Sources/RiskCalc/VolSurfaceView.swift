@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Charts
 import Observation
 
 /// Volatility-surface browser: underlyings (1/3) + the calibrated SABR surface
@@ -115,6 +116,7 @@ struct VolSurfaceView: View {
                 } else if let surf = vm.surface, !surf.expiries.isEmpty {
                     surfacePlot
                     if let d = surf.diagnostics { fitCaption(d) }
+                    atmTermStructure(surf)
                     fullTable(surf)
                 } else {
                     Text("Нет данных").font(.caption).foregroundStyle(.secondary).frame(height: 120)
@@ -142,6 +144,36 @@ struct VolSurfaceView: View {
                 } else {
                     Text("График недоступен").font(.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, minHeight: 200)
+                }
+            }
+        }
+    }
+
+    // MARK: ATM term structure (ATM IV vs time to expiry)
+
+    private func atmTermStructure(_ surf: VolSurface) -> some View {
+        let pts = surf.expiries.compactMap { e -> (t: Double, iv: Double, exp: String)? in
+            guard let t = e.t, let a = e.atmIv else { return nil }
+            return (t, a * 100, e.expiry)
+        }.sorted { $0.t < $1.t }
+        return GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s3) {
+                BlockTitle("ATM срочная структура", icon: "chart.xyaxis.line")
+                if pts.count >= 2 {
+                    Chart {
+                        ForEach(pts, id: \.exp) { p in
+                            LineMark(x: .value("Срок", p.t), y: .value("ATM IV", p.iv))
+                                .foregroundStyle(Theme.accent).lineStyle(.init(lineWidth: 2.2))
+                                .interpolationMethod(.catmullRom)
+                            PointMark(x: .value("Срок", p.t), y: .value("ATM IV", p.iv))
+                                .foregroundStyle(Theme.accent).symbolSize(28)
+                        }
+                    }
+                    .chartXAxisLabel("Срок, лет").chartYAxisLabel("ATM IV %")
+                    .frame(height: 200)
+                } else {
+                    Text("Недостаточно экспираций").font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 80)
                 }
             }
         }

@@ -141,6 +141,7 @@ struct MarketScreen: View {
     @State private var vm = MarketBrowserViewModel()
     @State private var group = "overview"
     @State private var instrument = "bonds"
+    @State private var curveType = "rates"
 
     // Doc structure: Market Data is a market-data showcase grouped as
     // Overview · Instruments · Curves · Volatility · History (control/quality
@@ -240,11 +241,56 @@ struct MarketScreen: View {
 
     // MARK: curves
 
+    // Classify the snapshot's curves into the doc's families (Rates / FX Forwards
+    // / Inflation / Credit / Funding) by id, so Curves gets a sub-tab strip.
+    private let curveTypes: [(String, String)] = [
+        ("rates", "Ставки"), ("fxfwd", "FX-форварды"), ("inflation", "Инфляция"),
+        ("credit", "Кредит"), ("funding", "Фондирование"),
+    ]
+
+    private func curveTypeOf(_ id: String) -> String {
+        let u = id.uppercased()
+        if u.contains("FXFWD") { return "fxfwd" }
+        if u.contains("REALCURVE") || u.contains("OFZIN") || u.contains("INFL") || u.contains("CPI") || u.contains("LINKER") { return "inflation" }
+        if u.contains("CORP") || u.contains("CDS") || u.contains("SPREAD") || u.contains("RATING") || u.contains("ISSUER") { return "credit" }
+        if u.contains("FUNDING") || u.contains("REPO") || u.contains("COLLAT") || u.hasPrefix("TP_") { return "funding" }
+        return "rates"
+    }
+
+    private var presentCurveTypes: [(String, String)] {
+        let present = Set(vm.curves.map { curveTypeOf($0.id) })
+        return curveTypes.filter { present.contains($0.0) }
+    }
+
+    private func curvesOfType(_ t: String) -> [CurveSeries] {
+        vm.curves.filter { curveTypeOf($0.id) == t }
+    }
+
     @ViewBuilder
     private var curvesSection: some View {
+        if presentCurveTypes.count > 1 {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Theme.s2) {
+                    ForEach(presentCurveTypes, id: \.0) { t in
+                        let on = curveType == t.0
+                        Button {
+                            curveType = t.0
+                            if let first = curvesOfType(t.0).first { vm.selectedCurveID = first.id }
+                        } label: {
+                            Text(t.1).font(.system(size: 12, weight: on ? .semibold : .regular))
+                                .foregroundStyle(on ? Theme.accent : .secondary)
+                                .padding(.horizontal, Theme.s3).padding(.vertical, 5)
+                                .background(on ? Theme.accent.opacity(0.16) : Color.gray.opacity(0.12),
+                                            in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
         HStack {
             Picker("Curve", selection: $vm.selectedCurveID) {
-                ForEach(vm.curves) { Text($0.label).tag($0.id) }
+                ForEach(curvesOfType(curveType)) { Text($0.label).tag($0.id) }
             }
             .labelsHidden().fixedSize()
             Spacer()
