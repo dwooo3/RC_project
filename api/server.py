@@ -256,6 +256,11 @@ def md_history(secid: str, market: str = "bonds", range: str = "5Y") -> dict:
     return jsonable(market_entity.history(CONTEXT, secid, market=market, rng=range))
 
 
+@app.get("/md/overview")
+def md_overview() -> dict:
+    return jsonable(market_entity.overview(CONTEXT))
+
+
 @app.get("/md/health")
 def md_health() -> dict:
     return jsonable(datahealth.health(CONTEXT))

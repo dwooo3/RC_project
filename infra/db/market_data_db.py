@@ -555,6 +555,17 @@ class MarketDataDB:
         sql += " ORDER BY issuer_ru, secid"
         return self._query(sql, tuple(params))
 
+    def count_instrument_refs(self, category, *, active_only=False) -> int:
+        sql = f"SELECT COUNT(*) AS n FROM instrument_ref WHERE category={self.ph}"
+        if active_only:
+            sql += " AND is_active=1"
+        row = self._query_one(sql, (category,))
+        return int(row["n"]) if row else 0
+
+    def list_commodity_assets(self) -> list[str]:
+        return [r["asset"] for r in self._query(
+            "SELECT DISTINCT asset FROM commodity_quotes ORDER BY asset")]
+
     def futures_chain(self, asset_code) -> list[dict]:
         return self._query(
             f"SELECT * FROM instrument_ref WHERE asset_code={self.ph} ORDER BY last_trade_date",

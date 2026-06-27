@@ -741,9 +741,33 @@ func mdMarket(_ category: String) -> String {
     switch category {
     case "equities": return "shares"
     case "bonds": return "bonds"
-    case "futures", "options": return "forts"
-    default: return category
+    case "futures", "options", "commodities": return "forts"
+    default: return category          // "indices" → time_series, "fx" → fx
     }
+}
+
+// MARK: - Market Data overview (GET /md/overview)
+
+struct MDOverview: Decodable, Sendable {
+    let available: Bool
+    let asOf: String?
+    let source: String?
+    let tiles: [OverviewTile]?
+    let fx: [OverviewFX]?
+    enum CodingKeys: String, CodingKey { case available, source, tiles, fx; case asOf = "as_of" }
+}
+
+struct OverviewTile: Decodable, Sendable, Identifiable {
+    let key: String
+    let label: String
+    let count: Int
+    var id: String { key }
+}
+
+struct OverviewFX: Decodable, Sendable, Identifiable {
+    let pair: String
+    let rate: Double
+    var id: String { pair }
 }
 
 struct MDDividend: Decodable, Sendable, Identifiable {

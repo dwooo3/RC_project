@@ -139,14 +139,20 @@ final class MarketBrowserViewModel {
 
 struct MarketScreen: View {
     @State private var vm = MarketBrowserViewModel()
-    @State private var category = "bonds"
+    @State private var group = "overview"
+    @State private var instrument = "bonds"
 
-    // New category set (instrument-entity model). Bonds/Equities/Futures/Options/FX
-    // route to the master/detail entity browser; Curves/Vol surface keep the
-    // curve view for now (refined later).
-    private let categories: [(String, String)] = [
+    // Doc structure: Market Data is a market-data showcase grouped as
+    // Overview · Instruments · Curves · Volatility · History (control/quality
+    // lives in the separate Data Controls section).
+    private let groups: [(String, String)] = [
+        ("overview", "Overview"), ("instruments", "Instruments"),
+        ("curves", "Curves"), ("volatility", "Volatility"), ("history", "History"),
+    ]
+    private let instruments: [(String, String)] = [
         ("bonds", "Bonds"), ("equities", "Equities"), ("futures", "Futures"),
-        ("options", "Options"), ("fx", "FX"), ("curves", "Curves"), ("vols", "Vol surface"),
+        ("options", "Options"), ("indices", "Indices"), ("fx", "FX"),
+        ("commodities", "Commodities"),
     ]
 
     var body: some View {
@@ -157,6 +163,7 @@ struct MarketScreen: View {
         }
         .navigationTitle("Market Data")
         .task { if vm.snapshots.isEmpty { await vm.start() } }
+        .onChange(of: group) { _, g in if g == "history" { vm.changeSection("history") } }
     }
 
     private var header: some View {
@@ -165,17 +172,39 @@ struct MarketScreen: View {
                 Text("данные на \(s.valuationDate)").font(.caption2).foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            Picker("Category", selection: $category) {
-                ForEach(categories, id: \.0) { Text($0.1).tag($0.0) }
+            Picker("Group", selection: $group) {
+                ForEach(groups, id: \.0) { Text($0.1).tag($0.0) }
             }
             .pickerStyle(.segmented).labelsHidden()
+            if group == "instruments" {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: Theme.s2) {
+                        ForEach(instruments, id: \.0) { item in
+                            let on = instrument == item.0
+                            Button { instrument = item.0 } label: {
+                                Text(item.1)
+                                    .font(.system(size: 12, weight: on ? .semibold : .regular))
+                                    .foregroundStyle(on ? Theme.accent : .secondary)
+                                    .padding(.horizontal, Theme.s3).padding(.vertical, 5)
+                                    .background(on ? Theme.accent.opacity(0.16) : Color.gray.opacity(0.12),
+                                                in: RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
         }
         .padding(.horizontal, Theme.s5).padding(.top, Theme.s3).padding(.bottom, Theme.s3)
     }
 
     @ViewBuilder
     private var content: some View {
-        switch category {
+        switch group {
+        case "overview":
+            OverviewView(onSelect: handleOverviewSelect)
+        case "instruments":
+            MarketEntityView(category: instrument).id(instrument)   // fresh VM per category
         case "curves":
             ScreenScaffold {
                 if vm.serverDown {
@@ -184,10 +213,28 @@ struct MarketScreen: View {
                     curvesSection
                 }
             }
-        case "vols":
+        case "volatility":
             VolSurfaceView()
+        case "history":
+            ScreenScaffold {
+                if vm.serverDown {
+                    ContentUnavailableView("Bridge offline", systemImage: "bolt.horizontal.circle").frame(height: 200)
+                } else {
+                    historySection
+                }
+            }
         default:
-            MarketEntityView(category: category).id(category)   // fresh VM per category
+            EmptyView()
+        }
+    }
+
+    private func handleOverviewSelect(_ key: String) {
+        switch key {
+        case "curves": group = "curves"
+        case "vols":   group = "volatility"
+        case "bonds", "equities", "futures", "options", "indices", "fx", "commodities":
+            instrument = key; group = "instruments"
+        default: break
         }
     }
 

@@ -151,6 +151,8 @@ actor BridgeClient {
         return try JSONDecoder().decode(TSSeriesData.self, from: data)
     }
 
+    func mdOverview() async throws -> MDOverview { try await get("md/overview") }
+
     func mdList(category: String) async throws -> MDListResponse {
         try await get("md/list/\(category)")
     }
