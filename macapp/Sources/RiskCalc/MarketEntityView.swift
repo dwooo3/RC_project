@@ -96,7 +96,19 @@ struct MarketEntityView: View {
 
     private var listPane: some View {
         VStack(spacing: 0) {
-            TextField("Поиск…", text: $vm.search).textFieldStyle(.roundedBorder).padding(Theme.s2)
+            HStack(spacing: Theme.s2) {
+                TextField("Поиск…", text: $vm.search).textFieldStyle(.roundedBorder)
+                Menu {
+                    Button("Список (CSV)") { exportList() }
+                    Button("История выбранного (CSV)") { exportHistory() }
+                        .disabled(vm.bars.isEmpty)
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .menuStyle(.borderlessButton).fixedSize()
+                .help("Экспорт в CSV")
+            }
+            .padding(Theme.s2)
             Divider()
             if vm.serverDown {
                 ContentUnavailableView("Bridge offline", systemImage: "bolt.horizontal.circle").frame(maxHeight: .infinity)
@@ -138,6 +150,27 @@ struct MarketEntityView: View {
             }
         }
         .padding(.horizontal, Theme.s2).padding(.vertical, 6).contentShape(Rectangle())
+    }
+
+    // MARK: export
+
+    private func num(_ v: Double?) -> String { v.map { String($0) } ?? "" }
+
+    private func exportList() {
+        let rows = vm.filtered.map { i in
+            [i.secid, i.issuerRu ?? "", i.isin ?? "", num(i.last), num(i.changePct), i.asOf ?? ""]
+        }
+        CSVExport.save(suggestedName: "\(category)_list",
+                       header: ["SecID", "Issuer", "ISIN", "Last", "Change%", "AsOf"], rows: rows)
+    }
+
+    private func exportHistory() {
+        guard !vm.bars.isEmpty else { return }
+        let rows = vm.bars.map { b in
+            [b.date, num(b.open), num(b.high), num(b.low), String(b.close), num(b.volume), num(b.yld)]
+        }
+        CSVExport.save(suggestedName: "\(vm.selectedID ?? category)_history",
+                       header: ["Date", "Open", "High", "Low", "Close", "Volume", "Yield"], rows: rows)
     }
 
     // MARK: detail (2/3)
