@@ -8,6 +8,12 @@ let package = Package(
         .executableTarget(
             name: "RiskCalc",
             path: "Sources/RiskCalc"
-        )
+        ),
+        .testTarget(
+            name: "RiskCalcTests",
+            dependencies: ["RiskCalc"],
+            path: "Tests/RiskCalcTests",
+            resources: [.copy("Fixtures")]
+        ),
     ]
 )
