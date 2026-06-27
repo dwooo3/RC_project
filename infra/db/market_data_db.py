@@ -33,21 +33,21 @@ _TABLES = {
          "list_level", "issuer", "sector", "static_json"], ["secid"]),
     "market_data_snapshots": (
         ["snapshot_id", "valuation_date", "source", "quality", "created_at",
-         "fetch_ts", "iss_request_urls", "metadata"], ["snapshot_id"]),
-    "yield_curves": (["snapshot_id", "curve_id", "method", "nss_params", "as_of"],
+         "fetch_ts", "iss_request_urls", "metadata", "snapshot_key"], ["snapshot_id"]),
+    "yield_curves": (["snapshot_id", "curve_id", "method", "nss_params", "as_of", "snapshot_key"],
                      ["snapshot_id", "curve_id"]),
-    "curve_points": (["snapshot_id", "curve_id", "tenor", "zero_rate", "discount_factor"],
+    "curve_points": (["snapshot_id", "curve_id", "tenor", "zero_rate", "discount_factor", "snapshot_key"],
                      ["snapshot_id", "curve_id", "tenor"]),
-    "fx_rates": (["snapshot_id", "pair", "rate", "source", "trade_time"],
+    "fx_rates": (["snapshot_id", "pair", "rate", "source", "trade_time", "snapshot_key"],
                  ["snapshot_id", "pair"]),
     "bond_quotes": (["snapshot_id", "secid", "clean_price", "dirty_price", "wap_price",
-                     "accruedint", "ytm", "volume", "board"], ["snapshot_id", "secid"]),
-    "equity_quotes": (["snapshot_id", "secid", "last", "prevprice", "board", "volume"],
+                     "accruedint", "ytm", "volume", "board", "snapshot_key"], ["snapshot_id", "secid"]),
+    "equity_quotes": (["snapshot_id", "secid", "last", "prevprice", "board", "volume", "snapshot_key"],
                       ["snapshot_id", "secid"]),
-    "index_values": (["snapshot_id", "indexid", "value", "trade_date"],
+    "index_values": (["snapshot_id", "indexid", "value", "trade_date", "snapshot_key"],
                      ["snapshot_id", "indexid"]),
     "time_series": (["factor_id", "dt", "value", "kind"], ["factor_id", "dt", "kind"]),
-    "vol_points": (["snapshot_id", "underlying", "expiry", "strike", "iv"],
+    "vol_points": (["snapshot_id", "underlying", "expiry", "strike", "iv", "snapshot_key"],
                    ["snapshot_id", "underlying", "expiry", "strike"]),
     "bond_coupons": (["secid", "coupon_date", "value", "value_prc"],
                      ["secid", "coupon_date"]),
@@ -56,7 +56,7 @@ _TABLES = {
     "bond_offers": (["secid", "offer_date", "price", "offer_type"],
                     ["secid", "offer_date"]),
     "commodity_quotes": (["snapshot_id", "asset", "secid", "expiry", "settle",
-                          "open_interest", "volume"],
+                          "open_interest", "volume", "snapshot_key"],
                          ["snapshot_id", "secid"]),
     "dividends": (["secid", "registry_date", "value", "currency"],
                   ["secid", "registry_date"]),
@@ -68,7 +68,7 @@ _TABLES = {
     # Option chain quotes (current snapshot, one row per option contract).
     "option_quotes": (
         ["secid", "asset_code", "expiry", "strike", "opt_type", "last", "settle",
-         "oi", "volume", "central_strike", "underlying"],
+         "oi", "volume", "central_strike", "underlying", "snapshot_key"],
         ["secid"]),
     # Full per-instrument reference (latest ISS description + day stats).
     "instrument_ref": (
@@ -77,6 +77,12 @@ _TABLES = {
          "is_active", "last", "change_pct", "as_of", "day_json", "ref_json"],
         ["secid"]),
 }
+
+
+# Snapshot-bound fact tables that carry a lightweight integer snapshot_key
+# alongside the text snapshot_id (additive surrogate; see _migrate).
+_SNAPSHOT_KEYED = ("yield_curves", "curve_points", "fx_rates", "bond_quotes",
+                   "equity_quotes", "index_values", "vol_points", "commodity_quotes")
 
 
 def _schema_statements(dialect: str) -> list[str]:
@@ -180,6 +186,77 @@ class MarketDataDB:
     def init_schema(self) -> None:
         for stmt in _schema_statements(self.dialect):
             self._exec(stmt)
+        self._migrate()
+
+    # -- additive migrations (idempotent, non-destructive) ----------------
+    def _has_column(self, table: str, col: str) -> bool:
+        return any(c["name"] == col for c in self.table_columns(table))
+
+    def _add_column(self, table: str, col: str, decl: str) -> None:
+        if not self._has_column(table, col):
+            self._exec(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+
+    def _migrate(self) -> None:
+        """Lightweight integer snapshot_key surrogate (recommendations §6/§34).
+
+        Adds snapshot_key to market_data_snapshots and the snapshot-bound fact
+        tables, backfilled from snapshot_id. Fully additive — snapshot_id stays,
+        every existing getter is unchanged — and idempotent (only NULLs filled),
+        so it is safe to run on every connect.
+        """
+        if self.dialect != "sqlite":
+            return
+        # 1. surrogate key on the snapshot manifest
+        self._add_column("market_data_snapshots", "snapshot_key", "INTEGER")
+        pending = self._query(
+            "SELECT snapshot_id FROM market_data_snapshots WHERE snapshot_key IS NULL "
+            "ORDER BY valuation_date, snapshot_id")
+        if pending:
+            base = (self._query_one(
+                "SELECT COALESCE(MAX(snapshot_key), 0) AS m FROM market_data_snapshots") or {}).get("m", 0)
+            for i, r in enumerate(pending, start=1):
+                self._exec("UPDATE market_data_snapshots SET snapshot_key=? WHERE snapshot_id=?",
+                           (base + i, r["snapshot_id"]))
+        self._exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_snap_key "
+                   "ON market_data_snapshots(snapshot_key)")
+        # 2. snapshot_key on the snapshot-bound fact tables (join-backfilled)
+        for t in _SNAPSHOT_KEYED:
+            self._add_column(t, "snapshot_key", "INTEGER")
+            self._exec(f"UPDATE {t} SET snapshot_key=(SELECT s.snapshot_key "
+                       f"FROM market_data_snapshots s WHERE s.snapshot_id={t}.snapshot_id) "
+                       f"WHERE snapshot_key IS NULL")
+            self._exec(f"CREATE INDEX IF NOT EXISTS idx_{t}_snapkey ON {t}(snapshot_key)")
+        # 3. option_quotes is the *current* chain → stamp the latest snapshot_key
+        self._add_column("option_quotes", "snapshot_key", "INTEGER")
+        latest = self._latest_snapshot_key()
+        if latest is not None:
+            self._exec("UPDATE option_quotes SET snapshot_key=? WHERE snapshot_key IS NULL", (latest,))
+        self._exec("CREATE INDEX IF NOT EXISTS idx_option_quotes_snapkey ON option_quotes(snapshot_key)")
+
+    def _resolve_snapshot_key(self, snapshot_id) -> int:
+        row = self._query_one(
+            f"SELECT snapshot_key FROM market_data_snapshots WHERE snapshot_id={self.ph}", (snapshot_id,))
+        if row and row.get("snapshot_key") is not None:
+            return int(row["snapshot_key"])
+        return (self._latest_snapshot_key() or 0) + 1          # new snapshot → next key
+
+    def _latest_snapshot_key(self):
+        row = self._query_one("SELECT MAX(snapshot_key) AS k FROM market_data_snapshots")
+        return int(row["k"]) if row and row.get("k") is not None else None
+
+    def _with_snapshot_key(self, table: str, row: dict) -> dict:
+        """Stamp snapshot_key from snapshot_id (snapshot-bound tables) or the latest
+        snapshot (option_quotes = current chain) so new writes stay consistent."""
+        if table in _SNAPSHOT_KEYED and row.get("snapshot_id"):
+            return {**row, "snapshot_key": self._resolve_snapshot_key(row["snapshot_id"])}
+        if table == "option_quotes":
+            return {**row, "snapshot_key": self._latest_snapshot_key()}
+        return row
+
+    def snapshot_key_for(self, snapshot_id) -> int | None:
+        row = self._query_one(
+            f"SELECT snapshot_key FROM market_data_snapshots WHERE snapshot_id={self.ph}", (snapshot_id,))
+        return int(row["snapshot_key"]) if row and row.get("snapshot_key") is not None else None
 
     def close(self) -> None:
         self.conn.close()
@@ -199,6 +276,7 @@ class MarketDataDB:
         return f"INSERT OR REPLACE INTO {table} ({cols}) VALUES ({vals})"
 
     def _upsert(self, table: str, row: dict) -> None:
+        row = self._with_snapshot_key(table, row)
         columns, conflict = _TABLES[table]
         sql = self._upsert_sql(table, columns, conflict)
         self._exec(sql, [row.get(c) for c in columns])
@@ -207,6 +285,8 @@ class MarketDataDB:
         if not rows:
             return
         columns, conflict = _TABLES[table]
+        if table in _SNAPSHOT_KEYED or table == "option_quotes":
+            rows = [self._with_snapshot_key(table, r) for r in rows]
         sql = self._upsert_sql(table, columns, conflict)
         self._execmany(sql, [[r.get(c) for c in columns] for r in rows])
 
@@ -244,11 +324,14 @@ class MarketDataDB:
     # -- writes ------------------------------------------------------------
     def save_snapshot_meta(self, *, snapshot_id, valuation_date, source, quality,
                            fetch_ts, iss_request_urls=None, metadata=None) -> None:
+        # Keep the snapshot's integer key stable across re-saves (INSERT OR REPLACE
+        # rewrites the row, so the surrogate must be carried explicitly).
         self._upsert("market_data_snapshots", {
             "snapshot_id": snapshot_id, "valuation_date": _iso(valuation_date),
             "source": source, "quality": quality, "created_at": datetime.now().isoformat(),
             "fetch_ts": _iso(fetch_ts), "iss_request_urls": json.dumps(iss_request_urls or []),
             "metadata": json.dumps(metadata or {}),
+            "snapshot_key": self._resolve_snapshot_key(snapshot_id),
         })
 
     def save_curve(self, snapshot_id, curve_id, *, method, nss_params, as_of, points) -> None:
