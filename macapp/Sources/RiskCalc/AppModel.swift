@@ -3,43 +3,46 @@ import Observation
 
 /// Top-level navigation sections (mirrors the desktop workspaces).
 enum AppSection: String, CaseIterable, Identifiable, Sendable {
-    case dashboard, portfolio, risk, market, pricing, governance, analytics
+    case dashboard, portfolio, risk, market, dataControls, pricing, governance, analytics
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .dashboard:  return "Dashboard"
-        case .portfolio:  return "Portfolio"
-        case .risk:       return "Risk"
-        case .market:     return "Market Data"
-        case .pricing:    return "Pricing"
-        case .governance: return "Governance"
-        case .analytics:  return "Analytics Lab"
+        case .dashboard:    return "Dashboard"
+        case .portfolio:    return "Portfolio"
+        case .risk:         return "Risk"
+        case .market:       return "Market Data"
+        case .dataControls: return "Контроль данных"
+        case .pricing:      return "Pricing"
+        case .governance:   return "Governance"
+        case .analytics:    return "Analytics Lab"
         }
     }
 
     var icon: String {
         switch self {
-        case .dashboard:  return "square.grid.2x2.fill"
-        case .portfolio:  return "briefcase.fill"
-        case .risk:       return "shield.lefthalf.filled"
-        case .market:     return "chart.line.uptrend.xyaxis"
-        case .pricing:    return "function"
-        case .governance: return "checkmark.seal.fill"
-        case .analytics:  return "flask.fill"
+        case .dashboard:    return "square.grid.2x2.fill"
+        case .portfolio:    return "briefcase.fill"
+        case .risk:         return "shield.lefthalf.filled"
+        case .market:       return "chart.line.uptrend.xyaxis"
+        case .dataControls: return "checklist"
+        case .pricing:      return "function"
+        case .governance:   return "checkmark.seal.fill"
+        case .analytics:    return "flask.fill"
         }
     }
 
     var subtitle: String {
         switch self {
-        case .dashboard:  return "Daily risk control tower"
-        case .portfolio:  return "Positions, exposures & P&L"
-        case .risk:       return "VaR, stress & decomposition"
-        case .market:     return "Live MOEX curves & quotes"
-        case .pricing:    return "Instrument valuation"
-        case .governance: return "Model registry & validation"
-        case .analytics:  return "Scenarios & what-if"
+        case .dashboard:    return "Daily risk control tower"
+        case .portfolio:    return "Positions, exposures & P&L"
+        case .risk:         return "VaR, stress & decomposition"
+        case .market:       return "Live MOEX curves & quotes"
+        case .dataControls: return "Качество и загрузка данных"
+        case .pricing:      return "Instrument valuation"
+        case .governance:   return "Model registry & validation"
+        case .analytics:    return "Scenarios & what-if"
         }
     }
 }
@@ -166,6 +169,8 @@ final class AppModel {
             if force || analytics.value == nil { await loadAnalytics() }
         case .pricing:
             break   // PricingView manages its own state
+        case .dataControls:
+            break   // DataControlsScreen manages its own state
         }
     }
 

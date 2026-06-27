@@ -147,7 +147,6 @@ struct MarketScreen: View {
     private let categories: [(String, String)] = [
         ("bonds", "Bonds"), ("equities", "Equities"), ("futures", "Futures"),
         ("options", "Options"), ("fx", "FX"), ("curves", "Curves"), ("vols", "Vol surface"),
-        ("health", "Качество"),
     ]
 
     var body: some View {
@@ -187,8 +186,6 @@ struct MarketScreen: View {
             }
         case "vols":
             VolSurfaceView()
-        case "health":
-            DataHealthView()
         default:
             MarketEntityView(category: category).id(category)   // fresh VM per category
         }

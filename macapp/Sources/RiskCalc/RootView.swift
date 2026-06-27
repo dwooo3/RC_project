@@ -88,6 +88,7 @@ struct RootView: View {
             case .portfolio:  PortfolioScreen(model: model)
             case .risk:       RiskScreen(model: model)
             case .market:     MarketScreen()
+            case .dataControls: DataControlsScreen()
             case .pricing:    PricingScreen()
             case .governance: GovernanceScreen(model: model)
             case .analytics:  AnalyticsScreen(model: model)
