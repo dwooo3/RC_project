@@ -66,6 +66,12 @@ def snapshot_quality_report(db, snapshot_id: str,
               if r.get("status") in ("error",) and r.get("error")]
 
     score = _completeness_score(checks)
+    status = "OK" if not alerts else ("WARN" if score >= 0.7 else "FAIL")
+    # Production-eligible only when the COMPUTED report passes (not just the
+    # snapshot's metadata `quality` field, which can read OK on a partial load)
+    # and the data comes from a real provider. WARN (e.g. stale) needs override.
+    source = str(meta.get("source", "?"))
+    is_demo = source.upper() in ("DEMO", "MANUAL")
     return {
         "snapshot_id": snapshot_id,
         "source": meta.get("source", "?"),
@@ -76,7 +82,9 @@ def snapshot_quality_report(db, snapshot_id: str,
         "checks": checks,
         "alerts": alerts,
         "ingest_errors": [f"{r['endpoint']}: {r['error'][:120]}" for r in errors[:8]],
-        "status": "OK" if not alerts else ("WARN" if score >= 0.7 else "FAIL"),
+        "status": status,
+        "is_demo": is_demo,
+        "production_eligible": status == "OK" and not is_demo,
     }
 
 

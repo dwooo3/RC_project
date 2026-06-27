@@ -108,6 +108,9 @@ def _schema_statements(dialect: str) -> list[str]:
         """CREATE TABLE IF NOT EXISTS equity_quotes (
             snapshot_id TEXT NOT NULL, secid TEXT NOT NULL, last REAL, prevprice REAL,
             board TEXT, volume REAL, PRIMARY KEY (snapshot_id, secid))""",
+        # DEPRECATED: index levels now live in `time_series` (kind='index'). Kept
+        # for backward compatibility with old snapshots; not written by current
+        # ingest and excluded from data-health completeness. Drop in a migration.
         """CREATE TABLE IF NOT EXISTS index_values (
             snapshot_id TEXT NOT NULL, indexid TEXT NOT NULL, value REAL, trade_date TEXT,
             PRIMARY KEY (snapshot_id, indexid))""",

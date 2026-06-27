@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from api import (
     catalog,
+    datahealth,
     history,
     ingest_job,
     instruments,
@@ -253,6 +254,11 @@ def md_instrument(category: str, secid: str) -> dict:
 @app.get("/md/history/{secid}")
 def md_history(secid: str, market: str = "bonds", range: str = "5Y") -> dict:
     return jsonable(market_entity.history(CONTEXT, secid, market=market, rng=range))
+
+
+@app.get("/md/health")
+def md_health() -> dict:
+    return jsonable(datahealth.health(CONTEXT))
 
 
 @app.get("/md/volsurface")

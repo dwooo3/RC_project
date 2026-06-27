@@ -592,6 +592,60 @@ struct VolSurface: Decodable, Sendable {
     let diagnostics: VolDiagnostics?
 }
 
+// MARK: - Data health
+
+struct DataHealth: Decodable, Sendable {
+    let available: Bool
+    let snapshotID: String?
+    let source: String?
+    let valuationDate: String?
+    let status: String?
+    let productionEligible: Bool?
+    let isDemo: Bool?
+    let completenessPct: Double?
+    let stalenessDays: Int?
+    let alerts: [String]?
+    let checks: DataHealthChecks?
+    let ingest: IngestCounts?
+    let failures: [IngestFailure]?
+
+    enum CodingKeys: String, CodingKey {
+        case available, source, status, alerts, checks, ingest, failures
+        case snapshotID = "snapshot_id"
+        case valuationDate = "valuation_date"
+        case productionEligible = "production_eligible"
+        case isDemo = "is_demo"
+        case completenessPct = "completeness_pct"
+        case stalenessDays = "staleness_days"
+    }
+}
+
+struct DataHealthChecks: Decodable, Sendable {
+    let curvesMissing: [String]?
+    let fxMissing: [String]?
+    let volPoints: Int?
+    let volUnderlyings: Int?
+    let bondQuotes: Int?
+    enum CodingKeys: String, CodingKey {
+        case curvesMissing = "curves_missing"
+        case fxMissing = "fx_missing"
+        case volPoints = "vol_points"
+        case volUnderlyings = "vol_underlyings"
+        case bondQuotes = "bond_quotes"
+    }
+}
+
+struct IngestCounts: Decodable, Sendable {
+    let ok: Int; let error: Int; let skipped: Int
+}
+
+struct IngestFailure: Decodable, Sendable, Identifiable {
+    let endpoint: String
+    let error: String
+    let at: String?
+    var id: String { "\(endpoint)#\(at ?? "")" }
+}
+
 struct VolDiagnostics: Decodable, Sendable {
     let fitModel: String?
     let nExpiries: Int?
