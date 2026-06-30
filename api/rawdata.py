@@ -10,10 +10,12 @@ from __future__ import annotations
 
 # Allow-list of browsable tables (matches the recommendations' Advanced/Raw list).
 TABLES: list[str] = [
-    "instrument_ref", "bond_quotes", "equity_quotes", "fx_rates", "yield_curves",
+    "instrument_ref", "instrument_versions", "bond_schedule_versions",
+    "bond_quotes", "equity_quotes", "fx_rates", "yield_curves",
     "curve_points", "vol_points", "option_quotes", "price_history", "bond_coupons",
     "bond_amortizations", "bond_offers", "commodity_quotes", "dividends",
     "time_series", "ingest_log",
+    "ref_currencies", "ref_boards", "ref_sources",
 ]
 
 # Curated business meanings for common fields (best-effort; unknown → "").
@@ -45,6 +47,10 @@ _MEANING: dict[str, str] = {
     "registry_date": "Дата фиксации реестра", "endpoint": "Точка загрузки (ingest)",
     "status": "Статус", "rows": "Загружено строк", "error": "Текст ошибки",
     "started_at": "Старт", "finished_at": "Финиш",
+    "code": "Код", "name": "Наименование", "market": "Рынок",
+    "version": "Версия", "valid_from": "Действует с", "valid_to": "Действует по",
+    "payload_hash": "Хеш содержимого", "n_coupons": "Купонов", "n_amort": "Амортизаций",
+    "n_offers": "Оферт",
 }
 
 

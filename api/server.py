@@ -262,6 +262,11 @@ def md_overview() -> dict:
     return jsonable(market_entity.overview(CONTEXT))
 
 
+@app.get("/md/refdata")
+def md_refdata() -> dict:
+    return jsonable(market_entity.refdata(CONTEXT))
+
+
 @app.get("/md/health")
 def md_health() -> dict:
     return jsonable(datahealth.health(CONTEXT))

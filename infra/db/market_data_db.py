@@ -188,7 +188,23 @@ def _schema_statements(dialect: str) -> list[str]:
             n_offers INTEGER, schedule_json TEXT, created_at TEXT,
             PRIMARY KEY (secid, version))""",
         "CREATE INDEX IF NOT EXISTS idx_bond_schedule_versions_open ON bond_schedule_versions (secid, valid_to)",
+        # Unified reference look-ups (§8): single source of truth for the codes
+        # used across the store. Seeded from existing data + kept current on ingest.
+        "CREATE TABLE IF NOT EXISTS ref_currencies (code TEXT PRIMARY KEY, name TEXT)",
+        "CREATE TABLE IF NOT EXISTS ref_boards (board TEXT PRIMARY KEY, market TEXT)",
+        "CREATE TABLE IF NOT EXISTS ref_sources (code TEXT PRIMARY KEY, name TEXT)",
     ]
+
+
+# Display names for the currency codes seen in the store (unknown → code).
+_CURRENCY_NAMES = {
+    "SUR": "Российский рубль", "RUB": "Российский рубль", "USD": "Доллар США",
+    "EUR": "Евро", "CNY": "Китайский юань", "GBP": "Фунт стерлингов",
+    "CHF": "Швейцарский франк", "JPY": "Японская иена", "HKD": "Гонконгский доллар",
+    "TRY": "Турецкая лира", "KZT": "Казахстанский тенге", "BYN": "Белорусский рубль",
+    "AED": "Дирхам ОАЭ", "GLD": "Золото", "SLV": "Серебро",
+}
+_SOURCE_NAMES = {"MOEX": "Московская биржа", "CBR": "Банк России"}
 
 
 class MarketDataDB:
@@ -234,6 +250,7 @@ class MarketDataDB:
         self._migrate_snapshot_key()
         self._migrate_instrument_versions()
         self._migrate_schedule_versions()
+        self._migrate_refdata()
 
     def _migrate_snapshot_key(self) -> None:
         # 1. surrogate key on the snapshot manifest
@@ -269,6 +286,35 @@ class MarketDataDB:
                            "(SELECT DISTINCT secid FROM instrument_versions)")
         for r in refs:
             self._record_instrument_version(r)
+
+    def _migrate_refdata(self) -> None:
+        """Seed the unified reference look-ups from existing data (idempotent)."""
+        for r in self._query("SELECT DISTINCT currency FROM instrument_ref WHERE currency IS NOT NULL"):
+            self._ref_currency(r["currency"])
+        for r in self._query("SELECT DISTINCT board, market FROM instrument_ref WHERE board IS NOT NULL"):
+            self._ref_board(r["board"], r.get("market"))
+        for code, name in _SOURCE_NAMES.items():
+            self._exec(f"INSERT OR IGNORE INTO ref_sources (code, name) VALUES ({self._placeholders(2)})",
+                       (code, name))
+
+    def _ref_currency(self, code) -> None:
+        if code:
+            self._exec(f"INSERT OR IGNORE INTO ref_currencies (code, name) VALUES ({self._placeholders(2)})",
+                       (code, _CURRENCY_NAMES.get(str(code), str(code))))
+
+    def _ref_board(self, board, market=None) -> None:
+        if board:
+            self._exec(f"INSERT OR IGNORE INTO ref_boards (board, market) VALUES ({self._placeholders(2)})",
+                       (board, market))
+
+    def list_ref_currencies(self) -> list[dict]:
+        return self._query("SELECT code, name FROM ref_currencies ORDER BY code")
+
+    def list_ref_boards(self) -> list[dict]:
+        return self._query("SELECT board, market FROM ref_boards ORDER BY board")
+
+    def list_ref_sources(self) -> list[dict]:
+        return self._query("SELECT code, name FROM ref_sources ORDER BY code")
 
     def _migrate_schedule_versions(self) -> None:
         """Seed version 1 for every bond that has a schedule but no version yet."""
@@ -709,6 +755,8 @@ class MarketDataDB:
 
     def save_instrument_ref(self, row: dict) -> None:
         self._record_instrument_version(row)        # version-on-change (before the upsert)
+        self._ref_currency(row.get("currency"))     # keep reference look-ups current
+        self._ref_board(row.get("board"), row.get("market"))
         self._upsert("instrument_ref", row)
 
     def _ref_hash(self, row: dict) -> str:

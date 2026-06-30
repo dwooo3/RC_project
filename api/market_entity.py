@@ -37,6 +37,15 @@ def list_instruments(ctx, category: str) -> dict:
     return {"category": category, "instruments": out, "count": len(out)}
 
 
+def refdata(ctx) -> dict:
+    """Unified reference look-ups (§8): currencies, boards, sources."""
+    db = ctx.market_db
+    if db is None:
+        return {"currencies": [], "boards": [], "sources": []}
+    return {"currencies": db.list_ref_currencies(), "boards": db.list_ref_boards(),
+            "sources": db.list_ref_sources()}
+
+
 def _commodity_futures(db) -> list[dict]:
     """Active futures whose asset_code is a commodity (per commodity_quotes)."""
     assets = set(db.list_commodity_assets())
