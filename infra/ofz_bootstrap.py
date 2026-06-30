@@ -83,10 +83,16 @@ def bootstrap_zero(bonds: list[dict], *, max_step: float = 0.02) -> list[tuple[f
     ``bonds``: ``[{'mat': T, 'dirty': P, 'cfs': [(t, cf)]}]`` (per 100 face).
     ``max_step``: reject a node whose zero jumps more than this (decimal) from
     the previous one — a stale/illiquid quote otherwise poisons the curve.
+
+    A node is also rejected if it would break discount-factor monotonicity
+    (DF = exp(-z·T) ticking *up* implies a negative forward rate — a noisy quote
+    on a steeply-inverted RUB front). This keeps the bootstrapped curve admissible
+    (``validate_curve_points`` passes) instead of failing the whole ingest step.
     """
     from scipy.optimize import brentq
 
     nodes: list[tuple[float, float]] = []              # (T, zero) solved, sorted
+    last_df: float | None = None
 
     def z_of(t: float, trial_T: float, trial_z: float) -> float:
         pillars = nodes + [(trial_T, trial_z)]
@@ -111,6 +117,10 @@ def bootstrap_zero(bonds: list[dict], *, max_step: float = 0.02) -> list[tuple[f
             continue
         if nodes and abs(z - nodes[-1][1]) > max_step:
             continue                                   # outlier — skip noisy bond
+        df = math.exp(-z * T)
+        if last_df is not None and df > last_df + 1e-9:
+            continue                                   # would break DF monotonicity (negative fwd)
         nodes.append((T, z))
+        last_df = df
 
     return [(T, z, math.exp(-z * T)) for T, z in nodes]
