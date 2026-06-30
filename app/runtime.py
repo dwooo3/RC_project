@@ -32,17 +32,28 @@ def db_path() -> str | None:
     return str(_DEFAULT_DB) if _DEFAULT_DB.exists() else None
 
 
+def market_mode():
+    """Operating contour from $RISKCALC_MODE (demo|research|production); default
+    research (silent demo fallback allowed). Production forbids silent fallback."""
+    from domain.market_data import MarketDataMode
+    try:
+        return MarketDataMode(os.environ.get("RISKCALC_MODE", "research").lower())
+    except ValueError:
+        return MarketDataMode.RESEARCH
+
+
 def market_service(refresh: bool = False) -> MarketDataService:
     """Process-cached MarketDataService bound to the real DB when available."""
     global _service
     if _service is not None and not refresh:
         return _service
     path = db_path()
+    mode = market_mode()
     if path:
         from infra.db.market_data_db import MarketDataDB
-        _service = MarketDataService(market_db=MarketDataDB(path))
+        _service = MarketDataService(market_db=MarketDataDB(path), mode=mode)
     else:
-        _service = MarketDataService()
+        _service = MarketDataService(mode=mode)
     return _service
 
 

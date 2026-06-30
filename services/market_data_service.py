@@ -7,10 +7,20 @@ import numpy as np
 
 from curves import russia
 from curves.yield_curve import YieldCurve
-from domain.market_data import MarketDataSnapshot, MarketDataSource, MarketDataStore
+from domain.market_data import (
+    MarketDataMode,
+    MarketDataSnapshot,
+    MarketDataSource,
+    MarketDataStore,
+)
 from infra.moex_iss.validation import (
     QUALITY_REJECTED, assess_quality, validate_curve_points, validate_fx,
 )
+
+
+class NoProductionMarketDataError(RuntimeError):
+    """Raised in production mode when no production-eligible snapshot is available
+    (instead of silently falling back to DEMO)."""
 
 
 class MarketDataProvider(Protocol):
@@ -149,9 +159,12 @@ class MarketDataService:
         store: MarketDataStore | None = None,
         providers: dict[MarketDataSource, MarketDataProvider] | None = None,
         market_db=None,
+        mode: MarketDataMode | str = MarketDataMode.RESEARCH,
     ):
         self.store = store or MarketDataStore()
         self.market_db = market_db
+        self.mode = MarketDataMode(str(mode).lower()) if not isinstance(mode, MarketDataMode) else mode
+        self.last_fallback_used = False        # True when the last resolve fell back to DEMO
         self.providers: dict[MarketDataSource, MarketDataProvider] = {
             MarketDataSource.MOEX: MoexProvider(db=market_db),
             MarketDataSource.BLOOMBERG: BloombergProvider(),
@@ -344,11 +357,17 @@ class MarketDataService:
 
     def best_available_snapshot(self, valuation_date: date | None = None) -> MarketDataSnapshot:
         """
-        Return the most useful snapshot for the app/services (Stage II):
-        the latest real MOEX snapshot persisted in the DB (or the one for
-        valuation_date when given), else the DEMO snapshot. Never raises.
+        Return the most useful snapshot for the app/services: the latest real MOEX
+        snapshot persisted in the DB (or the one for valuation_date), else the DEMO
+        snapshot. In PRODUCTION mode it never falls back silently — it raises
+        NoProductionMarketDataError instead (MD-001).
         """
+        self.last_fallback_used = False
+        production = self.mode == MarketDataMode.PRODUCTION
         if self.market_db is None:
+            if production:
+                raise NoProductionMarketDataError("no market DB in production mode")
+            self.last_fallback_used = True
             return self.demo_snapshot(valuation_date)
         try:
             if valuation_date is None:
@@ -356,27 +375,40 @@ class MarketDataService:
                 if meta and meta.get("valuation_date"):
                     valuation_date = date.fromisoformat(str(meta["valuation_date"])[:10])
             if valuation_date is not None:
-                return self.moex_snapshot(valuation_date, fallback_to_demo=True)
+                return self.moex_snapshot(valuation_date)
+            if production:
+                raise NoProductionMarketDataError("no MOEX snapshot in the store")
+        except NoProductionMarketDataError:
+            raise
         except Exception:
-            pass
+            if production:
+                raise NoProductionMarketDataError("could not resolve a production MOEX snapshot")
+        self.last_fallback_used = True
         return self.demo_snapshot()
 
     def moex_snapshot(
         self,
         valuation_date: date | None = None,
         *,
-        fallback_to_demo: bool = True,
+        fallback_to_demo: bool | None = None,
     ) -> MarketDataSnapshot:
         """
         Return a production MOEX snapshot from the local DB, or fall back to the
-        DEMO snapshot (with its 'Not production valuation' warning) when MOEX
-        data is unavailable / rejected. Never raises under fallback.
+        DEMO snapshot when MOEX data is unavailable / rejected. The fallback is
+        allowed in DEMO/RESEARCH mode but forbidden in PRODUCTION (MD-001); when
+        ``fallback_to_demo`` is left None it is derived from the mode.
         """
+        if fallback_to_demo is None:
+            fallback_to_demo = self.mode != MarketDataMode.PRODUCTION
         try:
-            return self.load_provider_snapshot(MarketDataSource.MOEX, valuation_date)
+            snap = self.load_provider_snapshot(MarketDataSource.MOEX, valuation_date)
+            self.last_fallback_used = False
+            return snap
         except Exception:
             if not fallback_to_demo:
-                raise
+                raise NoProductionMarketDataError(
+                    f"no production MOEX snapshot for {valuation_date or 'latest'}")
+            self.last_fallback_used = True
             return self.demo_snapshot(valuation_date)
 
     def flat_curve(

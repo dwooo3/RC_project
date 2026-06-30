@@ -19,6 +19,18 @@ class MarketDataSource(str, Enum):
     REUTERS = "REUTERS"
 
 
+class MarketDataMode(str, Enum):
+    """Operating contour for market-data resolution (recommendations MD-001).
+
+    DEMO       — always allowed to use synthetic data.
+    RESEARCH   — prefer live, silently fall back to demo (the historical default).
+    PRODUCTION — never fall back to demo silently: raise if no production data.
+    """
+    DEMO = "demo"
+    RESEARCH = "research"
+    PRODUCTION = "production"
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 

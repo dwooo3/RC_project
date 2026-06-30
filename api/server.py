@@ -85,12 +85,19 @@ class RepriceRequest(BaseModel):
 
 @app.get("/health")
 def health() -> dict:
+    snap = CONTEXT.snapshot                       # resolves the snapshot (sets fallback flag)
+    market = CONTEXT.market
+    mode = getattr(market, "mode", None)
     return {
         "status": "ok",
         "service": "RiskCalc Bridge",
         "version": VERSION,
         "live": CONTEXT.is_live(),
-        "snapshot_id": CONTEXT.snapshot.snapshot_id,
+        "snapshot_id": snap.snapshot_id,
+        "source": getattr(snap.source, "value", str(snap.source)),
+        "mode": getattr(mode, "value", str(mode)) if mode is not None else "research",
+        "is_demo": bool(getattr(snap, "is_demo", False)),
+        "fallback_used": bool(getattr(market, "last_fallback_used", False)),
     }
 
 
