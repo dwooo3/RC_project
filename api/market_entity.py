@@ -149,6 +149,7 @@ def instrument(ctx, category: str, secid: str) -> dict:
                       "yield": r["yield"], "numtrades": r["numtrades"]}
     if ref.get("category") == "bonds":
         out["schedule"] = db.get_bond_schedule(secid)
+        out["schedule_versions"] = db.get_bond_schedule_versions(secid)
     elif ref.get("category") == "equities":
         out["dividends"] = db.get_dividends(secid)
     elif ref.get("category") == "futures" and ref.get("asset_code"):

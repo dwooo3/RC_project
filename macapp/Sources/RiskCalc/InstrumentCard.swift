@@ -29,6 +29,7 @@ struct InstrumentCard: View {
                             dividendsSection(divs)
                         }
                         if let vers = entity?.versions, !vers.isEmpty { versionsSection(vers) }
+                        if let sv = entity?.scheduleVersions, !sv.isEmpty { scheduleVersionsSection(sv) }
                         if !bars.isEmpty { historySection }
                     }
                     .padding(Theme.s4)
@@ -129,6 +130,30 @@ struct InstrumentCard: View {
                             .background(Theme.positive.opacity(0.14), in: Capsule())
                     }
                     Text(v.source ?? "").font(.system(size: 9)).foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, 2)
+                Divider().opacity(0.2)
+            }
+        }
+    }
+
+    private func scheduleVersionsSection(_ vers: [ScheduleVersion]) -> some View {
+        VStack(alignment: .leading, spacing: Theme.s2) {
+            BlockTitle("История расписания · \(vers.count)", icon: "calendar.badge.clock")
+            ForEach(vers.reversed()) { v in
+                HStack(spacing: Theme.s2) {
+                    Text("v\(v.version)").font(.system(size: 11, weight: .semibold)).frame(width: 36, alignment: .leading)
+                    Text("\(v.validFrom ?? "—") → \(v.validTo ?? "сейчас")")
+                        .font(.system(size: 11)).monospacedDigit()
+                    Spacer()
+                    Text("\(v.nCoupons ?? 0) куп · \(v.nAmort ?? 0) амт · \(v.nOffers ?? 0) оф")
+                        .font(.system(size: 9)).foregroundStyle(.tertiary)
+                    if v.validTo == nil {
+                        Text("актуальна").font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(Theme.positive)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Theme.positive.opacity(0.14), in: Capsule())
+                    }
                 }
                 .padding(.vertical, 2)
                 Divider().opacity(0.2)

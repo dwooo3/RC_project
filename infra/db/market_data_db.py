@@ -179,6 +179,15 @@ def _schema_statements(dialect: str) -> list[str]:
             valid_to TEXT, source TEXT, payload_hash TEXT NOT NULL, fields_json TEXT,
             created_at TEXT, PRIMARY KEY (secid, version))""",
         "CREATE INDEX IF NOT EXISTS idx_instrument_versions_open ON instrument_versions (secid, valid_to)",
+        # Versioned bond schedule (§7.3): a new version when the coupon /
+        # amortization / offer schedule changes. bond_coupons/_amortizations/_offers
+        # stay the live "latest" rows.
+        """CREATE TABLE IF NOT EXISTS bond_schedule_versions (
+            secid TEXT NOT NULL, version INTEGER NOT NULL, valid_from TEXT NOT NULL,
+            valid_to TEXT, payload_hash TEXT NOT NULL, n_coupons INTEGER, n_amort INTEGER,
+            n_offers INTEGER, schedule_json TEXT, created_at TEXT,
+            PRIMARY KEY (secid, version))""",
+        "CREATE INDEX IF NOT EXISTS idx_bond_schedule_versions_open ON bond_schedule_versions (secid, valid_to)",
     ]
 
 
@@ -224,6 +233,7 @@ class MarketDataDB:
             return
         self._migrate_snapshot_key()
         self._migrate_instrument_versions()
+        self._migrate_schedule_versions()
 
     def _migrate_snapshot_key(self) -> None:
         # 1. surrogate key on the snapshot manifest
@@ -259,6 +269,17 @@ class MarketDataDB:
                            "(SELECT DISTINCT secid FROM instrument_versions)")
         for r in refs:
             self._record_instrument_version(r)
+
+    def _migrate_schedule_versions(self) -> None:
+        """Seed version 1 for every bond that has a schedule but no version yet."""
+        rows = self._query(
+            "SELECT DISTINCT secid FROM ("
+            "  SELECT secid FROM bond_coupons UNION"
+            "  SELECT secid FROM bond_amortizations UNION"
+            "  SELECT secid FROM bond_offers) "
+            "WHERE secid NOT IN (SELECT DISTINCT secid FROM bond_schedule_versions)")
+        for r in rows:
+            self._record_schedule_version(r["secid"])
 
     def _resolve_snapshot_key(self, snapshot_id) -> int:
         row = self._query_one(
@@ -423,6 +444,42 @@ class MarketDataDB:
         self._upsert_many("bond_offers", [
             {"secid": secid, "offer_date": str(o["date"]), "price": o.get("price"),
              "offer_type": o.get("offer_type")} for o in (offers or [])])
+        self._record_schedule_version(secid)        # version-on-change (stored form)
+
+    @staticmethod
+    def _schedule_hash(sched: dict) -> str:
+        blob = json.dumps(sched, sort_keys=True, ensure_ascii=False, default=str)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+    def _record_schedule_version(self, secid) -> None:
+        sched = self.get_bond_schedule(secid)       # stored, already sorted
+        counts = (len(sched["coupons"]), len(sched["amortizations"]), len(sched["offers"]))
+        if not any(counts):
+            return                                  # nothing scheduled → no version
+        h = self._schedule_hash(sched)
+        cur = self._query_one(
+            f"SELECT version, payload_hash FROM bond_schedule_versions "
+            f"WHERE secid={self.ph} AND valid_to IS NULL", (secid,))
+        if cur and cur.get("payload_hash") == h:
+            return                                  # unchanged
+        today = datetime.now().date().isoformat()
+        if cur:
+            self._exec(f"UPDATE bond_schedule_versions SET valid_to={self.ph} "
+                       f"WHERE secid={self.ph} AND valid_to IS NULL", (today, secid))
+            version = int(cur["version"]) + 1
+        else:
+            version = 1
+        self._exec(
+            f"INSERT INTO bond_schedule_versions "
+            f"(secid, version, valid_from, valid_to, payload_hash, n_coupons, n_amort, "
+            f"n_offers, schedule_json, created_at) VALUES ({self._placeholders(10)})",
+            (secid, version, today, None, h, counts[0], counts[1], counts[2],
+             json.dumps(sched, ensure_ascii=False, default=str), datetime.now().isoformat()))
+
+    def get_bond_schedule_versions(self, secid) -> list[dict]:
+        return self._query(
+            f"SELECT version, valid_from, valid_to, n_coupons, n_amort, n_offers "
+            f"FROM bond_schedule_versions WHERE secid={self.ph} ORDER BY version", (secid,))
 
     def save_commodity_quotes(self, snapshot_id, rows: list[dict]) -> None:
         self._upsert_many("commodity_quotes", [
