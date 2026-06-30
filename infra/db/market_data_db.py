@@ -13,10 +13,18 @@ PK (``AUTOINCREMENT`` vs ``BIGSERIAL``). Pass a psycopg connection +
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import date, datetime
 from typing import Any
+
+# Reference fields that define an instrument *version* (excludes daily-changing
+# quote fields: last / change_pct / day_json / as_of / is_active) so a new version
+# is cut only when the descriptive reference actually changes.
+_REF_VERSION_FIELDS = ("category", "market", "board", "isin", "issuer_ru", "name_ru",
+                       "sec_type", "list_level", "currency", "asset_code",
+                       "last_trade_date", "ref_json")
 
 
 def _iso(value: Any) -> str:
@@ -163,6 +171,14 @@ def _schema_statements(dialect: str) -> list[str]:
         f"""CREATE TABLE IF NOT EXISTS ingest_log (
             run_id {serial_pk}, endpoint TEXT, status TEXT, rows INTEGER,
             started_at TEXT, finished_at TEXT, error TEXT)""",
+        # Versioned instrument reference (recommendations §7.2/§34): a new row is
+        # cut only when the descriptive reference changes; the open version has
+        # valid_to=NULL. instrument_ref stays the live "latest" view.
+        """CREATE TABLE IF NOT EXISTS instrument_versions (
+            secid TEXT NOT NULL, version INTEGER NOT NULL, valid_from TEXT NOT NULL,
+            valid_to TEXT, source TEXT, payload_hash TEXT NOT NULL, fields_json TEXT,
+            created_at TEXT, PRIMARY KEY (secid, version))""",
+        "CREATE INDEX IF NOT EXISTS idx_instrument_versions_open ON instrument_versions (secid, valid_to)",
     ]
 
 
@@ -206,6 +222,10 @@ class MarketDataDB:
         """
         if self.dialect != "sqlite":
             return
+        self._migrate_snapshot_key()
+        self._migrate_instrument_versions()
+
+    def _migrate_snapshot_key(self) -> None:
         # 1. surrogate key on the snapshot manifest
         self._add_column("market_data_snapshots", "snapshot_key", "INTEGER")
         pending = self._query(
@@ -232,6 +252,13 @@ class MarketDataDB:
         if latest is not None:
             self._exec("UPDATE option_quotes SET snapshot_key=? WHERE snapshot_key IS NULL", (latest,))
         self._exec("CREATE INDEX IF NOT EXISTS idx_option_quotes_snapkey ON option_quotes(snapshot_key)")
+
+    def _migrate_instrument_versions(self) -> None:
+        """Seed version 1 for every instrument that has no reference history yet."""
+        refs = self._query("SELECT * FROM instrument_ref WHERE secid NOT IN "
+                           "(SELECT DISTINCT secid FROM instrument_versions)")
+        for r in refs:
+            self._record_instrument_version(r)
 
     def _resolve_snapshot_key(self, snapshot_id) -> int:
         row = self._query_one(
@@ -624,7 +651,44 @@ class MarketDataDB:
         return self._query(sql, tuple(params))
 
     def save_instrument_ref(self, row: dict) -> None:
+        self._record_instrument_version(row)        # version-on-change (before the upsert)
         self._upsert("instrument_ref", row)
+
+    def _ref_hash(self, row: dict) -> str:
+        payload = {k: row.get(k) for k in _REF_VERSION_FIELDS}
+        blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+    def _record_instrument_version(self, row: dict, *, source: str = "MOEX") -> None:
+        """Cut a new reference version iff the descriptive payload changed."""
+        secid = row.get("secid")
+        if not secid:
+            return
+        h = self._ref_hash(row)
+        cur = self._query_one(
+            f"SELECT version, payload_hash FROM instrument_versions "
+            f"WHERE secid={self.ph} AND valid_to IS NULL", (secid,))
+        if cur and cur.get("payload_hash") == h:
+            return                                   # unchanged → no new version
+        as_of = row.get("as_of") or datetime.now().date().isoformat()
+        if cur:
+            self._exec(f"UPDATE instrument_versions SET valid_to={self.ph} "
+                       f"WHERE secid={self.ph} AND valid_to IS NULL", (as_of, secid))
+            version = int(cur["version"]) + 1
+        else:
+            version = 1
+        payload = {k: row.get(k) for k in _REF_VERSION_FIELDS}
+        self._exec(
+            f"INSERT INTO instrument_versions "
+            f"(secid, version, valid_from, valid_to, source, payload_hash, fields_json, created_at) "
+            f"VALUES ({self._placeholders(8)})",
+            (secid, version, as_of, None, source, h,
+             json.dumps(payload, ensure_ascii=False, default=str), datetime.now().isoformat()))
+
+    def get_instrument_versions(self, secid) -> list[dict]:
+        return self._query(
+            f"SELECT version, valid_from, valid_to, source, payload_hash "
+            f"FROM instrument_versions WHERE secid={self.ph} ORDER BY version", (secid,))
 
     def get_instrument_ref(self, secid) -> dict | None:
         return self._query_one(

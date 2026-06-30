@@ -161,6 +161,7 @@ def instrument(ctx, category: str, secid: str) -> dict:
     elif ref.get("category") == "options":
         out["asset_code"] = secid
         out["option_chain"] = _option_chain(db.get_option_chain(secid))
+    out["versions"] = db.get_instrument_versions(secid)      # reference-change history
     return out
 
 

@@ -28,6 +28,7 @@ struct InstrumentCard: View {
                         if category == "equities", let divs = entity?.dividends, !divs.isEmpty {
                             dividendsSection(divs)
                         }
+                        if let vers = entity?.versions, !vers.isEmpty { versionsSection(vers) }
                         if !bars.isEmpty { historySection }
                     }
                     .padding(Theme.s4)
@@ -111,6 +112,29 @@ struct InstrumentCard: View {
     }
 
     // MARK: dividends (equities)
+
+    private func versionsSection(_ vers: [InstrumentVersion]) -> some View {
+        VStack(alignment: .leading, spacing: Theme.s2) {
+            BlockTitle("История справочника · \(vers.count)", icon: "clock.arrow.circlepath")
+            ForEach(vers.reversed()) { v in
+                HStack(spacing: Theme.s2) {
+                    Text("v\(v.version)").font(.system(size: 11, weight: .semibold)).frame(width: 36, alignment: .leading)
+                    Text("\(v.validFrom ?? "—") → \(v.validTo ?? "сейчас")")
+                        .font(.system(size: 11)).monospacedDigit()
+                    Spacer()
+                    if v.validTo == nil {
+                        Text("актуальна").font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(Theme.positive)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Theme.positive.opacity(0.14), in: Capsule())
+                    }
+                    Text(v.source ?? "").font(.system(size: 9)).foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, 2)
+                Divider().opacity(0.2)
+            }
+        }
+    }
 
     private func dividendsSection(_ divs: [MDDividend]) -> some View {
         VStack(alignment: .leading, spacing: Theme.s2) {

@@ -530,9 +530,10 @@ struct MDEntity: Decodable, Sendable {
     let assetCode: String?
     let chain: [MDChainContract]?
     let optionChain: [MDOptionExpiry]?
+    let versions: [InstrumentVersion]?
 
     enum CodingKeys: String, CodingKey {
-        case secid, category, isin, currency, board, last, fields, day, dividends, chain
+        case secid, category, isin, currency, board, last, fields, day, dividends, chain, versions
         case issuerRu = "issuer_ru"
         case nameRu = "name_ru"
         case secType = "sec_type"
@@ -541,6 +542,20 @@ struct MDEntity: Decodable, Sendable {
         case asOf = "as_of"
         case assetCode = "asset_code"
         case optionChain = "option_chain"
+    }
+}
+
+struct InstrumentVersion: Decodable, Sendable, Identifiable {
+    let version: Int
+    let validFrom: String?
+    let validTo: String?
+    let source: String?
+    var id: Int { version }
+
+    enum CodingKeys: String, CodingKey {
+        case version, source
+        case validFrom = "valid_from"
+        case validTo = "valid_to"
     }
 }
 
