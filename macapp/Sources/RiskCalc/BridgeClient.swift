@@ -153,6 +153,8 @@ actor BridgeClient {
 
     func mdOverview() async throws -> MDOverview { try await get("md/overview") }
 
+    func refData() async throws -> RefData { try await get("md/refdata") }
+
     func mdList(category: String) async throws -> MDListResponse {
         try await get("md/list/\(category)")
     }

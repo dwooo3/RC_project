@@ -628,6 +628,32 @@ struct VolSurface: Decodable, Sendable {
     let diagnostics: VolDiagnostics?
 }
 
+// MARK: - Reference look-ups (/md/refdata)
+
+struct RefData: Decodable, Sendable {
+    let currencies: [RefCurrency]
+    let boards: [RefBoard]
+    let sources: [RefSource]
+}
+
+struct RefCurrency: Decodable, Sendable, Identifiable {
+    let code: String
+    let name: String?
+    var id: String { code }
+}
+
+struct RefBoard: Decodable, Sendable, Identifiable {
+    let board: String
+    let market: String?
+    var id: String { board }
+}
+
+struct RefSource: Decodable, Sendable, Identifiable {
+    let code: String
+    let name: String?
+    var id: String { code }
+}
+
 // MARK: - Raw data browser + data dictionary
 
 struct RawTableList: Decodable, Sendable { let tables: [RawTableInfo] }

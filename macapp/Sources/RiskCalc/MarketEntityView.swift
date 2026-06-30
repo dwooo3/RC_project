@@ -10,6 +10,9 @@ final class MarketEntityVM {
     let category: String
     var items: [MDListItem] = []
     var search = ""
+    var boardFilter = ""                      // "" = все
+    var currencyFilter = ""
+    var currencyNames: [String: String] = [:]
     var selectedID: String?
     var entity: MDEntity?
     var bars: [MDBar] = []
@@ -24,12 +27,28 @@ final class MarketEntityVM {
 
     var market: String { mdMarket(category) }
 
+    var availableBoards: [String] {
+        Array(Set(items.compactMap { $0.board })).sorted()
+    }
+
+    var availableCurrencies: [String] {
+        Array(Set(items.compactMap { $0.currency })).sorted()
+    }
+
+    func currencyLabel(_ code: String) -> String {
+        if let n = currencyNames[code], n != code { return "\(code) · \(n)" }
+        return code
+    }
+
     var filtered: [MDListItem] {
         let q = search.lowercased().trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return items }
-        return items.filter {
-            ($0.issuerRu ?? "").lowercased().contains(q) || $0.secid.lowercased().contains(q)
-                || ($0.isin ?? "").lowercased().contains(q)
+        return items.filter { i in
+            (boardFilter.isEmpty || i.board == boardFilter)
+                && (currencyFilter.isEmpty || i.currency == currencyFilter)
+                && (q.isEmpty
+                    || (i.issuerRu ?? "").lowercased().contains(q)
+                    || i.secid.lowercased().contains(q)
+                    || (i.isin ?? "").lowercased().contains(q))
         }
     }
 
@@ -39,6 +58,10 @@ final class MarketEntityVM {
             items = try await client.mdList(category: category).instruments
             serverDown = false
         } catch { serverDown = true }
+        if currencyNames.isEmpty, let rd = try? await client.refData() {
+            currencyNames = Dictionary(rd.currencies.map { ($0.code, $0.name ?? $0.code) },
+                                       uniquingKeysWith: { a, _ in a })
+        }
         loadingList = false
         if selectedID == nil, let first = items.first { await select(first.secid) }
     }
@@ -108,7 +131,21 @@ struct MarketEntityView: View {
                 .menuStyle(.borderlessButton).fixedSize()
                 .help("Экспорт в CSV")
             }
-            .padding(Theme.s2)
+            .padding(.horizontal, Theme.s2).padding(.top, Theme.s2)
+            if vm.availableBoards.count > 1 || vm.availableCurrencies.count > 1 {
+                HStack(spacing: Theme.s2) {
+                    if vm.availableBoards.count > 1 {
+                        filterMenu("Борд", vm.availableBoards, $vm.boardFilter)
+                    }
+                    if vm.availableCurrencies.count > 1 {
+                        filterMenu("Валюта", vm.availableCurrencies, $vm.currencyFilter,
+                                   label: { vm.currencyLabel($0) })
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, Theme.s2)
+            }
+            Color.clear.frame(height: Theme.s2)
             Divider()
             if vm.serverDown {
                 ContentUnavailableView("Bridge offline", systemImage: "bolt.horizontal.circle").frame(maxHeight: .infinity)
@@ -132,6 +169,29 @@ struct MarketEntityView: View {
                 }
             }
         }
+    }
+
+    private func filterMenu(_ title: String, _ options: [String], _ binding: Binding<String>,
+                            label: ((String) -> String)? = nil) -> some View {
+        let active = !binding.wrappedValue.isEmpty
+        return Menu {
+            Button("Все") { binding.wrappedValue = "" }
+            Divider()
+            ForEach(options, id: \.self) { o in
+                Button(label?(o) ?? o) { binding.wrappedValue = o }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Text("\(title): \(active ? binding.wrappedValue : "все")")
+                    .font(.system(size: 10, weight: active ? .semibold : .regular)).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 7))
+            }
+            .padding(.horizontal, Theme.s2).padding(.vertical, 3)
+            .background(active ? Theme.accent.opacity(0.16) : Color.gray.opacity(0.12),
+                        in: RoundedRectangle(cornerRadius: 7))
+            .foregroundStyle(active ? Theme.accent : .secondary)
+        }
+        .menuStyle(.borderlessButton).fixedSize()
     }
 
     private func row(_ item: MDListItem) -> some View {
