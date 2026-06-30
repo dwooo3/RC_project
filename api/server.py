@@ -279,6 +279,16 @@ def md_health() -> dict:
     return jsonable(datahealth.health(CONTEXT))
 
 
+@app.get("/md/validation")
+def md_validation() -> dict:
+    return jsonable(datahealth.validation(CONTEXT))
+
+
+@app.get("/snapshots/{snapshot_id}/validation")
+def snapshot_validation(snapshot_id: str) -> dict:
+    return jsonable(datahealth.validation(CONTEXT, snapshot_id))
+
+
 @app.get("/md/raw/tables")
 def md_raw_tables() -> dict:
     return jsonable(rawdata.tables(CONTEXT))

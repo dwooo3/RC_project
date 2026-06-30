@@ -715,6 +715,35 @@ struct DataHealth: Decodable, Sendable {
     }
 }
 
+struct ValidationData: Decodable, Sendable {
+    let available: Bool
+    let snapshotID: String?
+    let status: String?
+    let productionEligible: Bool?
+    let history: [ValidationRow]?
+    enum CodingKeys: String, CodingKey {
+        case available, status, history
+        case snapshotID = "snapshot_id"
+        case productionEligible = "production_eligible"
+    }
+}
+
+struct ValidationRow: Decodable, Sendable, Identifiable {
+    let validationTs: String
+    let status: String?
+    let productionEligible: Int?
+    let completenessPct: Double?
+    let freshnessDays: Int?
+    var id: String { validationTs }
+    enum CodingKeys: String, CodingKey {
+        case status
+        case validationTs = "validation_ts"
+        case productionEligible = "production_eligible"
+        case completenessPct = "completeness_pct"
+        case freshnessDays = "freshness_days"
+    }
+}
+
 struct DataHealthChecks: Decodable, Sendable {
     let curvesMissing: [String]?
     let fxMissing: [String]?

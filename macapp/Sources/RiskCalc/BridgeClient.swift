@@ -173,6 +173,7 @@ actor BridgeClient {
     }
 
     func dataHealth() async throws -> DataHealth { try await get("md/health") }
+    func validation() async throws -> ValidationData { try await get("md/validation") }
 
     func rawTables() async throws -> RawTableList { try await get("md/raw/tables") }
     func dataDictionary() async throws -> DataDictionary { try await get("md/raw/dictionary") }

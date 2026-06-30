@@ -193,6 +193,13 @@ def _schema_statements(dialect: str) -> list[str]:
         "CREATE TABLE IF NOT EXISTS ref_currencies (code TEXT PRIMARY KEY, name TEXT)",
         "CREATE TABLE IF NOT EXISTS ref_boards (board TEXT PRIMARY KEY, market TEXT)",
         "CREATE TABLE IF NOT EXISTS ref_sources (code TEXT PRIMARY KEY, name TEXT)",
+        # Persisted validation reports (MD-002): an audit trail of the COMPUTED
+        # status per snapshot, so quality history survives restarts.
+        f"""CREATE TABLE IF NOT EXISTS market_data_validation_reports (
+            report_id {serial_pk}, snapshot_id TEXT NOT NULL, validation_ts TEXT NOT NULL,
+            status TEXT NOT NULL, production_eligible INTEGER NOT NULL, completeness_pct REAL,
+            freshness_days INTEGER, alerts_json TEXT, checks_json TEXT)""",
+        "CREATE INDEX IF NOT EXISTS idx_validation_reports_snap ON market_data_validation_reports (snapshot_id, validation_ts)",
     ]
 
 
@@ -601,6 +608,27 @@ class MarketDataDB:
         return self._query(
             f"SELECT endpoint, status, rows, started_at, finished_at, error "
             f"FROM ingest_log ORDER BY run_id DESC LIMIT {int(limit)}")
+
+    def save_validation_report(self, snapshot_id, report: dict) -> None:
+        self._exec(
+            f"INSERT INTO market_data_validation_reports "
+            f"(snapshot_id, validation_ts, status, production_eligible, completeness_pct, "
+            f"freshness_days, alerts_json, checks_json) VALUES ({self._placeholders(8)})",
+            (snapshot_id, datetime.now().isoformat(), report.get("status"),
+             1 if report.get("production_eligible") else 0, report.get("completeness_pct"),
+             report.get("staleness_days"), json.dumps(report.get("alerts") or []),
+             json.dumps(report.get("checks") or {})))
+
+    def latest_validation_report(self, snapshot_id) -> dict | None:
+        return self._query_one(
+            f"SELECT * FROM market_data_validation_reports WHERE snapshot_id={self.ph} "
+            f"ORDER BY validation_ts DESC LIMIT 1", (snapshot_id,))
+
+    def list_validation_reports(self, snapshot_id, limit: int = 30) -> list[dict]:
+        return self._query(
+            f"SELECT validation_ts, status, production_eligible, completeness_pct, freshness_days "
+            f"FROM market_data_validation_reports WHERE snapshot_id={self.ph} "
+            f"ORDER BY validation_ts DESC LIMIT {int(limit)}", (snapshot_id,))
 
     def get_curve(self, snapshot_id, curve_id) -> dict | None:
         return self._query_one(

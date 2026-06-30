@@ -9,6 +9,33 @@ hide behind a metadata ``quality=OK``. Addresses the audit's MD-008/MD-009.
 from __future__ import annotations
 
 
+def validation(ctx, snapshot_id: str | None = None) -> dict:
+    """Persisted validation report (MD-002) for a snapshot + its audit history.
+    Computes + persists a fresh report (deduped), then returns it with history."""
+    db = ctx.market_db
+    if db is None:
+        return {"available": False}
+    if not snapshot_id:
+        try:
+            snapshot_id = ctx.snapshot.snapshot_id
+        except Exception:
+            snapshot_id = (db.latest_snapshot_meta() or {}).get("snapshot_id")
+    if not snapshot_id:
+        return {"available": False}
+    from infra.jobs.data_quality import persist_quality_report
+    report = persist_quality_report(db, snapshot_id)
+    return {
+        "available": True,
+        "snapshot_id": snapshot_id,
+        "status": report["status"],
+        "production_eligible": report["production_eligible"],
+        "completeness_pct": report["completeness_pct"],
+        "freshness_days": report["staleness_days"],
+        "alerts": report["alerts"],
+        "history": db.list_validation_reports(snapshot_id),
+    }
+
+
 def health(ctx) -> dict:
     db = ctx.market_db
     if db is None:

@@ -16,6 +16,7 @@ TABLES: list[str] = [
     "bond_amortizations", "bond_offers", "commodity_quotes", "dividends",
     "time_series", "ingest_log",
     "ref_currencies", "ref_boards", "ref_sources",
+    "market_data_validation_reports",
 ]
 
 # Curated business meanings for common fields (best-effort; unknown → "").

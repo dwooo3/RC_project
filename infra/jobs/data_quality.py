@@ -88,6 +88,22 @@ def snapshot_quality_report(db, snapshot_id: str,
     }
 
 
+def persist_quality_report(db, snapshot_id: str,
+                           valuation_date: date | None = None) -> dict:
+    """Compute the snapshot's quality report and persist it (MD-002) — but only
+    when it differs from the latest stored one, so the audit trail doesn't bloat
+    on repeated reads. Returns the freshly computed report."""
+    report = snapshot_quality_report(db, snapshot_id, valuation_date)
+    prev = db.latest_validation_report(snapshot_id)
+    changed = (prev is None
+               or prev.get("status") != report["status"]
+               or prev.get("completeness_pct") != report["completeness_pct"]
+               or bool(prev.get("production_eligible")) != report["production_eligible"])
+    if changed:
+        db.save_validation_report(snapshot_id, report)
+    return report
+
+
 def history_depth_report(db, factors: list[str] | None = None) -> dict:
     """Per-factor time_series depth, flagging series below MIN_HISTORY_DAYS."""
     rows = db._query(  # noqa: SLF001 — internal job

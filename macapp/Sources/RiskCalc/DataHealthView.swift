@@ -9,6 +9,7 @@ import Observation
 @Observable
 final class DataHealthVM {
     var health: DataHealth?
+    var validation: ValidationData?
     var loading = false
     var serverDown = false
     private let client = BridgeClient()
@@ -17,6 +18,7 @@ final class DataHealthVM {
         loading = true
         do { health = try await client.dataHealth(); serverDown = false }
         catch { serverDown = true }
+        validation = try? await client.validation()
         loading = false
     }
 }
@@ -34,6 +36,9 @@ struct DataHealthView: View {
                 metricsCard(h)
                 if let alerts = h.alerts, !alerts.isEmpty { alertsCard(alerts) }
                 ingestCard(h)
+                if let v = vm.validation, let hist = v.history, !hist.isEmpty {
+                    validationHistoryCard(hist)
+                }
             } else if vm.loading {
                 ProgressView().frame(maxWidth: .infinity, minHeight: 200)
             } else {
@@ -169,6 +174,32 @@ struct DataHealthView: View {
                     }
                 } else {
                     Text("Ошибок загрузки нет").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func validationHistoryCard(_ hist: [ValidationRow]) -> some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s2) {
+                BlockTitle("История валидаций · \(hist.count)", icon: "clock.badge.checkmark")
+                ForEach(hist) { r in
+                    HStack(spacing: Theme.s2) {
+                        Text(String(r.validationTs.prefix(19)).replacingOccurrences(of: "T", with: " "))
+                            .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                        statusBadge(r.status ?? "?")
+                        Spacer()
+                        Text(r.completenessPct.map { Fmt.percent($0, digits: 0) } ?? "—")
+                            .font(.system(size: 10)).foregroundStyle(.tertiary)
+                        Text(r.freshnessDays.map { "\($0) дн" } ?? "—")
+                            .font(.system(size: 10)).foregroundStyle(.tertiary)
+                        if (r.productionEligible ?? 0) == 1 {
+                            Image(systemName: "checkmark.seal.fill").font(.system(size: 9))
+                                .foregroundStyle(Theme.positive)
+                        }
+                    }
+                    .padding(.vertical, 1)
+                    Divider().opacity(0.2)
                 }
             }
         }
