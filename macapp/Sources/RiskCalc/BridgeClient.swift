@@ -192,6 +192,10 @@ actor BridgeClient {
         try await get("md/volsurface/\(underlying)")
     }
 
+    func otcSurface(underlying: String) async throws -> OTCSurface {
+        try await get("md/volsurface/\(underlying)/otc")
+    }
+
     /// Rendered 3-axis surface chart (matplotlib mplot3d) as PNG bytes.
     func volSurfacePlot(underlying: String) async throws -> Data {
         let (data, response) = try await session.data(from: base.appending(path: "md/volsurface/\(underlying)/plot"))

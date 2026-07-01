@@ -13,6 +13,7 @@ final class VolSurfaceVM {
     var selected: String?
     var surface: VolSurface?
     var plotImage: NSImage?
+    var otc: OTCSurface?
     var loading = false
     var serverDown = false
 
@@ -32,11 +33,13 @@ final class VolSurfaceVM {
         selected = code
         surface = nil
         plotImage = nil
+        otc = nil
         loading = true
         surface = try? await client.volSurface(underlying: code)
         if let data = try? await client.volSurfacePlot(underlying: code) {
             plotImage = NSImage(data: data)
         }
+        otc = try? await client.otcSurface(underlying: code)
         loading = false
     }
 }
@@ -105,8 +108,7 @@ struct VolSurfaceView: View {
                 .pickerStyle(.segmented).fixedSize().labelsHidden()
 
                 if section == "otc" {
-                    ContentUnavailableView("OTC — позже", systemImage: "building.columns")
-                        .frame(height: 220)
+                    otcSection
                 } else if vm.loading {
                     HStack(spacing: Theme.s2) {
                         ProgressView().controlSize(.small)
@@ -144,6 +146,86 @@ struct VolSurfaceView: View {
                 } else {
                     Text("График недоступен").font(.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, minHeight: 200)
+                }
+            }
+        }
+    }
+
+    // MARK: OTC FX vols (ATM / 25Δ RR / 25Δ BF term structure)
+
+    @ViewBuilder
+    private var otcSection: some View {
+        if vm.loading {
+            HStack(spacing: Theme.s2) {
+                ProgressView().controlSize(.small)
+                Text("Загрузка OTC…").font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 240)
+        } else if let otc = vm.otc, otc.isFx, !otc.tenors.isEmpty {
+            otcChart(otc)
+            otcTable(otc)
+            Text("OTC-котировки FX: ATM / 25Δ risk-reversal / 25Δ butterfly, выведены из FX-опционов FORTS (self-implied, крылья по ликвидности).")
+                .font(.system(size: 9)).foregroundStyle(.tertiary)
+        } else if vm.otc?.isFx == false {
+            ContentUnavailableView("OTC только для FX", systemImage: "building.columns",
+                                   description: Text("OTC-котировки доступны для валютных базовых активов (Si · CNY · Eu · ED). Для остальных нужен брокерский фид."))
+                .frame(height: 260)
+        } else {
+            Text("Нет OTC-данных").font(.caption).foregroundStyle(.secondary).frame(height: 120)
+        }
+    }
+
+    private func otcChart(_ otc: OTCSurface) -> some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s3) {
+                BlockTitle("\(otc.underlying) · OTC термоструктура (ATM / RR / BF)", icon: "chart.xyaxis.line")
+                Chart {
+                    ForEach(otc.tenors) { t in
+                        if let a = t.atm {
+                            LineMark(x: .value("Срок", t.t), y: .value("%", a * 100), series: .value("s", "ATM"))
+                                .foregroundStyle(Theme.accent)
+                            PointMark(x: .value("Срок", t.t), y: .value("%", a * 100)).foregroundStyle(Theme.accent).symbolSize(22)
+                        }
+                        if let rr = t.rr25 {
+                            LineMark(x: .value("Срок", t.t), y: .value("%", rr * 100), series: .value("s", "25Δ RR"))
+                                .foregroundStyle(Theme.negative)
+                        }
+                        if let bf = t.bf25 {
+                            LineMark(x: .value("Срок", t.t), y: .value("%", bf * 100), series: .value("s", "25Δ BF"))
+                                .foregroundStyle(Theme.positive)
+                        }
+                    }
+                }
+                .chartForegroundStyleScale(["ATM": Theme.accent, "25Δ RR": Theme.negative, "25Δ BF": Theme.positive])
+                .chartXAxisLabel("Срок, лет").chartYAxisLabel("%")
+                .frame(height: 240)
+            }
+        }
+    }
+
+    private func otcTable(_ otc: OTCSurface) -> some View {
+        GlassCard(padding: Theme.s2) {
+            VStack(spacing: 0) {
+                HStack(spacing: Theme.s2) {
+                    head("Экспирация", .leading); head("Срок", .trailing); head("ATM", .trailing)
+                    head("25Δ RR", .trailing); head("25Δ BF", .trailing)
+                    head("σ 25P", .trailing); head("σ 25C", .trailing)
+                }
+                .padding(.horizontal, Theme.s2).padding(.vertical, Theme.s2)
+                Divider()
+                ForEach(otc.tenors) { t in
+                    HStack(spacing: Theme.s2) {
+                        cell(t.expiry, .leading, .medium)
+                        cell(String(format: "%.2f", t.t), .trailing)
+                        cell(t.atm.map { Fmt.percent($0 * 100, digits: 1) } ?? "—", .trailing)
+                        cell(t.rr25.map { Fmt.signedPercent($0 * 100, digits: 1) } ?? "—", .trailing,
+                             .regular, (t.rr25 ?? 0) < 0 ? Theme.negative : Theme.positive)
+                        cell(t.bf25.map { Fmt.percent($0 * 100, digits: 1) } ?? "—", .trailing)
+                        cell(t.sig25p.map { Fmt.percent($0 * 100, digits: 1) } ?? "—", .trailing)
+                        cell(t.sig25c.map { Fmt.percent($0 * 100, digits: 1) } ?? "—", .trailing)
+                    }
+                    .padding(.horizontal, Theme.s2).padding(.vertical, 3)
+                    Divider().opacity(0.25)
                 }
             }
         }

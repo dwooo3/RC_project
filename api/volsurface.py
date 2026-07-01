@@ -206,6 +206,46 @@ def surface(ctx, underlying: str) -> dict:
     return result
 
 
+# FX underlyings whose FORTS options give an OTC-style ATM/25Δ-RR/25Δ-BF quote
+# (Si=USD/RUB, CNY=CNY/RUB, Eu=EUR/RUB, ED=EUR/USD). Other underlyings have no
+# OTC feed, so their OTC section stays empty.
+_FX_OTC = {"Si", "CNY", "Eu", "ED"}
+
+
+def otc_surface(ctx, underlying: str) -> dict:
+    """OTC FX vol quoted the desk way — ATM / 25Δ risk-reversal / 25Δ butterfly per
+    tenor — derived from the FORTS FX option smiles (that's how OTC FX vol is
+    quoted). Non-FX underlyings return is_fx=False (no OTC feed)."""
+    if underlying not in _FX_OTC:
+        return {"underlying": underlying, "is_fx": False, "tenors": []}
+    svc = ctx.market
+    db = ctx.market_db
+    snap = ctx.snapshot
+    if db is None:
+        return {"underlying": underlying, "is_fx": True, "tenors": []}
+    from infra.moex_iss.options_surface import rr_bf_25delta
+
+    expiries = sorted({o["expiry"] for o in db.get_option_chain(underlying) if o.get("expiry")})
+    tenors = []
+    for exp in expiries:
+        sm = svc.get_option_smile(underlying, exp, snap)
+        if not sm or not sm.get("forward"):
+            continue
+        try:
+            rb = rr_bf_25delta(sm, sm["T"], sm["forward"])
+        except Exception:
+            continue
+        if rb.get("atm_vol") is None:
+            continue
+        tenors.append({
+            "expiry": exp, "t": sm["T"], "forward": sm["forward"],
+            "atm": rb.get("atm_vol"), "rr25": rb.get("rr_25"), "bf25": rb.get("bf_25"),
+            "sig25c": rb.get("sig_25c"), "sig25p": rb.get("sig_25p"),
+        })
+    tenors.sort(key=lambda x: x["t"])
+    return {"underlying": underlying, "is_fx": True, "tenors": tenors}
+
+
 def surface_png(ctx, underlying: str) -> bytes | None:
     """Render the calibrated SABR surface as a static 3-axis chart (matplotlib
     mplot3d): X = call delta, Y = time to expiry, Z = implied vol %. Returns PNG

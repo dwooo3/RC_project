@@ -628,6 +628,26 @@ struct VolSurface: Decodable, Sendable {
     let diagnostics: VolDiagnostics?
 }
 
+// OTC FX vol (ATM / 25Δ RR / 25Δ BF term structure) — /md/volsurface/{u}/otc
+struct OTCSurface: Decodable, Sendable {
+    let underlying: String
+    let isFx: Bool
+    let tenors: [OTCTenor]
+    enum CodingKeys: String, CodingKey { case underlying, tenors; case isFx = "is_fx" }
+}
+
+struct OTCTenor: Decodable, Sendable, Identifiable {
+    let expiry: String
+    let t: Double
+    let forward: Double?
+    let atm: Double?
+    let rr25: Double?
+    let bf25: Double?
+    let sig25c: Double?
+    let sig25p: Double?
+    var id: String { expiry }
+}
+
 // MARK: - Reference look-ups (/md/refdata)
 
 struct RefData: Decodable, Sendable {

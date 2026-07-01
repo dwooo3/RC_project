@@ -314,6 +314,11 @@ def md_volsurface(underlying: str) -> dict:
     return jsonable(volsurface.surface(CONTEXT, underlying))
 
 
+@app.get("/md/volsurface/{underlying}/otc")
+def md_volsurface_otc(underlying: str) -> dict:
+    return jsonable(volsurface.otc_surface(CONTEXT, underlying))
+
+
 @app.get("/md/volsurface/{underlying}/plot")
 def md_volsurface_plot(underlying: str) -> Response:
     png = volsurface.surface_png(CONTEXT, underlying)
