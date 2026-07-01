@@ -6,9 +6,24 @@ import SwiftUI
 struct OptionChainView: View {
     let chain: [MDOptionExpiry]
     @State private var expiryID: String?
+    @State private var moneyness = "all"        // "5" | "10" | "20" | "all"
+    @State private var minOI = 0.0              // 0 | 100 | 1000
 
     private var expiry: MDOptionExpiry? {
         chain.first { $0.id == expiryID } ?? chain.first
+    }
+
+    /// Strikes within the moneyness window of the central strike and above the OI
+    /// floor — the doc's chain filters (moneyness / min OI).
+    private func visibleStrikes(_ e: MDOptionExpiry) -> [MDOptionStrike] {
+        var out = e.strikes
+        if let cs = e.centralStrike, cs > 0, let pct = Double(moneyness) {
+            out = out.filter { abs($0.strike - cs) / cs <= pct / 100 }
+        }
+        if minOI > 0 {
+            out = out.filter { max($0.call?.oi ?? 0, $0.put?.oi ?? 0) >= minOI }
+        }
+        return out
     }
 
     var body: some View {
@@ -34,14 +49,33 @@ struct OptionChainView: View {
                 }
 
                 if let e = expiry {
+                    filterRow(e)
                     if let cs = e.centralStrike {
-                        Text("Центральный страйк \(strikeStr(cs)) · \(e.strikes.count) страйков")
+                        Text("Центральный страйк \(strikeStr(cs)) · показано \(visibleStrikes(e).count) из \(e.strikes.count)")
                             .font(.caption).foregroundStyle(.tertiary)
                     }
                     board(e)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func filterRow(_ e: MDOptionExpiry) -> some View {
+        HStack(spacing: Theme.s3) {
+            Picker("", selection: $moneyness) {
+                Text("±5%").tag("5"); Text("±10%").tag("10"); Text("±20%").tag("20"); Text("Все").tag("all")
+            }
+            .pickerStyle(.segmented).fixedSize().labelsHidden()
+            Menu {
+                Button("OI ≥ 0") { minOI = 0 }
+                Button("OI ≥ 100") { minOI = 100 }
+                Button("OI ≥ 1000") { minOI = 1000 }
+            } label: {
+                Text("OI ≥ \(Int(minOI))").font(.system(size: 11, weight: minOI > 0 ? .semibold : .regular))
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            Spacer()
         }
     }
 
@@ -55,7 +89,7 @@ struct OptionChainView: View {
                 }
                 .padding(.horizontal, Theme.s2).padding(.vertical, Theme.s2)
                 Divider()
-                ForEach(e.strikes) { s in
+                ForEach(visibleStrikes(e)) { s in
                     let atm = e.centralStrike.map { abs(s.strike - $0) < 1e-6 } ?? false
                     HStack(spacing: Theme.s2) {
                         cell(fmt(s.call?.oi, 0), .trailing, Theme.positive.opacity(0.85))
