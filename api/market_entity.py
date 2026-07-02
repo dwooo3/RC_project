@@ -36,7 +36,21 @@ def list_instruments(ctx, category: str) -> dict:
     } for r in rows]
     if category == "bonds":
         _enrich_bonds(ctx, out)                      # YTM + G-spread (audit B1/B2)
+    elif category == "equities":
+        _enrich_equities(ctx, out)                   # trailing dividend yield (B5)
     return {"category": category, "instruments": out, "count": len(out)}
+
+
+def _enrich_equities(ctx, rows: list[dict]) -> None:
+    """Trailing-12m dividend yield from the dividends table (181 issuers)."""
+    db = ctx.market_db
+    frm = (_dt.date.today() - _dt.timedelta(days=365)).isoformat()
+    sums = db.dividend_sums_since(frm)
+    for r in rows:
+        s = sums.get(r["secid"])
+        last = r.get("last")
+        if s and last:
+            r["div_yield_pct"] = round(s / float(last) * 100.0, 2)
 
 
 def _gcurve_zero(points: list[dict]):
@@ -234,6 +248,9 @@ def instrument(ctx, category: str, secid: str) -> dict:
             pass
     elif ref.get("category") == "equities":
         out["dividends"] = db.get_dividends(secid)
+        row = {"secid": secid, "last": ref.get("last")}
+        _enrich_equities(ctx, [row])
+        out["div_yield_pct"] = row.get("div_yield_pct")
     elif ref.get("category") == "futures" and ref.get("asset_code"):
         out["asset_code"] = ref.get("asset_code")
         out["chain"] = [{

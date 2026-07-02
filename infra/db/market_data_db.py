@@ -760,6 +760,12 @@ class MarketDataDB:
         return self._query(
             f"SELECT dt, value FROM time_series WHERE factor_id={self.ph} ORDER BY dt", (factor_id,))
 
+    def dividend_sums_since(self, frm: str) -> dict:
+        """secid → sum of dividends with registry_date ≥ frm (for trailing yield)."""
+        return {r["secid"]: float(r["s"]) for r in self._query(
+            f"SELECT secid, SUM(value) AS s FROM dividends "
+            f"WHERE registry_date >= {self.ph} AND value IS NOT NULL GROUP BY secid", (frm,))}
+
     def bond_maturities(self) -> dict:
         """secid → mat_date for every bond in the static instruments table."""
         return {r["secid"]: r["mat_date"] for r in self._query(

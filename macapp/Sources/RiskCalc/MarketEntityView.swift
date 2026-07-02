@@ -308,6 +308,10 @@ struct MarketEntityView: View {
                         Text("YTM \(Fmt.percent(y, digits: 1))").font(.system(size: 9)).monospacedDigit()
                             .foregroundStyle(.secondary)
                     }
+                    if let dv = item.divYieldPct {
+                        Text("Див \(Fmt.percent(dv, digits: 1))").font(.system(size: 9)).monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
                     if let c = item.changePct {
                         Text(Fmt.signedPercent(c, digits: 2)).font(.system(size: 9, weight: .medium)).monospacedDigit()
                             .foregroundStyle(c >= 0 ? Theme.positive : Theme.negative)
@@ -466,13 +470,18 @@ struct MarketEntityView: View {
             keys = ["ISSUENAME", "LATNAME", "ISSUESIZE", "LISTLEVEL", "FACEVALUE", "FACEUNIT", "ISSUEDATE"]
         }
         let info = e.fields.filter { keys.contains($0.name) && ($0.value ?? "").isEmpty == false }
-        // bond analytics from the store (B1/B2): shown ahead of the ISS reference
-        let analytics: [(String, String)] = category == "bonds" ? [
-            ("Доходность к погашению", e.ytm.map { Fmt.percent($0, digits: 2) } ?? ""),
-            ("G-spread к КБД", e.gSpreadBp.map { "\(Fmt.number($0, digits: 0)) б.п." } ?? ""),
-            ("НКД", e.accrued.map { Fmt.number($0, digits: 2) } ?? ""),
-            ("Средневзв. цена", e.wap.map { Fmt.number($0, digits: 2) } ?? ""),
-        ].filter { !$0.1.isEmpty } : []
+        // store-side analytics (B1/B2/B5): shown ahead of the ISS reference
+        var analytics: [(String, String)] = []
+        if category == "bonds" {
+            analytics = [
+                ("Доходность к погашению", e.ytm.map { Fmt.percent($0, digits: 2) } ?? ""),
+                ("G-spread к КБД", e.gSpreadBp.map { "\(Fmt.number($0, digits: 0)) б.п." } ?? ""),
+                ("НКД", e.accrued.map { Fmt.number($0, digits: 2) } ?? ""),
+                ("Средневзв. цена", e.wap.map { Fmt.number($0, digits: 2) } ?? ""),
+            ].filter { !$0.1.isEmpty }
+        } else if category == "equities", let dv = e.divYieldPct {
+            analytics = [("Див. доходность (12м)", Fmt.percent(dv, digits: 2))]
+        }
         return GlassCard(padding: Theme.s3) {
             VStack(alignment: .leading, spacing: Theme.s2) {
                 BlockTitle("Об инструменте", icon: "info.circle")

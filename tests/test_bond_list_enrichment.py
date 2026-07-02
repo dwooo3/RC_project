@@ -63,3 +63,21 @@ def test_junk_ytm_filtered():
                              "wap_price": None, "ytm": 100.0, "volume": 1, "board": "TQOB"})
     rows = list_instruments(_Ctx(db), "bonds")["instruments"]
     assert "ytm" not in rows[0]
+
+
+def test_equity_dividend_yield():
+    db = _mkdb()
+    db.save_instrument_ref({"secid": "SBER", "category": "equities", "market": "shares",
+                            "board": "TQBR", "isin": "RU0009029540", "issuer_ru": "Сбербанк",
+                            "name_ru": "Сбербанк", "sec_type": None, "list_level": 1,
+                            "currency": "RUB", "asset_code": None, "last_trade_date": None,
+                            "is_active": 1, "last": 300.0, "change_pct": 0.5,
+                            "as_of": "2026-07-01", "day_json": "{}", "ref_json": "[]"})
+    recent = (dt.date.today() - dt.timedelta(days=100)).isoformat()
+    old = (dt.date.today() - dt.timedelta(days=500)).isoformat()
+    db._upsert_many("dividends", [
+        {"secid": "SBER", "registry_date": recent, "value": 30.0, "currency": "RUB"},
+        {"secid": "SBER", "registry_date": old, "value": 25.0, "currency": "RUB"},  # stale, excluded
+    ])
+    rows = {r["secid"]: r for r in list_instruments(_Ctx(db), "equities")["instruments"]}
+    assert rows["SBER"]["div_yield_pct"] == pytest.approx(10.0)   # 30/300
