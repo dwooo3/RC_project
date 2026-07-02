@@ -137,11 +137,27 @@ final class MarketBrowserViewModel {
     }
 }
 
+/// Per-category MarketEntityVM cache: keeps the loaded list, selection and chart
+/// state alive across sub-tab switches (plain holder — not observable, mutated
+/// lazily from body without invalidation loops).
+@MainActor
+final class EntityVMCache {
+    private var vms: [String: MarketEntityVM] = [:]
+
+    func vm(for category: String) -> MarketEntityVM {
+        if let vm = vms[category] { return vm }
+        let vm = MarketEntityVM(category: category)
+        vms[category] = vm
+        return vm
+    }
+}
+
 struct MarketScreen: View {
     @State private var vm = MarketBrowserViewModel()
     @State private var group = "overview"
     @State private var instrument = "bonds"
     @State private var curveType = "rates"
+    @State private var entityVMs = EntityVMCache()
 
     // Doc structure: Market Data is a market-data showcase grouped as
     // Overview · Instruments · Curves · Volatility · History (control/quality
@@ -205,7 +221,10 @@ struct MarketScreen: View {
         case "overview":
             OverviewView(onSelect: handleOverviewSelect)
         case "instruments":
-            MarketEntityView(category: instrument).id(instrument)   // fresh VM per category
+            // VMs are cached per category: switching sub-tabs re-uses the loaded
+            // list/selection instead of refetching ~700KB (audit A4). The .id keeps
+            // view identity per category so @State re-binds to the cached VM.
+            MarketEntityView(vm: entityVMs.vm(for: instrument)).id(instrument)
         case "curves":
             ScreenScaffold {
                 if vm.serverDown {

@@ -146,9 +146,10 @@ struct MarketEntityView: View {
     @State private var vm: MarketEntityVM
     @State private var showCard = false
 
-    init(category: String) {
-        self.category = category
-        _vm = State(initialValue: MarketEntityVM(category: category))
+    /// Takes a (cached) VM so sub-tab switches keep list/selection state.
+    init(vm: MarketEntityVM) {
+        self.category = vm.category
+        _vm = State(initialValue: vm)
     }
 
     var body: some View {
@@ -166,7 +167,6 @@ struct MarketEntityView: View {
                 InstrumentCard(category: category, secid: id) { showCard = false }
             }
         }
-        .onChange(of: category) { _, _ in Task { await vm.start() } }
     }
 
     // MARK: master list (1/3)
