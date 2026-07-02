@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 from datetime import date, datetime
 from typing import Any
 
@@ -229,6 +230,11 @@ class MarketDataDB:
             self.conn.row_factory = sqlite3.Row
             self.dialect = "sqlite"
         self.ph = "%s" if self.dialect == "postgres" else "?"
+        # One connection is shared across the uvicorn thread pool; sqlite3
+        # connections are NOT safe for concurrent statements (execute/fetch from
+        # two threads interleave → empty results / "recursive use of cursors").
+        # Serialize every statement; RLock because writes re-enter via helpers.
+        self._lock = threading.RLock()
         self.init_schema()
 
     def init_schema(self) -> None:
@@ -392,16 +398,18 @@ class MarketDataDB:
         self._execmany(sql, [[r.get(c) for c in columns] for r in rows])
 
     def _exec(self, sql: str, params=()):
-        cur = self.conn.cursor()
-        cur.execute(sql, params)
-        self.conn.commit()
-        return cur
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(sql, params)
+            self.conn.commit()
+            return cur
 
     def _execmany(self, sql: str, rows):
-        cur = self.conn.cursor()
-        cur.executemany(sql, rows)
-        self.conn.commit()
-        return cur
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.executemany(sql, rows)
+            self.conn.commit()
+            return cur
 
     @staticmethod
     def _rowdict(cur, row) -> dict:
@@ -414,12 +422,17 @@ class MarketDataDB:
             return dict(zip(cols, row))
 
     def _query(self, sql: str, params=()) -> list[dict]:
-        cur = self._exec(sql, params)
-        return [self._rowdict(cur, r) for r in cur.fetchall()]
+        # execute + fetch under ONE lock hold — a concurrent statement between
+        # them is exactly the race that returned empty rows (intermittent 404s).
+        with self._lock:
+            cur = self._exec(sql, params)
+            rows = cur.fetchall()
+        return [self._rowdict(cur, r) for r in rows]
 
     def _query_one(self, sql: str, params=()) -> dict | None:
-        cur = self._exec(sql, params)
-        row = cur.fetchone()
+        with self._lock:
+            cur = self._exec(sql, params)
+            row = cur.fetchone()
         return self._rowdict(cur, row) if row is not None else None
 
     # -- writes ------------------------------------------------------------
