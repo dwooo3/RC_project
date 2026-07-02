@@ -14,13 +14,21 @@ import time as _time
 from datetime import date, timedelta
 from time import strptime
 
-# category-market → ISS (engine, market)
+# category-market → ISS (engine, market). NB: no "fx" — our FX instruments are
+# CBR fixings (USDRUB/…, board=cbr), which don't trade on currency/selt under
+# these secids, so intraday is honestly unsupported for them (audit A3).
 _ENGINE_MARKET = {
     "bonds": ("stock", "bonds"),
     "shares": ("stock", "shares"),
     "forts": ("futures", "forts"),
-    "fx": ("currency", "selt"),
     "indices": ("stock", "index"),
+}
+
+# app category → market key above (audit A10: map on the server so any client
+# can pass its category directly instead of re-implementing the mapping)
+_CATEGORY_MARKET = {
+    "bonds": "bonds", "equities": "shares", "futures": "forts",
+    "options": "forts", "commodities": "forts", "indices": "indices",
 }
 
 # lookback per interval — enough bars to fill the pane without paging forever
@@ -40,11 +48,18 @@ def _iss():
     return _client
 
 
-def candles(ctx, secid: str, market: str = "bonds", interval: int = 60) -> dict:
+def candles(ctx, secid: str, market: str = "bonds", interval: int = 60,
+            category: str | None = None) -> dict:
     interval = int(interval)
     if interval not in _LOOKBACK_DAYS:
         interval = 60
-    engine, iss_market = _ENGINE_MARKET.get(market, ("stock", "bonds"))
+    if category:
+        market = _CATEGORY_MARKET.get(category, market)
+    em = _ENGINE_MARKET.get(market)
+    if em is None:                                # fx / unknown → honestly unsupported
+        return {"secid": secid, "market": market, "range": f"{interval}m",
+                "points": [], "count": 0, "unsupported": True}
+    engine, iss_market = em
     key = (secid, engine, iss_market, interval)
     now = _time.monotonic()
     hit = _CACHE.get(key)

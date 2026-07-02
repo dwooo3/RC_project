@@ -38,3 +38,15 @@ def test_malformed_begin_skipped():
                                "volume": 0, "begin": "garbage"}])
     out = intraday.candles(_Ctx(), "Y", market="shares", interval=10)
     assert out["count"] == 0
+
+
+def test_fx_market_is_unsupported():
+    out = intraday.candles(_Ctx(), "USDRUB", market="fx", interval=60)
+    assert out.get("unsupported") is True and out["count"] == 0
+
+
+def test_category_mapped_server_side():
+    _seed("SBER", "shares", 10, [{"open": 1, "close": 2, "high": 2, "low": 1,
+                                  "volume": 5, "begin": "2026-07-02 10:00:00"}])
+    out = intraday.candles(_Ctx(), "SBER", market="bonds", interval=10, category="equities")
+    assert out["count"] == 1                     # category won over the market param

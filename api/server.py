@@ -266,8 +266,10 @@ def md_history(secid: str, market: str = "bonds", range: str = "5Y") -> dict:
 
 
 @app.get("/md/candles/{secid}")
-def md_candles(secid: str, market: str = "bonds", interval: int = 60) -> dict:
-    return jsonable(intraday.candles(CONTEXT, secid, market=market, interval=interval))
+def md_candles(secid: str, market: str = "bonds", interval: int = 60,
+               category: str | None = None) -> dict:
+    return jsonable(intraday.candles(CONTEXT, secid, market=market,
+                                     interval=interval, category=category))
 
 
 @app.get("/md/overview")

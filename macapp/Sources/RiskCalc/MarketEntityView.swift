@@ -103,6 +103,12 @@ final class MarketEntityVM {
         switch interval { case "1м": 1; case "10м": 10; case "1ч": 60; default: nil }
     }
 
+    /// FX rows are CBR fixings (no ISS intraday trades under these secids);
+    /// options render a chain board instead of a chart.
+    var supportsIntraday: Bool {
+        ["bonds", "equities", "futures", "commodities", "indices"].contains(category)
+    }
+
     func changeRange(_ r: String) {
         range = r
         reloadBars()
@@ -328,10 +334,12 @@ struct MarketEntityView: View {
     private var rangeBar: some View {
         HStack(spacing: Theme.s3) {
             // interval: daily from the EOD store, or live ISS intraday candles
-            Picker("", selection: Binding(get: { vm.interval }, set: { vm.changeInterval($0) })) {
-                ForEach(["1м", "10м", "1ч", "Д"], id: \.self) { Text($0).tag($0) }
+            if vm.supportsIntraday {
+                Picker("", selection: Binding(get: { vm.interval }, set: { vm.changeInterval($0) })) {
+                    ForEach(["1м", "10м", "1ч", "Д"], id: \.self) { Text($0).tag($0) }
+                }
+                .pickerStyle(.segmented).fixedSize().labelsHidden()
             }
-            .pickerStyle(.segmented).fixedSize().labelsHidden()
             if vm.intradayMinutes != nil {
                 HStack(spacing: 4) {
                     Circle().fill(Theme.positive).frame(width: 6, height: 6)
