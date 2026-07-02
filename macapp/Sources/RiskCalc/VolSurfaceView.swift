@@ -118,6 +118,7 @@ struct VolSurfaceView: View {
                 } else if let surf = vm.surface, !surf.expiries.isEmpty {
                     surfacePlot
                     if let d = surf.diagnostics { fitCaption(d) }
+                    rvVsIv(surf)
                     atmTermStructure(surf)
                     fullTable(surf)
                 } else {
@@ -231,28 +232,58 @@ struct VolSurfaceView: View {
         }
     }
 
-    // MARK: ATM term structure (ATM IV vs time to expiry)
+    // MARK: RV vs IV (B7) — implied premium over realized vol of the futures
+
+    @ViewBuilder
+    private func rvVsIv(_ surf: VolSurface) -> some View {
+        if let rv = surf.rv30dPct,
+           let atm = surf.expiries.first(where: { $0.atmIv != nil })?.atmIv {
+            let iv = atm * 100
+            let prem = iv - rv
+            HStack(spacing: Theme.s2) {
+                Image(systemName: "waveform.path.ecg").font(.system(size: 10)).foregroundStyle(.tertiary)
+                Text("ATM IV \(Fmt.percent(iv, digits: 1)) · RV 30д \(Fmt.percent(rv, digits: 1)) → IV-премия ")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                + Text("\(prem >= 0 ? "+" : "")\(Fmt.number(prem, digits: 1)) п.п.")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(prem >= 0 ? Theme.warning : Theme.positive)
+                Spacer()
+            }
+            .padding(.horizontal, Theme.s1)
+        }
+    }
+
+    // MARK: ATM / 25Δ RR / 25Δ BF term structure (B8 — skew for every asset)
 
     private func atmTermStructure(_ surf: VolSurface) -> some View {
-        let pts = surf.expiries.compactMap { e -> (t: Double, iv: Double, exp: String)? in
+        let pts = surf.expiries.compactMap { e -> (t: Double, iv: Double, rr: Double?, bf: Double?, exp: String)? in
             guard let t = e.t, let a = e.atmIv else { return nil }
-            return (t, a * 100, e.expiry)
+            return (t, a * 100, e.rr25.map { $0 * 100 }, e.bf25.map { $0 * 100 }, e.expiry)
         }.sorted { $0.t < $1.t }
         return GlassCard {
             VStack(alignment: .leading, spacing: Theme.s3) {
-                BlockTitle("ATM срочная структура", icon: "chart.xyaxis.line")
+                BlockTitle("Термоструктура · ATM / 25Δ RR / 25Δ BF", icon: "chart.xyaxis.line")
                 if pts.count >= 2 {
                     Chart {
                         ForEach(pts, id: \.exp) { p in
-                            LineMark(x: .value("Срок", p.t), y: .value("ATM IV", p.iv))
+                            LineMark(x: .value("Срок", p.t), y: .value("%", p.iv), series: .value("s", "ATM"))
                                 .foregroundStyle(Theme.accent).lineStyle(.init(lineWidth: 2.2))
                                 .interpolationMethod(.catmullRom)
-                            PointMark(x: .value("Срок", p.t), y: .value("ATM IV", p.iv))
+                            PointMark(x: .value("Срок", p.t), y: .value("%", p.iv))
                                 .foregroundStyle(Theme.accent).symbolSize(28)
+                            if let rr = p.rr {
+                                LineMark(x: .value("Срок", p.t), y: .value("%", rr), series: .value("s", "25Δ RR"))
+                                    .foregroundStyle(Theme.negative).lineStyle(.init(lineWidth: 1.6))
+                            }
+                            if let bf = p.bf {
+                                LineMark(x: .value("Срок", p.t), y: .value("%", bf), series: .value("s", "25Δ BF"))
+                                    .foregroundStyle(Theme.positive).lineStyle(.init(lineWidth: 1.6))
+                            }
                         }
                     }
-                    .chartXAxisLabel("Срок, лет").chartYAxisLabel("ATM IV %")
-                    .frame(height: 200)
+                    .chartForegroundStyleScale(["ATM": Theme.accent, "25Δ RR": Theme.negative, "25Δ BF": Theme.positive])
+                    .chartXAxisLabel("Срок, лет").chartYAxisLabel("%")
+                    .frame(height: 220)
                 } else {
                     Text("Недостаточно экспираций").font(.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, minHeight: 80)

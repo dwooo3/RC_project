@@ -653,6 +653,11 @@ struct VolSurface: Decodable, Sendable {
     let deltas: [Double]
     let surface: [VolSurfaceRow]
     let diagnostics: VolDiagnostics?
+    let rv30dPct: Double?        // realized vol of the active futures (RV vs IV)
+    enum CodingKeys: String, CodingKey {
+        case underlying, expiries, deltas, surface, diagnostics
+        case rv30dPct = "rv_30d_pct"
+    }
 }
 
 // OTC FX vol (ATM / 25Δ RR / 25Δ BF term structure) — /md/volsurface/{u}/otc
@@ -835,13 +840,15 @@ struct VolExpiry: Decodable, Sendable, Identifiable {
     let t: Double?
     let forward: Double?
     let atmIv: Double?
+    let rr25: Double?            // 25Δ risk-reversal from the calibrated SABR slice
+    let bf25: Double?            // 25Δ butterfly
     let sabr: VolSABR?
     let points: [VolPoint]
     let sabrCurve: [VolCurvePoint]
     var id: String { expiry }
 
     enum CodingKeys: String, CodingKey {
-        case expiry, t, forward, points, sabr
+        case expiry, t, forward, points, sabr, rr25, bf25
         case atmIv = "atm_iv"
         case sabrCurve = "sabr_curve"
     }

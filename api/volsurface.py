@@ -88,6 +88,26 @@ def _calibrate_sabr(F: float, T: float, strikes: list[float], ivs: list[float],
         return fallback
 
 
+def _underlying_rv30(db, underlying: str):
+    """30d realized vol (annualized, %) of the underlying's active futures — the
+    RV side of the RV-vs-IV comparison (B7)."""
+    try:
+        refs = [r for r in db.list_instrument_refs("futures", active_only=True)
+                if r.get("asset_code") == underlying]
+        if not refs:
+            return None
+        hist = db.get_price_history(refs[0]["secid"], "forts")
+        closes = [float(h["close"]) for h in hist if h.get("close")][-31:]
+        if len(closes) < 11:
+            return None
+        rets = [math.log(b / a) for a, b in zip(closes, closes[1:]) if a > 0 and b > 0]
+        m = sum(rets) / len(rets)
+        var = sum((r - m) ** 2 for r in rets) / (len(rets) - 1)
+        return round(math.sqrt(var * 252) * 100.0, 2)
+    except Exception:
+        return None
+
+
 def _strike_for_delta(F: float, T: float, sabr: dict, target: float) -> float:
     """Invert call-delta(K) == target via bisection on K (delta ↓ as K ↑)."""
     from models.heston import sabr_vol
@@ -174,9 +194,19 @@ def surface(ctx, underlying: str) -> dict:
             curve.append({"delta": _call_delta(F, K, T, siv), "iv": siv})
         curve.sort(key=lambda x: x["delta"])
 
+        # 25Δ skew from the calibrated slice (B8): the OTC RR/BF mechanics work on
+        # any smile, not just FX — expose them for every underlying.
+        atm_iv = sabr_vol(F, F, T, sabr["alpha"], sabr["beta"], sabr["rho"], sabr["nu"])
+        k25c = _strike_for_delta(F, T, sabr, 0.25)
+        k25p = _strike_for_delta(F, T, sabr, 0.75)
+        s25c = sabr_vol(F, k25c, T, sabr["alpha"], sabr["beta"], sabr["rho"], sabr["nu"])
+        s25p = sabr_vol(F, k25p, T, sabr["alpha"], sabr["beta"], sabr["rho"], sabr["nu"])
+        rr25 = (s25c - s25p) if (math.isfinite(s25c) and math.isfinite(s25p)) else None
+        bf25 = ((s25c + s25p) / 2 - atm_iv) if rr25 is not None else None
+
         expiries.append({
             "expiry": exp, "t": T, "forward": F,
-            "atm_iv": sabr_vol(F, F, T, sabr["alpha"], sabr["beta"], sabr["rho"], sabr["nu"]),
+            "atm_iv": atm_iv, "rr25": rr25, "bf25": bf25,
             "sabr": sabr, "rmse": rmse, "n_points": len(pts),
             "points": pts, "sabr_curve": curve,
         })
@@ -199,7 +229,8 @@ def surface(ctx, underlying: str) -> dict:
         "rmse": (sum(rmses) / len(rmses)) if rmses else None,   # mean across expiries
     }
     result = {"underlying": underlying, "expiries": expiries, "deltas": _DELTA_BUCKETS,
-              "surface": grid, "diagnostics": diagnostics}
+              "surface": grid, "diagnostics": diagnostics,
+              "rv_30d_pct": _underlying_rv30(db, underlying)}
     if len(_CACHE) > 40:
         _CACHE.clear()
     _CACHE[cache_key] = result
