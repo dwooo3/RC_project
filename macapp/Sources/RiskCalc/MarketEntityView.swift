@@ -23,6 +23,7 @@ final class MarketEntityVM {
     var serverDown = false
 
     private let client = BridgeClient()
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
 
     init(category: String) { self.category = category }
 
@@ -69,25 +70,33 @@ final class MarketEntityVM {
 
     func select(_ secid: String) async {
         selectedID = secid
+        loadTask?.cancel()
         loadingDetail = true
         let e = try? await client.mdInstrument(category: category, secid: secid)
+        guard selectedID == secid else { return }        // a later click won the race
         if category == "options" {
             bars = []                                   // options have no price series
         } else {
             await loadBars(secid)
         }
+        guard selectedID == secid else { return }
         entity = e
         loadingDetail = false
     }
 
     /// Daily bars from the EOD store, or live ISS candles when an intraday
-    /// interval (1м/10м/1ч) is selected.
+    /// interval (1м/10м/1ч) is selected. Discards the result if the selection
+    /// moved on while the request was in flight (stale-write guard).
     private func loadBars(_ secid: String) async {
+        let wanted = interval
+        let pts: [MDBar]
         if let minutes = intradayMinutes {
-            bars = (try? await client.mdCandles(secid: secid, market: market, interval: minutes))?.points ?? []
+            pts = (try? await client.mdCandles(secid: secid, market: market, interval: minutes))?.points ?? []
         } else {
-            bars = (try? await client.mdHistory(secid: secid, market: market, range: range))?.points ?? []
+            pts = (try? await client.mdHistory(secid: secid, market: market, range: range))?.points ?? []
         }
+        guard !Task.isCancelled, selectedID == secid, interval == wanted else { return }
+        bars = pts
     }
 
     var intradayMinutes: Int? {
@@ -96,14 +105,18 @@ final class MarketEntityVM {
 
     func changeRange(_ r: String) {
         range = r
-        guard let id = selectedID else { return }
-        Task { await loadBars(id) }
+        reloadBars()
     }
 
     func changeInterval(_ i: String) {
         interval = i
+        reloadBars()
+    }
+
+    private func reloadBars() {
         guard let id = selectedID else { return }
-        Task { await loadBars(id) }
+        loadTask?.cancel()
+        loadTask = Task { await loadBars(id) }
     }
 
     /// Live polling while an intraday interval is active — re-fetches candles so
@@ -115,6 +128,7 @@ final class MarketEntityVM {
             try? await Task.sleep(for: .seconds(15))
             guard !Task.isCancelled, let id = selectedID, let m = intradayMinutes else { return }
             if let pts = try? await client.mdCandles(secid: id, market: market, interval: m).points {
+                guard !Task.isCancelled, selectedID == id, intradayMinutes == m else { return }
                 bars = pts
             }
         }
