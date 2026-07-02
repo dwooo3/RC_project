@@ -15,6 +15,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/RiskCalc"
 cp Info.plist "$APP/Contents/Info.plist"
 
+# SwiftPM resource bundles (Bundle.module resolves next to Bundle.main resources).
+for B in ".build/$CONFIG"/*.bundle; do
+  [ -e "$B" ] && cp -R "$B" "$APP/Contents/Resources/"
+done
+
 # Ad-hoc codesign so macOS will run/grant it locally.
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 
