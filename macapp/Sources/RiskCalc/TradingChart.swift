@@ -7,56 +7,21 @@ import WebKit
 /// pan, crosshair with OHLC legend, volume histogram pane, SMA overlay, log
 /// scale. `window.render(cfg)` redraws on data change and `window.updateLast(bar)`
 /// is the live-update hook for streaming refreshes.
+/// Chart pane only — mode (Candles/Line/Yield) is owned by the caller, which
+/// renders it in its own compact controls row. SMA20 is always on, price scale
+/// is always linear (the toggles were dropped as noise).
 struct TradingChart: View {
     let bars: [MDBar]
-    let isBond: Bool
-    let preferLine: Bool
+    let mode: String            // JS ids: "Candles" | "Line" | "Yield"
 
-    enum Mode: String, CaseIterable, Identifiable {
-        case candle = "Candles", line = "Line", yield = "Yield"
-        var id: String { rawValue }
-    }
-
-    @State private var mode: Mode
-    @State private var showSMA = true
-    @State private var logScale = false
-
-    init(bars: [MDBar], isBond: Bool = false, preferLine: Bool = false) {
+    init(bars: [MDBar], mode: String = "Candles") {
         self.bars = bars
-        self.isBond = isBond
-        self.preferLine = preferLine
-        _mode = State(initialValue: preferLine ? .line : .candle)
-    }
-
-    private var isIntraday: Bool { bars.last?.ts != nil }
-
-    /// ISS intraday candles carry no yield → the Yield mode is daily-only.
-    private var availableModes: [Mode] {
-        (isBond && !isIntraday) ? Mode.allCases : [.candle, .line]
+        self.mode = mode
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.s2) {
-            controls
-            LWChartView(bars: bars, mode: mode.rawValue, showSMA: showSMA, logScale: logScale)
-                .frame(height: 380)
-        }
-        .onChange(of: isIntraday) { _, intraday in
-            if intraday && mode == .yield { mode = .candle }
-        }
-    }
-
-    private var controls: some View {
-        HStack(spacing: Theme.s3) {
-            Picker("", selection: $mode) {
-                ForEach(availableModes) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented).fixedSize().labelsHidden()
-            Toggle("SMA20", isOn: $showSMA).toggleStyle(.button).controlSize(.small)
-            Toggle("Log", isOn: $logScale).toggleStyle(.button).controlSize(.small)
-            Spacer()
-        }
-        .font(.system(size: 11))
+        LWChartView(bars: bars, mode: mode, showSMA: true, logScale: false)
+            .frame(height: 380)
     }
 }
 
@@ -195,7 +160,7 @@ private struct LWChartView: NSViewRepresentable {
         chart = LightweightCharts.createChart(el('c'), {
             autoSize: true,
             layout: { background: { type: 'solid', color: 'transparent' },
-                      textColor: '#9aa0aa', fontSize: 11,
+                      textColor: '#9aa0aa', fontSize: 11, attributionLogo: false,
                       fontFamily: '-apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif' },
             grid: { vertLines: { color: 'rgba(255,255,255,0.05)' },
                     horzLines: { color: 'rgba(255,255,255,0.05)' } },
@@ -405,6 +370,7 @@ private struct LWChartView: NSViewRepresentable {
                 color:#9aa0aa;font-variant-numeric:tabular-nums;white-space:nowrap}
         #legend b{color:#e8eaed;font-weight:600}
         #legend .d{color:#6f7680}
+        #c a[id^="tv"]{display:none!important}   /* attribution logo fallback (licence kept in the vendored js) */
         </style></head><body>
         <div id="c"></div><div id="legend"></div>
         <script>\(libraryJS)</script>

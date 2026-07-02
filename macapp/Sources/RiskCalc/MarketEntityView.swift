@@ -18,6 +18,7 @@ final class MarketEntityVM {
     var bars: [MDBar] = []
     var range = "1Y"
     var interval = "Д"                        // Д (daily) | 1м | 10м | 1ч (live ISS)
+    var chartMode = "Свечи"                   // Свечи | Линия | Доходность
     var loadingList = false
     var loadingDetail = false
     var serverDown = false
@@ -25,7 +26,21 @@ final class MarketEntityVM {
     private let client = BridgeClient()
     @ObservationIgnored private var loadTask: Task<Void, Never>?
 
-    init(category: String) { self.category = category }
+    init(category: String) {
+        self.category = category
+        if category == "fx" || category == "indices" { chartMode = "Линия" }
+    }
+
+    /// RU display mode → the chart's JS series id.
+    var jsChartMode: String {
+        switch chartMode { case "Линия": "Line"; case "Доходность": "Yield"; default: "Candles" }
+    }
+
+    var chartModes: [String] {
+        var out = ["Свечи", "Линия"]
+        if category == "bonds" && intradayMinutes == nil { out.append("Доходность") }
+        return out
+    }
 
     var market: String { mdMarket(category) }
 
@@ -116,6 +131,9 @@ final class MarketEntityVM {
 
     func changeInterval(_ i: String) {
         interval = i
+        if intradayMinutes != nil && chartMode == "Доходность" {
+            chartMode = "Свечи"                // ISS candles carry no yield
+        }
         reloadBars()
     }
 
@@ -299,7 +317,7 @@ struct MarketEntityView: View {
                         OptionChainView(chain: e.optionChain ?? [])
                     } else {
                         rangeBar
-                        TradingChart(bars: vm.bars, isBond: category == "bonds", preferLine: category == "fx")
+                        TradingChart(bars: vm.bars, mode: vm.jsChartMode)
                         dayStats(e)
                     }
                     keyInfo(e)
@@ -331,29 +349,46 @@ struct MarketEntityView: View {
         }
     }
 
+    /// One compact row of dropdown chips: interval · chart mode · period/LIVE.
     private var rangeBar: some View {
-        HStack(spacing: Theme.s3) {
-            // interval: daily from the EOD store, or live ISS intraday candles
+        HStack(spacing: Theme.s2) {
             if vm.supportsIntraday {
-                Picker("", selection: Binding(get: { vm.interval }, set: { vm.changeInterval($0) })) {
-                    ForEach(["1м", "10м", "1ч", "Д"], id: \.self) { Text($0).tag($0) }
-                }
-                .pickerStyle(.segmented).fixedSize().labelsHidden()
+                chipMenu(["1м", "10м", "1ч", "Д"],
+                         Binding(get: { vm.interval }, set: { vm.changeInterval($0) }))
             }
+            chipMenu(vm.chartModes, $vm.chartMode)
             if vm.intradayMinutes != nil {
                 HStack(spacing: 4) {
                     Circle().fill(Theme.positive).frame(width: 6, height: 6)
-                    Text("LIVE · обновление 15с").font(.system(size: 10, weight: .medium))
+                    Text("LIVE · 15с").font(.system(size: 10, weight: .medium))
                         .foregroundStyle(Theme.positive)
                 }
             } else {
-                Picker("", selection: Binding(get: { vm.range }, set: { vm.changeRange($0) })) {
-                    ForEach(["1M", "3M", "6M", "1Y", "5Y", "ALL"], id: \.self) { Text($0).tag($0) }
-                }
-                .pickerStyle(.segmented).fixedSize().labelsHidden()
+                chipMenu(["1M", "3M", "6M", "1Y", "5Y", "ALL"],
+                         Binding(get: { vm.range }, set: { vm.changeRange($0) }))
             }
             Spacer()
         }
+    }
+
+    private func chipMenu(_ options: [String], _ binding: Binding<String>) -> some View {
+        Menu {
+            ForEach(options, id: \.self) { o in
+                Button { binding.wrappedValue = o } label: {
+                    if o == binding.wrappedValue { Label(o, systemImage: "checkmark") }
+                    else { Text(o) }
+                }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Text(binding.wrappedValue).font(.system(size: 11, weight: .semibold))
+                Image(systemName: "chevron.down").font(.system(size: 7))
+            }
+            .padding(.horizontal, Theme.s2).padding(.vertical, 4)
+            .background(Color.gray.opacity(0.14), in: RoundedRectangle(cornerRadius: 7))
+            .foregroundStyle(.primary)
+        }
+        .menuStyle(.borderlessButton).fixedSize()
     }
 
     private func dayStats(_ e: MDEntity) -> some View {
