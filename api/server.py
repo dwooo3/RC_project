@@ -30,6 +30,7 @@ from api import (
     datahealth,
     history,
     ingest_job,
+    intraday,
     instruments,
     market_entity,
     marketdata,
@@ -262,6 +263,11 @@ def md_instrument(category: str, secid: str) -> dict:
 @app.get("/md/history/{secid}")
 def md_history(secid: str, market: str = "bonds", range: str = "5Y") -> dict:
     return jsonable(market_entity.history(CONTEXT, secid, market=market, rng=range))
+
+
+@app.get("/md/candles/{secid}")
+def md_candles(secid: str, market: str = "bonds", interval: int = 60) -> dict:
+    return jsonable(intraday.candles(CONTEXT, secid, market=market, interval=interval))
 
 
 @app.get("/md/overview")

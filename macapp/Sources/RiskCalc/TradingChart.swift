@@ -64,6 +64,11 @@ private struct LWChartView: NSViewRepresentable {
         var ready = false
         var pending: String?
         var lastSig = ""
+        // last rendered series identity — for the updateLast fast-path
+        var staticSig = ""
+        var lastCount = 0
+        var firstDate = ""
+        var lastDate = ""
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             ready = true
@@ -84,16 +89,33 @@ private struct LWChartView: NSViewRepresentable {
     }
 
     func updateNSView(_ web: WKWebView, context: Context) {
+        let co = context.coordinator
         let sig = "\(bars.count)|\(bars.first?.date ?? "")|\(bars.last?.date ?? "")"
             + "|\(bars.first?.close ?? 0)|\(bars.last?.close ?? 0)|\(bars.last?.volume ?? 0)"
             + "|\(mode)|\(showSMA)|\(logScale)"
-        guard sig != context.coordinator.lastSig else { return }
-        context.coordinator.lastSig = sig
-        let js = "window.render(\(configJSON()));"
-        if context.coordinator.ready {
+        guard sig != co.lastSig else { return }
+        co.lastSig = sig
+
+        // Fast path (live polling): same series, only the tail bar refreshed or
+        // one new bar appended → stream it via updateLast so zoom/pan survive.
+        let staticSig = "\(mode)|\(showSMA)|\(logScale)|\(bars.first?.date ?? "")"
+        let sameSeries = co.ready && staticSig == co.staticSig && !bars.isEmpty
+            && (bars.count == co.lastCount
+                || (bars.count == co.lastCount + 1 && bars.dropLast().last?.date == co.lastDate))
+        let js: String
+        if sameSeries, let last = bars.last, let barJSON = barJSON(last) {
+            js = "window.updateLast(\(barJSON));"
+        } else {
+            js = "window.render(\(configJSON()));"
+        }
+        co.staticSig = staticSig
+        co.lastCount = bars.count
+        co.firstDate = bars.first?.date ?? ""
+        co.lastDate = bars.last?.date ?? ""
+        if co.ready {
             web.evaluateJavaScript(js)
         } else {
-            context.coordinator.pending = js
+            co.pending = "window.render(\(configJSON()));"
         }
     }
 
@@ -101,6 +123,7 @@ private struct LWChartView: NSViewRepresentable {
 
     private struct LWBar: Encodable {
         let time: String
+        let t: Double?        // intraday: epoch seconds (takes precedence in JS)
         let open: Double?
         let high: Double?
         let low: Double?
@@ -114,16 +137,25 @@ private struct LWChartView: NSViewRepresentable {
         let mode: String
         let sma: Bool
         let log: Bool
+        let intraday: Bool
+    }
+
+    private func lwBar(_ b: MDBar) -> LWBar {
+        LWBar(time: b.date, t: b.ts, open: b.open, high: b.high,
+              low: b.low, close: b.close, volume: b.volume, yld: b.yld)
     }
 
     private func configJSON() -> String {
-        let payload = LWConfig(
-            bars: bars.map { LWBar(time: $0.date, open: $0.open, high: $0.high,
-                                   low: $0.low, close: $0.close, volume: $0.volume, yld: $0.yld) },
-            mode: mode, sma: showSMA, log: logScale)
+        let payload = LWConfig(bars: bars.map(lwBar), mode: mode, sma: showSMA,
+                               log: logScale, intraday: bars.last?.ts != nil)
         guard let data = try? JSONEncoder().encode(payload),
               let s = String(data: data, encoding: .utf8) else { return "{}" }
         return s
+    }
+
+    private func barJSON(_ b: MDBar) -> String? {
+        guard let data = try? JSONEncoder().encode(lwBar(b)) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     // MARK: page (library injected inline from the vendored bundle)
@@ -178,6 +210,16 @@ private struct LWChartView: NSViewRepresentable {
         return v.toLocaleString('ru-RU', { minimumFractionDigits: dp, maximumFractionDigits: dp });
     }
 
+    // intraday bars carry epoch seconds in t; daily bars a yyyy-mm-dd string
+    function timeFor(b) { return (b.t !== null && b.t !== undefined) ? b.t : b.time; }
+
+    function fmtTime(t) {
+        if (typeof t !== 'number') return t;
+        const d = new Date(t * 1000);   // MSK wall-clock encoded as UTC
+        return d.toLocaleString('ru-RU', { timeZone: 'UTC', day: '2-digit', month: '2-digit',
+                                           hour: '2-digit', minute: '2-digit' });
+    }
+
     function legendFor(bar, mode) {
         if (!bar) { el('legend').innerHTML = ''; return; }
         const dp = (Math.abs(bar.close) >= 10000) ? 0 : 2;
@@ -185,12 +227,12 @@ private struct LWChartView: NSViewRepresentable {
         const col = up ? UP : DOWN;
         if (mode === 'Yield') {
             el('legend').innerHTML =
-                `<span class="d">${bar.time}</span> <b style="color:${ACCENT}">YTM ${fmtN(bar.close, 2)}%</b>`;
+                `<span class="d">${fmtTime(bar.time)}</span> <b style="color:${ACCENT}">YTM ${fmtN(bar.close, 2)}%</b>`;
             return;
         }
         const chg = (bar.open && bar.open !== 0) ? ((bar.close - bar.open) / bar.open * 100) : null;
         el('legend').innerHTML =
-            `<span class="d">${bar.time}</span>` +
+            `<span class="d">${fmtTime(bar.time)}</span>` +
             ` O <b>${fmtN(bar.open, dp)}</b> H <b>${fmtN(bar.high, dp)}</b>` +
             ` L <b>${fmtN(bar.low, dp)}</b> C <b style="color:${col}">${fmtN(bar.close, dp)}</b>` +
             (chg !== null ? ` <b style="color:${col}">${chg >= 0 ? '+' : ''}${fmtN(chg, 2)}%</b>` : '') +
@@ -206,9 +248,10 @@ private struct LWChartView: NSViewRepresentable {
         const sd = param.seriesData.get(priceSeries);
         if (!sd) { legendFor(lastBar, lastMode); return; }
         const v = param.seriesData.get(volSeries);
+        const t = param.time;
         const bar = {
-            time: typeof param.time === 'string' ? param.time
-                  : `${param.time.year}-${String(param.time.month).padStart(2, '0')}-${String(param.time.day).padStart(2, '0')}`,
+            time: (typeof t === 'string' || typeof t === 'number') ? t
+                  : `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`,
             open: sd.open ?? sd.value, high: sd.high ?? sd.value,
             low: sd.low ?? sd.value, close: sd.close ?? sd.value,
             volume: v ? v.value : null,
@@ -226,12 +269,14 @@ private struct LWChartView: NSViewRepresentable {
         lastMode = cfg.mode;
         if (bars.length === 0) { el('legend').innerHTML = ''; return; }
 
+        chart.applyOptions({ timeScale: { timeVisible: !!cfg.intraday, secondsVisible: false } });
+
         const yieldMode = cfg.mode === 'Yield';
         const lineMode = cfg.mode === 'Line' || yieldMode;
         const values = yieldMode
             ? bars.filter(b => b.yld !== null && b.yld !== undefined)
-                  .map(b => ({ time: b.time, value: b.yld }))
-            : bars.map(b => ({ time: b.time, value: b.close }));
+                  .map(b => ({ time: timeFor(b), value: b.yld }))
+            : bars.map(b => ({ time: timeFor(b), value: b.close }));
         const typical = values.length ? Math.abs(values[values.length - 1].value) : 1;
         const pf = yieldMode ? { precision: 2, minMove: 0.01 } : precisionFor(typical);
 
@@ -253,7 +298,7 @@ private struct LWChartView: NSViewRepresentable {
                 const o = b.open ?? b.close;
                 const h = Math.max(b.high ?? b.close, o, b.close);
                 const l = Math.min(b.low ?? b.close, o, b.close);
-                return { time: b.time, open: o, high: h, low: l, close: b.close };
+                return { time: timeFor(b), open: o, high: h, low: l, close: b.close };
             }));
         }
 
@@ -265,7 +310,7 @@ private struct LWChartView: NSViewRepresentable {
             });
             chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
             volSeries.setData(bars.map(b => ({
-                time: b.time, value: b.volume ?? 0,
+                time: timeFor(b), value: b.volume ?? 0,
                 color: (b.close >= (b.open ?? b.close)) ? 'rgba(38,166,154,0.45)' : 'rgba(239,83,80,0.45)',
             })));
         }
@@ -277,7 +322,7 @@ private struct LWChartView: NSViewRepresentable {
             for (let i = 0; i < closes.length; i++) {
                 acc += closes[i];
                 if (i >= 20) acc -= closes[i - 20];
-                if (i >= 19) pts.push({ time: bars[i].time, value: acc / 20 });
+                if (i >= 19) pts.push({ time: timeFor(bars[i]), value: acc / 20 });
             }
             smaSeries = chart.addLineSeries({
                 color: SMA, lineWidth: 1.5,
@@ -294,28 +339,30 @@ private struct LWChartView: NSViewRepresentable {
         chart.timeScale().fitContent();
 
         const lb = bars[bars.length - 1];
-        lastBar = { time: lb.time, open: lb.open ?? lb.close, high: lb.high ?? lb.close,
+        lastBar = { time: timeFor(lb), open: lb.open ?? lb.close, high: lb.high ?? lb.close,
                     low: lb.low ?? lb.close, close: yieldMode ? (lb.yld ?? lb.close) : lb.close,
                     volume: lb.volume };
         legendFor(lastBar, lastMode);
     };
 
-    // Live-update hook: stream a bar into the current series without a full redraw.
+    // Live-update hook: stream a bar into the current series without a full
+    // redraw (zoom/pan survive the 15s polling).
     window.updateLast = function (b) {
         if (!priceSeries || !b) return;
+        const t = timeFor(b);
         if (lastMode === 'Candles') {
             const o = b.open ?? b.close;
-            priceSeries.update({ time: b.time, open: o,
+            priceSeries.update({ time: t, open: o,
                                  high: Math.max(b.high ?? b.close, o, b.close),
                                  low: Math.min(b.low ?? b.close, o, b.close), close: b.close });
         } else {
-            priceSeries.update({ time: b.time, value: lastMode === 'Yield' ? (b.yld ?? b.close) : b.close });
+            priceSeries.update({ time: t, value: lastMode === 'Yield' ? (b.yld ?? b.close) : b.close });
         }
         if (volSeries && b.volume !== null && b.volume !== undefined) {
-            volSeries.update({ time: b.time, value: b.volume,
+            volSeries.update({ time: t, value: b.volume,
                                color: (b.close >= (b.open ?? b.close)) ? 'rgba(38,166,154,0.45)' : 'rgba(239,83,80,0.45)' });
         }
-        lastBar = { time: b.time, open: b.open ?? b.close, high: b.high ?? b.close,
+        lastBar = { time: t, open: b.open ?? b.close, high: b.high ?? b.close,
                     low: b.low ?? b.close, close: b.close, volume: b.volume };
         legendFor(lastBar, lastMode);
     };

@@ -979,10 +979,11 @@ struct MDBar: Decodable, Sendable, Identifiable {
     let close: Double
     let volume: Double?
     let yld: Double?
+    let ts: Double?          // intraday: bar open time, epoch seconds (MSK-as-UTC)
     var id: String { date }
 
     enum CodingKeys: String, CodingKey {
-        case date, open, high, low, close, volume
+        case date, open, high, low, close, volume, ts
         case yld = "yield"
     }
 

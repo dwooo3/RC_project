@@ -17,6 +17,7 @@ final class MarketEntityVM {
     var entity: MDEntity?
     var bars: [MDBar] = []
     var range = "1Y"
+    var interval = "Д"                        // Д (daily) | 1м | 10м | 1ч (live ISS)
     var loadingList = false
     var loadingDetail = false
     var serverDown = false
@@ -73,17 +74,49 @@ final class MarketEntityVM {
         if category == "options" {
             bars = []                                   // options have no price series
         } else {
-            bars = (try? await client.mdHistory(secid: secid, market: market, range: range))?.points ?? []
+            await loadBars(secid)
         }
         entity = e
         loadingDetail = false
     }
 
+    /// Daily bars from the EOD store, or live ISS candles when an intraday
+    /// interval (1м/10м/1ч) is selected.
+    private func loadBars(_ secid: String) async {
+        if let minutes = intradayMinutes {
+            bars = (try? await client.mdCandles(secid: secid, market: market, interval: minutes))?.points ?? []
+        } else {
+            bars = (try? await client.mdHistory(secid: secid, market: market, range: range))?.points ?? []
+        }
+    }
+
+    var intradayMinutes: Int? {
+        switch interval { case "1м": 1; case "10м": 10; case "1ч": 60; default: nil }
+    }
+
     func changeRange(_ r: String) {
         range = r
         guard let id = selectedID else { return }
-        Task {
-            bars = (try? await client.mdHistory(secid: id, market: market, range: r))?.points ?? []
+        Task { await loadBars(id) }
+    }
+
+    func changeInterval(_ i: String) {
+        interval = i
+        guard let id = selectedID else { return }
+        Task { await loadBars(id) }
+    }
+
+    /// Live polling while an intraday interval is active — re-fetches candles so
+    /// the chart's updateLast streams the newest bar. Cancelled automatically by
+    /// .task(id:) when the instrument/interval changes or the view disappears.
+    func pollIntraday() async {
+        guard intradayMinutes != nil else { return }
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(15))
+            guard !Task.isCancelled, let id = selectedID, let m = intradayMinutes else { return }
+            if let pts = try? await client.mdCandles(secid: id, market: market, interval: m).points {
+                bars = pts
+            }
         }
     }
 }
@@ -107,6 +140,7 @@ struct MarketEntityView: View {
             }
         }
         .task { if vm.items.isEmpty { await vm.start() } }
+        .task(id: "\(vm.selectedID ?? "")|\(vm.interval)") { await vm.pollIntraday() }
         .sheet(isPresented: $showCard) {
             if let id = vm.selectedID {
                 InstrumentCard(category: category, secid: id) { showCard = false }
@@ -278,10 +312,26 @@ struct MarketEntityView: View {
     }
 
     private var rangeBar: some View {
-        Picker("", selection: Binding(get: { vm.range }, set: { vm.changeRange($0) })) {
-            ForEach(["1M", "3M", "6M", "1Y", "5Y", "ALL"], id: \.self) { Text($0).tag($0) }
+        HStack(spacing: Theme.s3) {
+            // interval: daily from the EOD store, or live ISS intraday candles
+            Picker("", selection: Binding(get: { vm.interval }, set: { vm.changeInterval($0) })) {
+                ForEach(["1м", "10м", "1ч", "Д"], id: \.self) { Text($0).tag($0) }
+            }
+            .pickerStyle(.segmented).fixedSize().labelsHidden()
+            if vm.intradayMinutes != nil {
+                HStack(spacing: 4) {
+                    Circle().fill(Theme.positive).frame(width: 6, height: 6)
+                    Text("LIVE · обновление 15с").font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Theme.positive)
+                }
+            } else {
+                Picker("", selection: Binding(get: { vm.range }, set: { vm.changeRange($0) })) {
+                    ForEach(["1M", "3M", "6M", "1Y", "5Y", "ALL"], id: \.self) { Text($0).tag($0) }
+                }
+                .pickerStyle(.segmented).fixedSize().labelsHidden()
+            }
+            Spacer()
         }
-        .pickerStyle(.segmented).fixedSize().labelsHidden()
     }
 
     private func dayStats(_ e: MDEntity) -> some View {

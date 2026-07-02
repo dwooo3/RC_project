@@ -186,6 +186,16 @@ actor BridgeClient {
         return try JSONDecoder().decode(RawTable.self, from: data)
     }
 
+    /// Live intraday candles from MOEX ISS (interval: 1 / 10 / 60 minutes).
+    func mdCandles(secid: String, market: String, interval: Int) async throws -> MDHistory {
+        var comps = URLComponents(url: base.appending(path: "md/candles/\(secid)"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "market", value: market),
+                            URLQueryItem(name: "interval", value: "\(interval)")]
+        let (data, response) = try await session.data(from: comps.url!)
+        try Self.check(response, data)
+        return try JSONDecoder().decode(MDHistory.self, from: data)
+    }
+
     func volSurfaceList() async throws -> VolSurfaceList { try await get("md/volsurface") }
 
     func volSurface(underlying: String) async throws -> VolSurface {
