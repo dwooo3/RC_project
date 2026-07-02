@@ -1,0 +1,62 @@
+# PLAN C — UX и дизайн-доводка (Market Data)
+
+Контекст — [MARKET_DATA_AUDIT_2026_07.md](MARKET_DATA_AUDIT_2026_07.md) §2.
+Делается ПОСЛЕ PLAN A (фиксы) и хотя бы B1 (иначе поиску нечего показывать
+богатого).
+
+## C1. Шапка вкладки: глобальный поиск + идентичность данных
+
+- Бэкенд: `GET /md/search?q=` → по `instrument_ref` (secid/isin/issuer_ru/name_ru,
+  LIKE, limit 20) + индексы из A2-реестра. Ответ:
+  `[{secid, категория, issuer_ru, isin, last, change_pct}]`.
+- Swift: в header `MarketScreen` — поле поиска (⌘F focus). Выпадающие результаты;
+  выбор → `group=instruments; instrument=категория; vm.select(secid)`
+  (проброс через `handleOverviewSelect`-подобный роутер + метод
+  `MarketEntityVM.selectExternal(secid)`).
+- Правая часть шапки: «MOEX · данные на 2026-07-01 · обновлено 19:32»
+  (fetch_ts из `market_data_snapshots`; отдать в `/md/overview`).
+
+## C2. Overview 2.0
+
+- Плитки с динамикой: для Bonds/Equities/Futures добавить mini-metric —
+  медианный Δ% дня (посчитать в `overview()` из instrument_ref.change_pct).
+- Ряд ключевых индикаторов над плитками: IMOEX, RGBI, RVI, Brent (BRN активный),
+  USD/RUB — значение + Δ% (источники: A2-индексы, commodity chain, fx). Клик →
+  соответствующий инструмент.
+- «Недавно просмотренные» (до 8): UserDefaults ring-buffer `(category, secid)`,
+  пишется в `MarketEntityVM.select`; горизонтальный ряд чипов на Overview,
+  клик — прыжок в инструмент (роутер C1).
+
+## C3. Экспорт везде
+
+- Curves: кнопка CSV (Tenor/Zero/DF) — переиспользовать `CSVExport`.
+- Volatility: CSV полной таблицы опционов и OTC-тенора.
+- (История уже есть в Instruments.)
+
+## C4. Локализация RU-first
+
+- Единый проход по Market Data: «Bonds→Облигации, Equities→Акции, Futures→Фьючерсы,
+  Options→Опционы, Indices→Индексы, Commodities→Товары»; «Candles/Line/Yield» →
+  «Свечи/Линия/Доходность»; Overview → «Обзор», History → «История»,
+  Volatility → «Волатильность», Curves → «Кривые».
+- Держать словарь в одном месте (enum с `title`), не строками по коду.
+- Английские термины-имена собственные (YTM, RV, IV, OI, SMA, Log) не переводить.
+
+## C5. Compare-overlay (опционально, если останется аппетит)
+
+- В TradingChart режим «Сравнить»: второй инструмент выбирается поиском C1;
+  обе серии нормируются к 100 на левом краю видимого диапазона; вторая — line
+  series контрастного цвета + вторая строка легенды.
+- Данные: тот же `/md/history` / `/md/candles`. Чисто клиентская фича.
+
+## C6. Vol-таб мелочи
+
+- Поиск по списку базовых активов (та же строка, что в Instruments).
+- Таблица опционов: секции по экспирации с DisclosureGroup (свёрнуты дальние).
+
+## Definition of done (фаза 3)
+- ⌘F из любого места Market Data находит SBER/ОФЗ по ISIN и прыгает к бумаге.
+- Шапка показывает source + «обновлено HH:MM».
+- Overview: индикаторы с Δ%, недавние, живые плитки.
+- CSV доступен из Curves и Volatility.
+- Ни одной английской надписи вне терминов (скрин-пасс по всем вкладкам).
