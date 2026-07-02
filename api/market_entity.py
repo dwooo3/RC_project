@@ -34,7 +34,58 @@ def list_instruments(ctx, category: str) -> dict:
         "last": r.get("last"), "change_pct": r.get("change_pct"), "as_of": r.get("as_of"),
         "sec_type": r.get("sec_type"), "currency": r.get("currency"), "board": r.get("board"),
     } for r in rows]
+    if category == "bonds":
+        _enrich_bonds(ctx, out)                      # YTM + G-spread (audit B1/B2)
     return {"category": category, "instruments": out, "count": len(out)}
+
+
+def _gcurve_zero(points: list[dict]):
+    """Linear zero-rate interpolator over GCURVE (tenor, zero_rate decimal)."""
+    pts = sorted((float(p["tenor"]), float(p["zero_rate"])) for p in points
+                 if p.get("zero_rate") is not None)
+    if not pts:
+        return None
+
+    def zero(t: float) -> float:
+        if t <= pts[0][0]:
+            return pts[0][1]
+        for (t0, z0), (t1, z1) in zip(pts, pts[1:]):
+            if t0 <= t <= t1:
+                return z0 + (z1 - z0) * (t - t0) / (t1 - t0)
+        return pts[-1][1]
+    return zero
+
+
+def _enrich_bonds(ctx, rows: list[dict]) -> None:
+    """Attach ytm (bond_quotes, %) and g_spread_bp (YTM − GCURVE zero at maturity,
+    b.p.) to bond list rows. Everything is already in the store — one quotes map,
+    one maturity map and one curve read per request."""
+    db = ctx.market_db
+    try:
+        sid = ctx.snapshot.snapshot_id
+    except Exception:
+        return
+    quotes = {q["secid"]: q for q in db.get_bond_quotes(sid)}
+    mats = db.bond_maturities()
+    zero = _gcurve_zero(db.get_curve_points(sid, "GCURVE_RUB"))
+    today = _dt.date.today()
+    for r in rows:
+        q = quotes.get(r["secid"])
+        if not q or q.get("ytm") is None:
+            continue
+        ytm = float(q["ytm"])                        # stored as a decimal fraction
+        if not (-0.5 < ytm < 2.0):                   # junk quotes out (>200%)
+            continue
+        r["ytm"] = round(ytm * 100.0, 2)             # expose as percent
+        mat = mats.get(r["secid"])
+        if zero is None or not mat:
+            continue
+        try:
+            t = (_dt.date.fromisoformat(str(mat)[:10]) - today).days / 365.0
+        except ValueError:
+            continue
+        if t > 1e-3:
+            r["g_spread_bp"] = round((ytm - zero(t)) * 1e4, 1)
 
 
 def refdata(ctx) -> dict:
@@ -171,6 +222,16 @@ def instrument(ctx, category: str, secid: str) -> dict:
     if ref.get("category") == "bonds":
         out["schedule"] = db.get_bond_schedule(secid)
         out["schedule_versions"] = db.get_bond_schedule_versions(secid)
+        row = {"secid": secid}
+        _enrich_bonds(ctx, [row])                     # ytm + g_spread for the detail pane
+        out["ytm"] = row.get("ytm")
+        out["g_spread_bp"] = row.get("g_spread_bp")
+        try:
+            q = db.get_bond_quote(ctx.snapshot.snapshot_id, secid) or {}
+            out["accrued"] = q.get("accruedint")
+            out["wap"] = q.get("wap_price")
+        except Exception:
+            pass
     elif ref.get("category") == "equities":
         out["dividends"] = db.get_dividends(secid)
     elif ref.get("category") == "futures" and ref.get("asset_code"):

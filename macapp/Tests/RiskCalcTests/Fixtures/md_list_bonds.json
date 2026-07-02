@@ -10,7 +10,9 @@
    "as_of": "2026-06-24",
    "sec_type": "Биржевая облигация",
    "currency": "SUR",
-   "board": "TQCB"
+   "board": "TQCB",
+   "ytm": 44.11,
+   "g_spread_bp": 3156.4
   },
   {
    "secid": "RU000A108FS8",
@@ -21,7 +23,9 @@
    "as_of": "2026-06-24",
    "sec_type": "Биржевая облигация",
    "currency": "SUR",
-   "board": "TQCB"
+   "board": "TQCB",
+   "ytm": 71.88,
+   "g_spread_bp": 5933.3
   },
   {
    "secid": "XS1634369224",
@@ -32,7 +36,9 @@
    "as_of": "2026-06-24",
    "sec_type": "Государственная облигация",
    "currency": "USD",
-   "board": "TQCB"
+   "board": "TQCB",
+   "ytm": 57.0,
+   "g_spread_bp": 4444.3
   },
   {
    "secid": "RU000A1050G2",
@@ -43,7 +49,9 @@
    "as_of": "2026-06-24",
    "sec_type": "Корпоративная облигация",
    "currency": "SUR",
-   "board": "TQCB"
+   "board": "TQCB",
+   "ytm": 0.0,
+   "g_spread_bp": -1259.2
   },
   {
    "secid": "RU000A10AVD8",
@@ -54,7 +62,9 @@
    "as_of": null,
    "sec_type": "Корпоративная облигация",
    "currency": "SUR",
-   "board": "TQCB"
+   "board": "TQCB",
+   "ytm": 0.0,
+   "g_spread_bp": -1299.4
   }
  ],
  "count": 5

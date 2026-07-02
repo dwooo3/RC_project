@@ -12,6 +12,7 @@ final class MarketEntityVM {
     var search = ""
     var boardFilter = ""                      // "" = все
     var currencyFilter = ""
+    var sortKey = "Имя"                       // Имя | Цена | Δ% | YTM | G-spread
     var currencyNames: [String: String] = [:]
     var selectedID: String?
     var entity: MDEntity?
@@ -57,15 +58,26 @@ final class MarketEntityVM {
         return code
     }
 
+    var sortKeys: [String] {
+        category == "bonds" ? ["Имя", "Цена", "Δ%", "YTM", "G-spread"] : ["Имя", "Цена", "Δ%"]
+    }
+
     var filtered: [MDListItem] {
         let q = search.lowercased().trimmingCharacters(in: .whitespaces)
-        return items.filter { i in
+        let rows = items.filter { i in
             (boardFilter.isEmpty || i.board == boardFilter)
                 && (currencyFilter.isEmpty || i.currency == currencyFilter)
                 && (q.isEmpty
                     || (i.issuerRu ?? "").lowercased().contains(q)
                     || i.secid.lowercased().contains(q)
                     || (i.isin ?? "").lowercased().contains(q))
+        }
+        switch sortKey {
+        case "Цена":     return rows.sorted { ($0.last ?? -.infinity) > ($1.last ?? -.infinity) }
+        case "Δ%":       return rows.sorted { ($0.changePct ?? -.infinity) > ($1.changePct ?? -.infinity) }
+        case "YTM":      return rows.sorted { ($0.ytm ?? -.infinity) > ($1.ytm ?? -.infinity) }
+        case "G-spread": return rows.sorted { ($0.gSpreadBp ?? -.infinity) > ($1.gSpreadBp ?? -.infinity) }
+        default:         return rows
         }
     }
 
@@ -204,19 +216,35 @@ struct MarketEntityView: View {
                 .help("Экспорт в CSV")
             }
             .padding(.horizontal, Theme.s2).padding(.top, Theme.s2)
-            if vm.availableBoards.count > 1 || vm.availableCurrencies.count > 1 {
-                HStack(spacing: Theme.s2) {
-                    if vm.availableBoards.count > 1 {
-                        filterMenu("Борд", vm.availableBoards, $vm.boardFilter)
-                    }
-                    if vm.availableCurrencies.count > 1 {
-                        filterMenu("Валюта", vm.availableCurrencies, $vm.currencyFilter,
-                                   label: { vm.currencyLabel($0) })
-                    }
-                    Spacer()
+            HStack(spacing: Theme.s2) {
+                if vm.availableBoards.count > 1 {
+                    filterMenu("Борд", vm.availableBoards, $vm.boardFilter)
                 }
-                .padding(.horizontal, Theme.s2)
+                if vm.availableCurrencies.count > 1 {
+                    filterMenu("Валюта", vm.availableCurrencies, $vm.currencyFilter,
+                               label: { vm.currencyLabel($0) })
+                }
+                Menu {
+                    ForEach(vm.sortKeys, id: \.self) { k in
+                        Button { vm.sortKey = k } label: {
+                            if k == vm.sortKey { Label(k, systemImage: "checkmark") } else { Text(k) }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.up.arrow.down").font(.system(size: 8))
+                        Text(vm.sortKey).font(.system(size: 10, weight: vm.sortKey == "Имя" ? .regular : .semibold))
+                        Image(systemName: "chevron.down").font(.system(size: 7))
+                    }
+                    .padding(.horizontal, Theme.s2).padding(.vertical, 3)
+                    .background(vm.sortKey == "Имя" ? Color.gray.opacity(0.12) : Theme.accent.opacity(0.16),
+                                in: RoundedRectangle(cornerRadius: 7))
+                    .foregroundStyle(vm.sortKey == "Имя" ? .secondary : Theme.accent)
+                }
+                .menuStyle(.borderlessButton).fixedSize()
+                Spacer()
             }
+            .padding(.horizontal, Theme.s2)
             Color.clear.frame(height: Theme.s2)
             Divider()
             if vm.serverDown {
@@ -275,9 +303,15 @@ struct MarketEntityView: View {
             Spacer(minLength: Theme.s2)
             VStack(alignment: .trailing, spacing: 1) {
                 Text(item.last.map { Fmt.number($0, digits: 2) } ?? "—").font(.system(size: 12, weight: .semibold)).monospacedDigit()
-                if let c = item.changePct {
-                    Text(Fmt.signedPercent(c, digits: 2)).font(.system(size: 9, weight: .medium)).monospacedDigit()
-                        .foregroundStyle(c >= 0 ? Theme.positive : Theme.negative)
+                HStack(spacing: 4) {
+                    if let y = item.ytm {
+                        Text("YTM \(Fmt.percent(y, digits: 1))").font(.system(size: 9)).monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    if let c = item.changePct {
+                        Text(Fmt.signedPercent(c, digits: 2)).font(.system(size: 9, weight: .medium)).monospacedDigit()
+                            .foregroundStyle(c >= 0 ? Theme.positive : Theme.negative)
+                    }
                 }
             }
         }
@@ -432,9 +466,25 @@ struct MarketEntityView: View {
             keys = ["ISSUENAME", "LATNAME", "ISSUESIZE", "LISTLEVEL", "FACEVALUE", "FACEUNIT", "ISSUEDATE"]
         }
         let info = e.fields.filter { keys.contains($0.name) && ($0.value ?? "").isEmpty == false }
+        // bond analytics from the store (B1/B2): shown ahead of the ISS reference
+        let analytics: [(String, String)] = category == "bonds" ? [
+            ("Доходность к погашению", e.ytm.map { Fmt.percent($0, digits: 2) } ?? ""),
+            ("G-spread к КБД", e.gSpreadBp.map { "\(Fmt.number($0, digits: 0)) б.п." } ?? ""),
+            ("НКД", e.accrued.map { Fmt.number($0, digits: 2) } ?? ""),
+            ("Средневзв. цена", e.wap.map { Fmt.number($0, digits: 2) } ?? ""),
+        ].filter { !$0.1.isEmpty } : []
         return GlassCard(padding: Theme.s3) {
             VStack(alignment: .leading, spacing: Theme.s2) {
                 BlockTitle("Об инструменте", icon: "info.circle")
+                ForEach(analytics, id: \.0) { a in
+                    HStack {
+                        Text(a.0).font(.system(size: 11)).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(a.1).font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                            .foregroundStyle(Theme.accent)
+                    }
+                }
+                if !analytics.isEmpty && !info.isEmpty { Divider().opacity(0.3) }
                 ForEach(info) { f in
                     HStack {
                         Text(f.title ?? f.name).font(.system(size: 11)).foregroundStyle(.secondary)

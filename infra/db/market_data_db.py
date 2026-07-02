@@ -760,6 +760,11 @@ class MarketDataDB:
         return self._query(
             f"SELECT dt, value FROM time_series WHERE factor_id={self.ph} ORDER BY dt", (factor_id,))
 
+    def bond_maturities(self) -> dict:
+        """secid → mat_date for every bond in the static instruments table."""
+        return {r["secid"]: r["mat_date"] for r in self._query(
+            "SELECT secid, mat_date FROM instruments WHERE mat_date IS NOT NULL")}
+
     def last_two_points(self, factor_id) -> list[dict]:
         """Newest two points of a series (for last value + day change) without
         reading the whole history."""

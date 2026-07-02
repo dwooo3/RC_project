@@ -500,10 +500,13 @@ struct MDListItem: Decodable, Sendable, Identifiable {
     let secType: String?
     let currency: String?
     let board: String?
+    let ytm: Double?             // bonds: yield to maturity, %
+    let gSpreadBp: Double?       // bonds: spread to GCURVE, b.p.
     var id: String { secid }
 
     enum CodingKeys: String, CodingKey {
-        case secid, isin, last, currency, board
+        case secid, isin, last, currency, board, ytm
+        case gSpreadBp = "g_spread_bp"
         case issuerRu = "issuer_ru"
         case changePct = "change_pct"
         case asOf = "as_of"
@@ -532,9 +535,15 @@ struct MDEntity: Decodable, Sendable {
     let optionChain: [MDOptionExpiry]?
     let versions: [InstrumentVersion]?
     let scheduleVersions: [ScheduleVersion]?
+    let ytm: Double?             // bonds: %, from bond_quotes
+    let gSpreadBp: Double?       // bonds: spread to GCURVE, b.p.
+    let accrued: Double?         // bonds: НКД
+    let wap: Double?             // bonds: weighted average price
 
     enum CodingKeys: String, CodingKey {
         case secid, category, isin, currency, board, last, fields, day, dividends, chain, versions
+        case ytm, accrued, wap
+        case gSpreadBp = "g_spread_bp"
         case scheduleVersions = "schedule_versions"
         case issuerRu = "issuer_ru"
         case nameRu = "name_ru"
