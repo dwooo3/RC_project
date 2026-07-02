@@ -357,6 +357,7 @@ struct MarketEntityView: View {
                         rangeBar
                         TradingChart(bars: vm.bars, mode: vm.jsChartMode)
                         dayStats(e)
+                        if let s = e.stats { statsRow(s) }
                     }
                     keyInfo(e)
                 }
@@ -456,6 +457,27 @@ struct MarketEntityView: View {
                 }
             }
         }
+    }
+
+    /// 52w range · realized vol · max drawdown — cheap analytics from 5y history (B6).
+    private func statsRow(_ s: MDStats) -> some View {
+        HStack(spacing: Theme.s3) {
+            if let hi = s.hi52w, let lo = s.lo52w {
+                statChip("52 нед", "\(Fmt.number(lo, digits: 2)) – \(Fmt.number(hi, digits: 2))")
+            }
+            if let rv = s.rv30dPct { statChip("RV 30д", Fmt.percent(rv, digits: 1)) }
+            if let dd = s.maxDdPct { statChip("Просадка", Fmt.percent(dd, digits: 1), color: Theme.negative) }
+            Spacer()
+        }
+    }
+
+    private func statChip(_ label: String, _ value: String, color: Color = .primary) -> some View {
+        HStack(spacing: 4) {
+            Text(label.uppercased()).font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+            Text(value).font(.system(size: 11, weight: .medium)).monospacedDigit().foregroundStyle(color)
+        }
+        .padding(.horizontal, Theme.s2).padding(.vertical, 3)
+        .background(Color.gray.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func keyInfo(_ e: MDEntity) -> some View {

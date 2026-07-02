@@ -81,3 +81,18 @@ def test_equity_dividend_yield():
     ])
     rows = {r["secid"]: r for r in list_instruments(_Ctx(db), "equities")["instruments"]}
     assert rows["SBER"]["div_yield_pct"] == pytest.approx(10.0)   # 30/300
+
+
+def test_stats_from_closes():
+    from api.market_entity import _stats_from_closes
+    base = dt.date.today() - dt.timedelta(days=120)
+    closes = []
+    px = 100.0
+    for i in range(100):
+        px *= 1.001 if i % 2 == 0 else 0.999          # gentle oscillation
+        closes.append(((base + dt.timedelta(days=i)).isoformat(), px))
+    s = _stats_from_closes(closes)
+    assert s["hi_52w"] >= s["lo_52w"] > 0
+    assert s["rv_30d_pct"] is not None and 0 < s["rv_30d_pct"] < 10
+    assert -5.0 <= s["max_dd_pct"] <= 0.0
+    assert _stats_from_closes([("2026-01-01", 100.0)]) is None    # too short

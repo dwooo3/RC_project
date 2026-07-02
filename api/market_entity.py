@@ -194,6 +194,30 @@ def overview(ctx) -> dict:
     }
 
 
+def _stats_from_closes(closes: list[tuple]) -> dict | None:
+    """(dt_iso, close) → 52w high/low, 30d realized vol (annualized, %) and max
+    drawdown over the trailing year — cheap analytics on stored history (B6)."""
+    import math
+    pts = [(d, c) for d, c in closes if c]
+    if len(pts) < 20:
+        return None
+    year_ago = (_dt.date.today() - _dt.timedelta(days=365)).isoformat()
+    yr = [c for d, c in pts if d >= year_ago] or [c for _, c in pts]
+    tail = [c for _, c in pts][-31:]
+    rets = [math.log(b / a) for a, b in zip(tail, tail[1:]) if a > 0 and b > 0]
+    rv = None
+    if len(rets) >= 10:
+        m = sum(rets) / len(rets)
+        var = sum((r - m) ** 2 for r in rets) / (len(rets) - 1)
+        rv = round(math.sqrt(var * 252) * 100.0, 2)
+    peak, dd = yr[0], 0.0
+    for c in yr:
+        peak = max(peak, c)
+        dd = min(dd, c / peak - 1.0)
+    return {"hi_52w": max(yr), "lo_52w": min(yr),
+            "rv_30d_pct": rv, "max_dd_pct": round(dd * 100.0, 2)}
+
+
 def _index_series(db, secid: str) -> list[dict]:
     return (db.get_time_series(f"{secid}:price", "price")
             or db.get_time_series(f"{secid}:index", "index")
@@ -214,7 +238,8 @@ def instrument(ctx, category: str, secid: str) -> dict:
                 "board": None, "last": last["value"], "change_pct": chg, "as_of": last["dt"],
                 "fields": [], "day": {"date": last["dt"], "close": last["value"], "open": None,
                                       "high": None, "low": None, "volume": None, "value": None,
-                                      "yield": None, "numtrades": None}}
+                                      "yield": None, "numtrades": None},
+                "stats": _stats_from_closes([(p["dt"], p["value"]) for p in series])}
     ref = db.get_instrument_ref(secid) if db is not None else None
     if not ref:
         raise ValueError(f"unknown instrument {secid}")
@@ -233,6 +258,7 @@ def instrument(ctx, category: str, secid: str) -> dict:
         out["day"] = {"date": r["dt"], "open": r["open"], "high": r["high"], "low": r["low"],
                       "close": r["close"], "volume": r["volume"], "value": r["value"],
                       "yield": r["yield"], "numtrades": r["numtrades"]}
+        out["stats"] = _stats_from_closes([(h["dt"], h.get("close")) for h in hist])
     if ref.get("category") == "bonds":
         out["schedule"] = db.get_bond_schedule(secid)
         out["schedule_versions"] = db.get_bond_schedule_versions(secid)

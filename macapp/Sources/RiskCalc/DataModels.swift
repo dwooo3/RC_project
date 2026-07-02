@@ -542,10 +542,11 @@ struct MDEntity: Decodable, Sendable {
     let accrued: Double?         // bonds: НКД
     let wap: Double?             // bonds: weighted average price
     let divYieldPct: Double?     // equities: trailing-12m dividend yield, %
+    let stats: MDStats?          // 52w range · realized vol · max drawdown
 
     enum CodingKeys: String, CodingKey {
         case secid, category, isin, currency, board, last, fields, day, dividends, chain, versions
-        case ytm, accrued, wap
+        case ytm, accrued, wap, stats
         case gSpreadBp = "g_spread_bp"
         case divYieldPct = "div_yield_pct"
         case scheduleVersions = "schedule_versions"
@@ -557,6 +558,19 @@ struct MDEntity: Decodable, Sendable {
         case asOf = "as_of"
         case assetCode = "asset_code"
         case optionChain = "option_chain"
+    }
+}
+
+struct MDStats: Decodable, Sendable {
+    let hi52w: Double?
+    let lo52w: Double?
+    let rv30dPct: Double?
+    let maxDdPct: Double?
+    enum CodingKeys: String, CodingKey {
+        case hi52w = "hi_52w"
+        case lo52w = "lo_52w"
+        case rv30dPct = "rv_30d_pct"
+        case maxDdPct = "max_dd_pct"
     }
 }
 
