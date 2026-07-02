@@ -28,18 +28,28 @@ struct TradingChart: View {
         _mode = State(initialValue: preferLine ? .line : .candle)
     }
 
+    private var isIntraday: Bool { bars.last?.ts != nil }
+
+    /// ISS intraday candles carry no yield → the Yield mode is daily-only.
+    private var availableModes: [Mode] {
+        (isBond && !isIntraday) ? Mode.allCases : [.candle, .line]
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.s2) {
             controls
             LWChartView(bars: bars, mode: mode.rawValue, showSMA: showSMA, logScale: logScale)
                 .frame(height: 380)
         }
+        .onChange(of: isIntraday) { _, intraday in
+            if intraday && mode == .yield { mode = .candle }
+        }
     }
 
     private var controls: some View {
         HStack(spacing: Theme.s3) {
             Picker("", selection: $mode) {
-                ForEach(isBond ? Mode.allCases : [.candle, .line]) { Text($0.rawValue).tag($0) }
+                ForEach(availableModes) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented).fixedSize().labelsHidden()
             Toggle("SMA20", isOn: $showSMA).toggleStyle(.button).controlSize(.small)
@@ -64,8 +74,9 @@ private struct LWChartView: NSViewRepresentable {
         var ready = false
         var pending: String?
         var lastSig = ""
-        // last rendered series identity — for the updateLast fast-path
+        // last rendered series identity — for the updateLast / keepView fast-paths
         var staticSig = ""
+        var dataSig = ""
         var lastCount = 0
         var firstDate = ""
         var lastDate = ""
@@ -90,9 +101,9 @@ private struct LWChartView: NSViewRepresentable {
 
     func updateNSView(_ web: WKWebView, context: Context) {
         let co = context.coordinator
-        let sig = "\(bars.count)|\(bars.first?.date ?? "")|\(bars.last?.date ?? "")"
+        let dataSig = "\(bars.count)|\(bars.first?.date ?? "")|\(bars.last?.date ?? "")"
             + "|\(bars.first?.close ?? 0)|\(bars.last?.close ?? 0)|\(bars.last?.volume ?? 0)"
-            + "|\(mode)|\(showSMA)|\(logScale)"
+        let sig = dataSig + "|\(mode)|\(showSMA)|\(logScale)"
         guard sig != co.lastSig else { return }
         co.lastSig = sig
 
@@ -102,20 +113,23 @@ private struct LWChartView: NSViewRepresentable {
         let sameSeries = co.ready && staticSig == co.staticSig && !bars.isEmpty
             && (bars.count == co.lastCount
                 || (bars.count == co.lastCount + 1 && bars.dropLast().last?.date == co.lastDate))
+        // Same data, only mode/SMA/log toggled → full render but keep the viewport.
+        let keepView = co.ready && dataSig == co.dataSig
         let js: String
         if sameSeries, let last = bars.last, let barJSON = barJSON(last) {
             js = "window.updateLast(\(barJSON));"
         } else {
-            js = "window.render(\(configJSON()));"
+            js = "window.render(\(configJSON(keepView: keepView)));"
         }
         co.staticSig = staticSig
+        co.dataSig = dataSig
         co.lastCount = bars.count
         co.firstDate = bars.first?.date ?? ""
         co.lastDate = bars.last?.date ?? ""
         if co.ready {
             web.evaluateJavaScript(js)
         } else {
-            co.pending = "window.render(\(configJSON()));"
+            co.pending = "window.render(\(configJSON(keepView: false)));"
         }
     }
 
@@ -138,6 +152,7 @@ private struct LWChartView: NSViewRepresentable {
         let sma: Bool
         let log: Bool
         let intraday: Bool
+        let keepView: Bool
     }
 
     private func lwBar(_ b: MDBar) -> LWBar {
@@ -145,9 +160,10 @@ private struct LWChartView: NSViewRepresentable {
               low: b.low, close: b.close, volume: b.volume, yld: b.yld)
     }
 
-    private func configJSON() -> String {
+    private func configJSON(keepView: Bool = false) -> String {
         let payload = LWConfig(bars: bars.map(lwBar), mode: mode, sma: showSMA,
-                               log: logScale, intraday: bars.last?.ts != nil)
+                               log: logScale, intraday: bars.last?.ts != nil,
+                               keepView: keepView)
         guard let data = try? JSONEncoder().encode(payload),
               let s = String(data: data, encoding: .utf8) else { return "{}" }
         return s
@@ -260,14 +276,22 @@ private struct LWChartView: NSViewRepresentable {
     }
 
     window.render = function (cfg) {
+        const firstRender = !chart;
         if (!chart) makeChart();
+        // keepView: same data, only mode/sma/log toggled — preserve the viewport
+        const prevRange = (!firstRender && cfg.keepView)
+            ? chart.timeScale().getVisibleLogicalRange() : null;
         if (priceSeries) { chart.removeSeries(priceSeries); priceSeries = null; }
         if (volSeries)   { chart.removeSeries(volSeries);   volSeries = null; }
         if (smaSeries)   { chart.removeSeries(smaSeries);   smaSeries = null; }
 
         const bars = cfg.bars || [];
         lastMode = cfg.mode;
-        if (bars.length === 0) { el('legend').innerHTML = ''; return; }
+        if (bars.length === 0) {
+            el('legend').innerHTML =
+                '<span class="d">Нет данных — торги закрыты или источник недоступен</span>';
+            return;
+        }
 
         chart.applyOptions({ timeScale: { timeVisible: !!cfg.intraday, secondsVisible: false } });
 
@@ -302,7 +326,8 @@ private struct LWChartView: NSViewRepresentable {
             }));
         }
 
-        if (!yieldMode) {
+        const hasVol = bars.some(b => (b.volume ?? 0) > 0);
+        if (!yieldMode && hasVol) {
             volSeries = chart.addHistogramSeries({
                 priceScaleId: 'vol',
                 priceFormat: { type: 'volume' },
@@ -336,7 +361,8 @@ private struct LWChartView: NSViewRepresentable {
                           : LightweightCharts.PriceScaleMode.Normal,
             autoScale: true,
         });
-        chart.timeScale().fitContent();
+        if (prevRange) chart.timeScale().setVisibleLogicalRange(prevRange);
+        else chart.timeScale().fitContent();
 
         const lb = bars[bars.length - 1];
         lastBar = { time: timeFor(lb), open: lb.open ?? lb.close, high: lb.high ?? lb.close,
