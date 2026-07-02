@@ -760,6 +760,13 @@ class MarketDataDB:
         return self._query(
             f"SELECT dt, value FROM time_series WHERE factor_id={self.ph} ORDER BY dt", (factor_id,))
 
+    def last_two_points(self, factor_id) -> list[dict]:
+        """Newest two points of a series (for last value + day change) without
+        reading the whole history."""
+        return self._query(
+            f"SELECT dt, value FROM time_series WHERE factor_id={self.ph} "
+            f"ORDER BY dt DESC LIMIT 2", (factor_id,))
+
     def list_time_series_factors(self) -> list[dict]:
         """Catalog of stored historical series: id, kind, point count, span."""
         return self._query(
@@ -860,10 +867,11 @@ class MarketDataDB:
         row = self._query_one(f"SELECT COUNT(*) AS n FROM {table}")
         return int(row["n"]) if row else 0
 
-    def table_rows(self, table: str, limit: int = 200) -> list[dict]:
+    def table_rows(self, table: str, limit: int = 200, *, newest_first: bool = False) -> list[dict]:
         if not table.isidentifier():
             return []
-        return self._query(f"SELECT * FROM {table} LIMIT {int(limit)}")
+        order = "ORDER BY rowid DESC" if newest_first else "ORDER BY rowid"
+        return self._query(f"SELECT * FROM {table} {order} LIMIT {int(limit)}")
 
     def count_instrument_refs(self, category, *, active_only=False) -> int:
         sql = f"SELECT COUNT(*) AS n FROM instrument_ref WHERE category={self.ph}"

@@ -75,7 +75,9 @@ def rows(ctx, table: str, limit: int = 200) -> dict:
     if db is None or table not in TABLES:
         return {"table": table, "columns": [], "rows": [], "count": 0, "shown": 0}
     cols = [c["name"] for c in db.table_columns(table)]
-    raw = db.table_rows(table, min(max(int(limit), 1), 1000))
+    # newest-first for the append-only log so the browser shows the tail
+    raw = db.table_rows(table, min(max(int(limit), 1), 1000),
+                        newest_first=(table == "ingest_log"))
     out = [[_stringify(r.get(c)) for c in cols] for r in raw]
     return {"table": table, "columns": cols, "rows": out,
             "count": db.table_count(table), "shown": len(out)}

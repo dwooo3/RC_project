@@ -53,22 +53,33 @@ def _commodity_futures(db) -> list[dict]:
     return [r for r in rows if (r.get("asset_code") in assets)]
 
 
+# Explicit index registry (audit A2). MOEX deliberately absent — MOEX:price in
+# time_series is the *share* of Moscow Exchange from the equity backfill, not an
+# index. Only registered ids with stored points are listed.
+_INDICES = {
+    "IMOEX": "Индекс МосБиржи",
+    "RTSI": "Индекс РТС",
+    "RGBI": "Индекс гособлигаций",
+    "RUCBTRNS": "Индекс корп. облигаций",
+    "RVI": "Индекс волатильности",
+    "RUSFAR": "RUSFAR (ставка)",
+}
+
+
 def _list_indices(ctx) -> dict:
-    """Indices live in time_series (e.g. IMOEX:price). List each with its latest
-    value as an instrument-like row so the entity browser can render them."""
+    """Indices live in time_series (e.g. IMOEX:price). List each registered index
+    with its latest value as an instrument-like row for the entity browser."""
     db = ctx.market_db
     out = []
-    for r in db.list_time_series_factors():
-        fid, kind = r["factor_id"], (r.get("kind") or "")
-        base = fid.rsplit(":", 1)[0]
-        if not (fid.endswith(":index") or base in ("IMOEX", "MOEX", "RTSI", "RGBI", "RTS", "MCXSM")):
+    for base, name in _INDICES.items():
+        pts = db.last_two_points(f"{base}:price")
+        if not pts:
             continue
-        series = db.get_time_series(fid, kind) or db.get_time_series(fid)
-        last = series[-1]["value"] if series else None
-        prev = series[-2]["value"] if len(series) > 1 else None
+        last = pts[0]["value"]
+        prev = pts[1]["value"] if len(pts) > 1 else None
         chg = ((last - prev) / prev * 100.0) if (last and prev) else None
-        out.append({"secid": base, "issuer_ru": base, "isin": None, "last": last,
-                    "change_pct": chg, "as_of": series[-1]["dt"] if series else None,
+        out.append({"secid": base, "issuer_ru": name, "isin": None, "last": last,
+                    "change_pct": chg, "as_of": pts[0]["dt"],
                     "sec_type": "index", "currency": "RUB", "board": None})
     out.sort(key=lambda x: x["secid"])
     return {"category": "indices", "instruments": out, "count": len(out)}
@@ -132,7 +143,8 @@ def instrument(ctx, category: str, secid: str) -> dict:
             raise ValueError(f"unknown index {secid}")
         last, prev = series[-1], (series[-2] if len(series) > 1 else None)
         chg = ((last["value"] - prev["value"]) / prev["value"] * 100.0) if prev else None
-        return {"secid": secid, "category": "indices", "issuer_ru": secid, "name_ru": secid,
+        name = _INDICES.get(secid, secid)
+        return {"secid": secid, "category": "indices", "issuer_ru": name, "name_ru": name,
                 "isin": None, "sec_type": "index", "list_level": None, "currency": "RUB",
                 "board": None, "last": last["value"], "change_pct": chg, "as_of": last["dt"],
                 "fields": [], "day": {"date": last["dt"], "close": last["value"], "open": None,
