@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 /// Full instrument card: everything ISS exposes + the 5-year daily price history
 /// (Date · Price · Yield · day change, coloured) + bond coupon schedule.
@@ -23,6 +24,7 @@ struct InstrumentCard: View {
                     VStack(alignment: .leading, spacing: Theme.s4) {
                         specSection
                         if category == "futures", let chain = entity?.chain, !chain.isEmpty {
+                            futuresCurveSection(chain)
                             chainSection(chain)
                         }
                         if category == "equities", let divs = entity?.dividends, !divs.isEmpty {
@@ -84,6 +86,43 @@ struct InstrumentCard: View {
     }
 
     // MARK: futures chain (all contracts by expiry)
+
+    /// Futures term structure from the chain (plan B3): settle vs expiry — the
+    /// data is already in MDChainContract, this just draws it.
+    @ViewBuilder
+    private func futuresCurveSection(_ chain: [MDChainContract]) -> some View {
+        let pts: [(date: Date, secid: String, last: Double)] = chain
+            .compactMap { c in
+                guard let d = c.lastTradeDate, let dt = Self.day.date(from: d),
+                      let l = c.last, l > 0, dt >= Date() else { return nil }
+                return (dt, c.secid, l)
+            }
+            .sorted { $0.date < $1.date }
+        if pts.count >= 3 {
+            let slope = pts.last!.last - pts.first!.last
+            VStack(alignment: .leading, spacing: Theme.s2) {
+                BlockTitle("Кривая фьючерсов", icon: "chart.line.uptrend.xyaxis")
+                Chart(pts, id: \.secid) { p in
+                    LineMark(x: .value("Экспирация", p.date), y: .value("Цена", p.last))
+                        .foregroundStyle(Theme.accent).lineStyle(.init(lineWidth: 2))
+                        .interpolationMethod(.monotone)
+                    PointMark(x: .value("Экспирация", p.date), y: .value("Цена", p.last))
+                        .foregroundStyle(Theme.accent).symbolSize(28)
+                }
+                .chartYScale(domain: .automatic(includesZero: false))
+                .frame(height: 160)
+                Text(slope >= 0 ? "Контанго: дальние контракты дороже ближних"
+                                : "Бэквордация: дальние контракты дешевле ближних")
+                    .font(.system(size: 10))
+                    .foregroundStyle(slope >= 0 ? Theme.positive : Theme.warning)
+            }
+        }
+    }
+
+    private static let day: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX"); return f
+    }()
 
     private func chainSection(_ chain: [MDChainContract]) -> some View {
         let sorted = chain.sorted { ($0.lastTradeDate ?? "") < ($1.lastTradeDate ?? "") }
