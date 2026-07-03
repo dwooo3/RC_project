@@ -1,10 +1,14 @@
-"""Preload the continuously-accumulated market store (5y daily history + refs).
+"""Preload the continuously-accumulated market store (daily history + refs).
 
 Idempotent: re-running only appends missing days. WAL so the bridge keeps
 reading while this writes.
 
 Usage:
     python3.14 -m scripts.preload_history bonds [years] [limit]
+    python3.14 -m scripts.preload_history backfill:bonds [years] [limit]
+
+``backfill:<category>`` deepens existing histories BACKWARDS to ``years``
+(default 8) — the plain mode only appends forward from the newest stored day.
 """
 
 from __future__ import annotations
@@ -14,7 +18,10 @@ import sys
 
 def main() -> int:
     category = sys.argv[1] if len(sys.argv) > 1 else "bonds"
-    years = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+    backfill = category.startswith("backfill:")
+    if backfill:
+        category = category.split(":", 1)[1]
+    years = int(sys.argv[2]) if len(sys.argv) > 2 else (8 if backfill else 5)
     limit = int(sys.argv[3]) if len(sys.argv) > 3 else None
 
     from app import runtime
@@ -36,6 +43,11 @@ def main() -> int:
 
     store = MarketStore(db, IssClient(), CbrClient())
     log = lambda m: print(m, flush=True)  # noqa: E731
+    if backfill:
+        log(f"backfilling {category}: deepening daily history to {years}y (limit={limit})")
+        log(f"done: {store.backfill(category, years=years, limit=limit, progress=log)}")
+        db.close()
+        return 0
     if category == "bonds":
         log(f"preloading bonds: {years}y daily history + refs (limit={limit})")
         log(f"done: {store.preload_bonds(years=years, limit=limit, progress=log)}")

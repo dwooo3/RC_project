@@ -178,6 +178,134 @@ class MarketStore:
                 progress(f"  {i + 1}/{len(secids)} {category}, {added} rows")
         return {category: len(secids), "rows_added": added}
 
+    # -- daily append (cheap: one paginated request per market/board/date) --
+
+    # market → (engine, iss_market, boards); boards=None → whole market.
+    _DAILY_MARKETS = {
+        "bonds": ("stock", "bonds", BOND_BOARDS),
+        "shares": ("stock", "shares", ("TQBR",)),
+        "forts": ("futures", "forts", None),
+    }
+
+    def _daily_rows(self, rows: list[dict], market: str) -> list[dict]:
+        """Market-wide EOD rows for one date → price_history rows (dedup boards,
+        keep the most-traded one) — same normalisation as fetch_daily_history."""
+        best: dict[tuple, dict] = {}
+        for r in rows:
+            sid, d = r.get("SECID"), r.get("TRADEDATE")
+            close = _num(r.get("CLOSE")) or _num(r.get("LEGALCLOSEPRICE"))
+            if not sid or not d or close is None:
+                continue
+            vol = _num(r.get("VOLUME")) or 0.0
+            prev = best.get((sid, d))
+            if prev is None or vol >= (prev.get("volume") or 0.0):
+                best[(sid, d)] = {
+                    "secid": sid, "market": market, "dt": d,
+                    "open": _num(r.get("OPEN")) or close,
+                    "high": _num(r.get("HIGH")) or close,
+                    "low": _num(r.get("LOW")) or close,
+                    "close": close, "volume": vol,
+                    "value": _num(r.get("VALUE")),
+                    "yield": _num(r.get("YIELDCLOSE")),
+                    "numtrades": _num(r.get("NUMTRADES")),
+                }
+        return list(best.values())
+
+    def append_daily(self, *, markets=("bonds", "shares", "forts"),
+                     today: _dt.date | None = None, progress=None) -> dict:
+        """Append the missing EOD days for whole markets — the fix for the
+        refresh button leaving price_history behind the snapshot: one paginated
+        ISS request per board per missing date instead of one per security."""
+        today = today or _dt.date.today()
+        out: dict = {}
+        for market in markets:
+            engine, iss_market, boards = self._DAILY_MARKETS[market]
+            start = self.db.market_max_dt(market)
+            if not start:
+                continue                       # empty store → run a preload instead
+            d = _dt.date.fromisoformat(start) + _dt.timedelta(days=1)
+            added = days = 0
+            while d <= today:
+                date_rows: list[dict] = []
+                try:
+                    if boards:
+                        for b in boards:
+                            date_rows += self.iss.get_block_paginated(
+                                f"history/engines/{engine}/markets/{iss_market}"
+                                f"/boards/{b}/securities",
+                                "history", {"date": d.isoformat()})
+                    else:
+                        date_rows = self.iss.get_block_paginated(
+                            f"history/engines/{engine}/markets/{iss_market}/securities",
+                            "history", {"date": d.isoformat()})
+                except Exception:
+                    date_rows = []             # one bad date must not kill the append
+                hist = self._daily_rows(date_rows, market)
+                if hist:
+                    self.db.save_price_history(hist)
+                    added += len(hist)
+                days += 1
+                if progress:
+                    progress(f"  {market} {d}: +{len(hist)}")
+                d += _dt.timedelta(days=1)
+            out[market] = {"days": days, "rows_added": added}
+        return out
+
+    def refresh_last_change(self, *, markets=("bonds", "shares", "forts", "fx"),
+                            lookback_days: int = 10) -> int:
+        """Recompute the denormalised last/change_pct/as_of on instrument_ref
+        from the price_history tail (set-based, no per-security requests)."""
+        frm = (_dt.date.today() - _dt.timedelta(days=lookback_days)).isoformat()
+        updated = 0
+        for market in markets:
+            closes: dict[str, list[tuple[str, float]]] = {}
+            for r in self.db.recent_closes(market, frm):
+                if r["close"] is not None:
+                    closes.setdefault(r["secid"], []).append((r["dt"], r["close"]))
+            for secid, pts in closes.items():
+                last_dt, last = pts[-1]
+                prev = pts[-2][1] if len(pts) >= 2 else None
+                chg = ((last - prev) / prev * 100.0) if prev else None
+                self.db.update_ref_quote(secid, last, chg, last_dt)
+                updated += 1
+        return updated
+
+    # -- deep backfill (per-security, long-running; run via scripts/preload) --
+
+    def backfill_one(self, secid: str, market: str, *, years: int = 8,
+                     engine: str = "stock", today: _dt.date | None = None) -> int:
+        """Extend history BACKWARDS: fetch [today-years, first_stored) once."""
+        today = today or _dt.date.today()
+        first = self.db.price_history_min_dt(secid, market)
+        frm = today.replace(year=today.year - years)
+        till = (_dt.date.fromisoformat(first) - _dt.timedelta(days=1)) if first else today
+        if frm > till:
+            return 0
+        hist = self.fetch_daily_history(secid, market, frm, till, engine=engine)
+        if hist:
+            self.db.save_price_history(hist)
+        return len(hist)
+
+    def backfill(self, category: str, *, years: int = 8, limit: int | None = None,
+                 progress=None) -> dict:
+        """Deepen daily history for every tracked instrument of a category."""
+        engine = "futures" if category in ("futures", "options", "commodities") else "stock"
+        refs = self.db.instrument_refs_for(category)
+        if category == "futures":              # only active contracts carry history
+            refs = [r for r in refs if r.get("is_active")]
+        if limit:
+            refs = refs[:limit]
+        added = 0
+        for i, r in enumerate(refs):
+            try:
+                added += self.backfill_one(r["secid"], r["market"], years=years, engine=engine)
+            except Exception as exc:
+                if progress:
+                    progress(f"  {r['secid']}: ERROR {str(exc)[:80]}")
+            if progress and (i + 1) % 25 == 0:
+                progress(f"  {i + 1}/{len(refs)} {category}, {added} rows")
+        return {category: len(refs), "rows_added": added}
+
     def preload_bond(self, secid: str, board: str, *, years: int = 5,
                      today: _dt.date | None = None) -> int:
         return self._preload_one(secid, board, category="bonds", market="bonds",

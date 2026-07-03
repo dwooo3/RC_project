@@ -75,6 +75,16 @@ def _run(ctx) -> None:
         summary = job.run(vd)
         with _lock:
             _state["steps"] = [{"step": name, "result": str(res)} for name, res in summary.get("steps", {}).items()]
+
+        # Keep the continuous store in step with the snapshot: append the
+        # missing EOD days market-wide (cheap — one request per board per date),
+        # refresh CBR FX, then recompute the denormalised list quotes.
+        from infra.market_store import MarketStore
+        store = MarketStore(db, IssClient(), CbrClient())
+        _step("daily_history", lambda: sum(
+            m["rows_added"] for m in store.append_daily().values()))
+        _step("fx_history", lambda: store.preload_fx()["rows_added"])
+        _step("list_quotes", store.refresh_last_change)
         db.close()
 
         ctx.reload()

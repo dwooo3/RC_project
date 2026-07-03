@@ -813,6 +813,39 @@ class MarketDataDB:
             (secid, market))
         return row["dt"] if row else None
 
+    def price_history_min_dt(self, secid, market) -> str | None:
+        row = self._query_one(
+            f"SELECT MIN(dt) AS dt FROM price_history WHERE secid={self.ph} AND market={self.ph}",
+            (secid, market))
+        return row["dt"] if row else None
+
+    def market_max_dt(self, market) -> str | None:
+        """Newest stored day across the whole market (daily-append cursor)."""
+        row = self._query_one(
+            f"SELECT MAX(dt) AS dt FROM price_history WHERE market={self.ph}", (market,))
+        return row["dt"] if row else None
+
+    def recent_closes(self, market, frm) -> list[dict]:
+        """(secid, dt, close) for every security of a market since ``frm`` —
+        one set-based read to recompute last/change for the list view."""
+        return self._query(
+            f"SELECT secid, dt, close FROM price_history "
+            f"WHERE market={self.ph} AND dt>={self.ph} ORDER BY secid, dt",
+            (market, frm))
+
+    def instrument_refs_for(self, category) -> list[dict]:
+        """(secid, market, board) of tracked instruments in one category."""
+        return self._query(
+            f"SELECT secid, market, board, is_active FROM instrument_ref "
+            f"WHERE category={self.ph} ORDER BY secid", (category,))
+
+    def update_ref_quote(self, secid, last, change_pct, as_of) -> None:
+        """Fast-path update of the denormalised list-view quote fields only
+        (no version cut — the descriptive payload is untouched)."""
+        self._exec(
+            f"UPDATE instrument_ref SET last={self.ph}, change_pct={self.ph}, as_of={self.ph} "
+            f"WHERE secid={self.ph}", (last, change_pct, as_of, secid))
+
     def get_price_history(self, secid, market=None, frm=None, till=None) -> list[dict]:
         sql = ("SELECT dt, open, high, low, close, volume, value, yield, numtrades "
                "FROM price_history WHERE secid=" + self.ph)
