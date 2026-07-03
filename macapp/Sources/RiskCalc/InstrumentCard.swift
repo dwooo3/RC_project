@@ -60,7 +60,7 @@ struct InstrumentCard: View {
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Done") { onClose() }.keyboardShortcut(.defaultAction)
+            Button("Готово") { onClose() }.keyboardShortcut(.defaultAction)
         }
         .padding(Theme.s4)
     }
@@ -69,7 +69,7 @@ struct InstrumentCard: View {
 
     private var specSection: some View {
         VStack(alignment: .leading, spacing: Theme.s2) {
-            BlockTitle("Specification", icon: "doc.text")
+            BlockTitle("Спецификация", icon: "doc.text")
             let fields = entity?.fields.filter { ($0.value ?? "").isEmpty == false } ?? []
             LazyVGrid(columns: [GridItem(.flexible(), alignment: .topLeading),
                                 GridItem(.flexible(), alignment: .topLeading)], spacing: 6) {
@@ -222,9 +222,9 @@ struct InstrumentCard: View {
 
     private var historySection: some View {
         VStack(alignment: .leading, spacing: Theme.s2) {
-            BlockTitle("Price history · \(bars.count) days", icon: "calendar")
+            BlockTitle("История цен · \(bars.count) дн.", icon: "calendar")
             HStack(spacing: Theme.s2) {
-                head("Date"); head("Price"); if category == "bonds" { head("Yield") }; head("Δ day")
+                head("Дата"); head("Цена"); if category == "bonds" { head("Доходность") }; head("Δ день")
             }
             .padding(.vertical, 4)
             Divider()

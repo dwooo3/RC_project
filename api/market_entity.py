@@ -201,27 +201,27 @@ def overview(ctx) -> dict:
     meta = (db.get_snapshot_meta(sid) if sid else {}) or {}
 
     tiles = []
-    for key, label in (("bonds", "Bonds"), ("equities", "Equities"),
-                       ("futures", "Futures"), ("options", "Options")):
+    for key, label in (("bonds", "Облигации"), ("equities", "Акции"),
+                       ("futures", "Фьючерсы"), ("options", "Опционы")):
         tiles.append({"key": key, "label": label,
                       "count": db.count_instrument_refs(key, active_only=(key == "futures"))})
-    tiles.append({"key": "commodities", "label": "Commodities", "count": len(_commodity_futures(db))})
-    tiles.append({"key": "indices", "label": "Indices", "count": _list_indices(ctx)["count"]})
+    tiles.append({"key": "commodities", "label": "Товары", "count": len(_commodity_futures(db))})
+    tiles.append({"key": "indices", "label": "Индексы", "count": _list_indices(ctx)["count"]})
     try:
         fx = db.get_fx_rates(sid) or {}
     except Exception:
         fx = {}
-    tiles.append({"key": "fx", "label": "FX", "count": len(fx)})
+    tiles.append({"key": "fx", "label": "Валюта", "count": len(fx)})
     try:
         curves = db.list_curve_ids(sid)
     except Exception:
         curves = []
-    tiles.append({"key": "curves", "label": "Curves", "count": len(curves)})
+    tiles.append({"key": "curves", "label": "Кривые", "count": len(curves)})
     try:
         vp = len(db.get_vol_points(sid))
     except Exception:
         vp = 0
-    tiles.append({"key": "vols", "label": "Volatility", "count": vp})
+    tiles.append({"key": "vols", "label": "Волатильность", "count": vp})
 
     fetch_ts = str(meta.get("fetch_ts") or "")
     return {

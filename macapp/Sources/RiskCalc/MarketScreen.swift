@@ -163,19 +163,20 @@ struct MarketScreen: View {
     @State private var searchHits: [SearchHit] = []
     @State private var searchTask: Task<Void, Never>?
     @State private var headerMeta: MDOverview?
+    @FocusState private var searchFocused: Bool
     private let client = BridgeClient()
 
     // Doc structure: Market Data is a market-data showcase grouped as
     // Overview · Instruments · Curves · Volatility · History (control/quality
     // lives in the separate Data Controls section).
     private let groups: [(String, String)] = [
-        ("overview", "Overview"), ("instruments", "Instruments"),
-        ("curves", "Curves"), ("volatility", "Volatility"), ("history", "History"),
+        ("overview", "Обзор"), ("instruments", "Инструменты"),
+        ("curves", "Кривые"), ("volatility", "Волатильность"), ("history", "История"),
     ]
     private let instruments: [(String, String)] = [
-        ("bonds", "Bonds"), ("equities", "Equities"), ("futures", "Futures"),
-        ("options", "Options"), ("indices", "Indices"), ("fx", "FX"),
-        ("commodities", "Commodities"),
+        ("bonds", "Облигации"), ("equities", "Акции"), ("futures", "Фьючерсы"),
+        ("options", "Опционы"), ("indices", "Индексы"), ("fx", "Валюта"),
+        ("commodities", "Товары"),
     ]
 
     var body: some View {
@@ -286,12 +287,17 @@ struct MarketScreen: View {
             HStack(spacing: Theme.s3) {
                 HStack(spacing: 4) {
                     Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundStyle(.tertiary)
-                    TextField("Поиск: тикер · ISIN · эмитент", text: $searchText)
+                    TextField("Поиск: тикер · ISIN · эмитент (⌘F)", text: $searchText)
                         .textFieldStyle(.plain).font(.system(size: 12))
+                        .focused($searchFocused)
                 }
                 .padding(.horizontal, Theme.s2).padding(.vertical, 4)
                 .background(Color.gray.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
                 .frame(maxWidth: 280)
+                .background {
+                    Button("") { searchFocused = true }
+                        .keyboardShortcut("f", modifiers: .command).hidden()
+                }
                 Spacer()
                 Text(identityLine).font(.caption2).foregroundStyle(.tertiary)
             }
@@ -419,14 +425,28 @@ struct MarketScreen: View {
             }
             .labelsHidden().fixedSize()
             Spacer()
-            if let c = vm.selectedCurve { Text("\(c.points.count) nodes").font(.caption).foregroundStyle(.tertiary) }
+            if let c = vm.selectedCurve {
+                Text("\(c.points.count) узлов").font(.caption).foregroundStyle(.tertiary)
+                Button { exportCurve(c) } label: { Label("CSV", systemImage: "square.and.arrow.up") }
+                    .buttonStyle(.borderless).controlSize(.small)
+            }
         }
         if let c = vm.selectedCurve {
             curveChart(c)
             curveTable(c)
         } else {
-            Text("No curve data for this snapshot").font(.caption).foregroundStyle(.secondary)
+            Text("Нет данных кривых в этом снапшоте").font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    private func exportCurve(_ c: CurveSeries) {
+        CSVExport.save(suggestedName: "\(c.id)_curve",
+                       header: ["tenor_years", "zero_rate_pct", "discount_factor"],
+                       rows: c.points.map { p in
+                           [String(p.tenor),
+                            p.zero.map { String($0 * 100) } ?? "",
+                            p.discount.map { String($0) } ?? ""]
+                       })
     }
 
     private func curveChart(_ c: CurveSeries) -> some View {
@@ -435,7 +455,7 @@ struct MarketScreen: View {
         let pad = max((hi - lo) * 0.12, 0.2)
         return GlassCard {
             VStack(alignment: .leading, spacing: Theme.s3) {
-                BlockTitle("\(c.label) · zero curve", icon: "chart.xyaxis.line")
+                BlockTitle("\(c.label) · бескупонная кривая", icon: "chart.xyaxis.line")
                 Chart(c.points) { p in
                     if let z = p.zero {
                         AreaMark(x: .value("Tenor", p.tenor),
@@ -459,7 +479,7 @@ struct MarketScreen: View {
                         }
                     }
                 }
-                .chartXAxisLabel("Tenor").chartYAxisLabel("Zero rate (%)")
+                .chartXAxisLabel("Тенор").chartYAxisLabel("Zero-ставка (%)")
                 .frame(height: 260)
             }
         }
@@ -484,7 +504,7 @@ struct MarketScreen: View {
         GlassCard(padding: Theme.s2) {
             VStack(spacing: 0) {
                 HStack(spacing: Theme.s2) {
-                    tableHead("Tenor"); tableHead("Zero rate"); tableHead("Discount factor")
+                    tableHead("Тенор"); tableHead("Zero-ставка"); tableHead("Дисконт-фактор")
                 }
                 .padding(.horizontal, Theme.s2).padding(.vertical, Theme.s2)
                 Divider()
@@ -519,18 +539,18 @@ struct MarketScreen: View {
                 .labelsHidden().fixedSize()
                 Spacer()
                 Picker("Period", selection: $vm.tsYears) {
-                    Text("1Y").tag(1); Text("3Y").tag(3); Text("5Y").tag(5); Text("All").tag(0)
+                    Text("1Y").tag(1); Text("3Y").tag(3); Text("5Y").tag(5); Text("Все").tag(0)
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
                 if vm.isLoading { ProgressView().controlSize(.small) }
-                if let d = vm.tsData { Text("\(vm.tsPoints.count) pts").font(.caption).foregroundStyle(.tertiary).help(d.factorID) }
+                if let d = vm.tsData { Text("\(vm.tsPoints.count) точек").font(.caption).foregroundStyle(.tertiary).help(d.factorID) }
             }
         }
         if let d = vm.tsData, !vm.tsPoints.isEmpty {
             historyChart(d, points: vm.tsPoints)
             historyTable(d, points: vm.tsPoints)
         } else if !vm.isLoading {
-            Text("No history for this series").font(.caption).foregroundStyle(.secondary).frame(height: 120)
+            Text("Нет истории по этой серии").font(.caption).foregroundStyle(.secondary).frame(height: 120)
         }
     }
 
@@ -541,7 +561,7 @@ struct MarketScreen: View {
         let pad = max((hi - lo) * 0.12, abs(hi) * 0.02 + 0.001)
         return GlassCard {
             VStack(alignment: .leading, spacing: Theme.s3) {
-                BlockTitle("\(d.label) · history", icon: "chart.xyaxis.line")
+                BlockTitle("\(d.label) · история", icon: "chart.xyaxis.line")
                 Chart(points) { p in
                     AreaMark(x: .value("Date", p.dateValue),
                              yStart: .value("Floor", lo - pad), yEnd: .value("Value", p.value * scale))
@@ -553,7 +573,7 @@ struct MarketScreen: View {
                         .interpolationMethod(.monotone)
                 }
                 .chartYScale(domain: (lo - pad)...(hi + pad))
-                .chartYAxisLabel(d.isRate ? "Rate (%)" : "Level")
+                .chartYAxisLabel(d.isRate ? "Ставка (%)" : "Уровень")
                 .frame(height: 280)
             }
         }
@@ -563,7 +583,7 @@ struct MarketScreen: View {
         GlassCard(padding: Theme.s2) {
             VStack(spacing: 0) {
                 HStack(spacing: Theme.s2) {
-                    tableHead("Date"); tableHead(d.isRate ? "Rate" : "Value")
+                    tableHead("Дата"); tableHead(d.isRate ? "Ставка" : "Значение")
                 }
                 .padding(.horizontal, Theme.s2).padding(.vertical, Theme.s2)
                 Divider()

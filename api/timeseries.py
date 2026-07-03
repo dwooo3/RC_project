@@ -40,7 +40,7 @@ def _label(factor_id: str) -> str:
     return base
 
 
-_GROUP_LABELS = {"indices": "Indices", "equities": "Equities", "rates": "Rates & curve"}
+_GROUP_LABELS = {"indices": "Индексы", "equities": "Акции", "rates": "Ставки и кривые"}
 _GROUP_ORDER = ["indices", "rates", "equities"]
 
 

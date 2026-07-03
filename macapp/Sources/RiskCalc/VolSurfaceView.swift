@@ -47,6 +47,13 @@ final class VolSurfaceVM {
 struct VolSurfaceView: View {
     @State private var vm = VolSurfaceVM()
     @State private var section = "market"
+    @State private var filter = ""
+    @State private var expandOverride: [String: Bool] = [:]   // expiry sections
+
+    private var filteredUnderlyings: [VolUnderlying] {
+        guard !filter.isEmpty else { return vm.underlyings }
+        return vm.underlyings.filter { $0.code.localizedCaseInsensitiveContains(filter) }
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -69,9 +76,24 @@ struct VolSurfaceView: View {
                 Text("Нет поверхностей. Запусти ingest.")
                     .font(.caption).foregroundStyle(.secondary).padding().frame(maxHeight: .infinity)
             } else {
-                ScrollView {
+                VStack(spacing: 0) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundStyle(.tertiary)
+                        TextField("Поиск…", text: $filter).textFieldStyle(.plain).font(.system(size: 11))
+                    }
+                    .padding(.horizontal, Theme.s2).padding(.vertical, 5)
+                    .background(Color.gray.opacity(0.1))
+                    Divider()
+                    underlyingList
+                }
+            }
+        }
+    }
+
+    private var underlyingList: some View {
+        ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(vm.underlyings) { u in
+                        ForEach(filteredUnderlyings) { u in
                             Button { Task { await vm.select(u.code) } } label: {
                                 HStack {
                                     Text(u.code).font(.system(size: 12, weight: .medium))
@@ -86,8 +108,6 @@ struct VolSurfaceView: View {
                             Divider().opacity(0.25)
                         }
                     }
-                }
-            }
         }
     }
 
@@ -101,9 +121,10 @@ struct VolSurfaceView: View {
                     Text(vm.selected ?? "—").font(.system(size: 18, weight: .bold))
                     Text("поверхность волатильности").font(.system(size: 11)).foregroundStyle(.secondary)
                     Spacer()
+                    exportButton
                 }
                 Picker("", selection: $section) {
-                    Text("Market").tag("market"); Text("OTC").tag("otc")
+                    Text("Биржевые").tag("market"); Text("OTC").tag("otc")
                 }
                 .pickerStyle(.segmented).fixedSize().labelsHidden()
 
@@ -128,6 +149,42 @@ struct VolSurfaceView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(Theme.s4)
         }
+    }
+
+    // MARK: CSV export (C3)
+
+    @ViewBuilder
+    private var exportButton: some View {
+        if section == "otc", let otc = vm.otc, otc.isFx, !otc.tenors.isEmpty {
+            Button { exportOTC(otc) } label: { Label("CSV", systemImage: "square.and.arrow.up") }
+                .buttonStyle(.borderless).controlSize(.small)
+        } else if section == "market", let surf = vm.surface, !surf.expiries.isEmpty {
+            Button { exportMarket(surf) } label: { Label("CSV", systemImage: "square.and.arrow.up") }
+                .buttonStyle(.borderless).controlSize(.small)
+        }
+    }
+
+    private func exportMarket(_ surf: VolSurface) {
+        CSVExport.save(suggestedName: "\(vm.selected ?? "vol")_surface",
+                       header: ["expiry", "strike", "delta", "iv", "quote", "fair_value"],
+                       rows: flatRows(surf).map { r in
+                           [r.expiry, String(r.p.strike),
+                            r.p.delta.map { String($0) } ?? "",
+                            r.p.iv.map { String($0) } ?? "",
+                            r.p.quote.map { String($0) } ?? "",
+                            r.p.fairValue.map { String($0) } ?? ""]
+                       })
+    }
+
+    private func exportOTC(_ otc: OTCSurface) {
+        CSVExport.save(suggestedName: "\(otc.underlying)_otc",
+                       header: ["expiry", "t_years", "atm", "rr25", "bf25", "sigma25p", "sigma25c"],
+                       rows: otc.tenors.map { t in
+                           [t.expiry, String(t.t),
+                            t.atm.map { String($0) } ?? "", t.rr25.map { String($0) } ?? "",
+                            t.bf25.map { String($0) } ?? "", t.sig25p.map { String($0) } ?? "",
+                            t.sig25c.map { String($0) } ?? ""]
+                       })
     }
 
     // MARK: surface chart (matplotlib mplot3d, rendered server-side)
@@ -322,8 +379,15 @@ struct VolSurfaceView: View {
             }
     }
 
+    /// Per-expiry expand state: near expiries (first 2) open by default, the
+    /// far ones collapsed until clicked. Keyed by underlying so switching
+    /// instruments resets to the default.
+    private func expiryBinding(_ key: String, default def: Bool) -> Binding<Bool> {
+        Binding(get: { expandOverride[key] ?? def }, set: { expandOverride[key] = $0 })
+    }
+
     private func fullTable(_ surf: VolSurface) -> some View {
-        let rows = flatRows(surf)
+        let expiries = surf.expiries.sorted { ($0.t ?? 0) < ($1.t ?? 0) }
         return GlassCard(padding: Theme.s2) {
             VStack(spacing: 0) {
                 HStack(spacing: Theme.s2) {
@@ -332,18 +396,33 @@ struct VolSurfaceView: View {
                 }
                 .padding(.horizontal, Theme.s2).padding(.vertical, Theme.s2)
                 Divider()
-                ForEach(rows) { r in
-                    let p = r.p
-                    HStack(spacing: Theme.s2) {
-                        cell(r.expiry, .leading, .regular, .secondary)
-                        cell(Fmt.number(p.strike, digits: p.strike < 100 ? 2 : 0), .trailing, .medium)
-                        cell(p.delta.map { Fmt.number($0, digits: 2) } ?? "—", .trailing)
-                        cell(p.iv.map { Fmt.percent($0 * 100, digits: 2) } ?? "—", .trailing)
-                        cell(p.quote.map { Fmt.number($0, digits: 1) } ?? "—", .trailing)
-                        cell(p.fairValue.map { Fmt.number($0, digits: 1) } ?? "—", .trailing,
-                             .regular, fairColor(p))
+                ForEach(Array(expiries.enumerated()), id: \.element.expiry) { idx, e in
+                    DisclosureGroup(isExpanded: expiryBinding("\(vm.selected ?? "")#\(e.expiry)",
+                                                              default: idx < 2)) {
+                        ForEach(e.points, id: \.strike) { p in
+                            HStack(spacing: Theme.s2) {
+                                cell("", .leading)
+                                cell(Fmt.number(p.strike, digits: p.strike < 100 ? 2 : 0), .trailing, .medium)
+                                cell(p.delta.map { Fmt.number($0, digits: 2) } ?? "—", .trailing)
+                                cell(p.iv.map { Fmt.percent($0 * 100, digits: 2) } ?? "—", .trailing)
+                                cell(p.quote.map { Fmt.number($0, digits: 1) } ?? "—", .trailing)
+                                cell(p.fairValue.map { Fmt.number($0, digits: 1) } ?? "—", .trailing,
+                                     .regular, fairColor(p))
+                            }
+                            .padding(.horizontal, Theme.s2).padding(.vertical, 3)
+                            Divider().opacity(0.25)
+                        }
+                    } label: {
+                        HStack(spacing: Theme.s2) {
+                            Text(e.expiry).font(.system(size: 11, weight: .semibold))
+                            if let t = e.t { Text(String(format: "%.2f г", t)).font(.system(size: 9)).foregroundStyle(.tertiary) }
+                            if let a = e.atmIv { Text("ATM \(Fmt.percent(a * 100, digits: 1))").font(.system(size: 9)).foregroundStyle(.secondary) }
+                            Spacer()
+                            Text("\(e.points.count) опц.").font(.system(size: 9)).foregroundStyle(.tertiary)
+                        }
+                        .padding(.vertical, 3)
                     }
-                    .padding(.horizontal, Theme.s2).padding(.vertical, 3)
+                    .padding(.horizontal, Theme.s2)
                     Divider().opacity(0.25)
                 }
             }

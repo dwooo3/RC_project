@@ -437,16 +437,16 @@ struct MarketEntityView: View {
     private func dayStats(_ e: MDEntity) -> some View {
         let d = e.day
         let stats: [(String, String)] = [
-            ("Last", d?.close.map { Fmt.number($0, digits: 2) } ?? "—"),
-            ("Open", d?.open.map { Fmt.number($0, digits: 2) } ?? "—"),
-            ("High", d?.high.map { Fmt.number($0, digits: 2) } ?? "—"),
-            ("Low", d?.low.map { Fmt.number($0, digits: 2) } ?? "—"),
-            (category == "bonds" ? "Yield" : "Δ%", category == "bonds"
+            ("Последняя", d?.close.map { Fmt.number($0, digits: 2) } ?? "—"),
+            ("Открытие", d?.open.map { Fmt.number($0, digits: 2) } ?? "—"),
+            ("Максимум", d?.high.map { Fmt.number($0, digits: 2) } ?? "—"),
+            ("Минимум", d?.low.map { Fmt.number($0, digits: 2) } ?? "—"),
+            (category == "bonds" ? "Доходность" : "Δ%", category == "bonds"
                 ? (d?.yield.map { Fmt.percent($0, digits: 2) } ?? "—")
                 : (e.changePct.map { Fmt.signedPercent($0, digits: 2) } ?? "—")),
-            ("Volume", d?.volume.map { Fmt.money($0) } ?? "—"),
-            ("Value", d?.value.map { Fmt.money($0) } ?? "—"),
-            ("Trades", d?.numtrades.map { Fmt.number($0, digits: 0) } ?? "—"),
+            ("Объём", d?.volume.map { Fmt.money($0) } ?? "—"),
+            ("Оборот", d?.value.map { Fmt.money($0) } ?? "—"),
+            ("Сделки", d?.numtrades.map { Fmt.number($0, digits: 0) } ?? "—"),
         ]
         return GlassCard(padding: Theme.s3) {
             VStack(alignment: .leading, spacing: Theme.s2) {
