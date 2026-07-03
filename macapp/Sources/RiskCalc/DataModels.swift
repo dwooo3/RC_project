@@ -978,6 +978,36 @@ struct OverviewTile: Decodable, Sendable, Identifiable {
     var id: String { key }
 }
 
+// MARK: - Recently viewed instruments (Overview 2.0)
+
+/// UserDefaults-backed ring buffer of the last viewed instruments (newest
+/// first, ≤8). Written by MarketEntityVM.select, rendered as chips on Overview.
+struct RecentInstrument: Codable, Identifiable, Sendable {
+    let secid: String
+    let category: String
+    let label: String
+    var id: String { "\(category)#\(secid)" }
+}
+
+enum RecentInstruments {
+    private static let key = "md.recents"
+    private static let cap = 8
+
+    static func all() -> [RecentInstrument] {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return [] }
+        return (try? JSONDecoder().decode([RecentInstrument].self, from: data)) ?? []
+    }
+
+    static func push(secid: String, category: String, label: String) {
+        var items = all().filter { !($0.secid == secid && $0.category == category) }
+        items.insert(RecentInstrument(secid: secid, category: category, label: label), at: 0)
+        if items.count > cap { items.removeLast(items.count - cap) }
+        if let data = try? JSONEncoder().encode(items) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+}
+
 struct OverviewFX: Decodable, Sendable, Identifiable {
     let pair: String
     let rate: Double

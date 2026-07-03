@@ -262,10 +262,14 @@ struct MarketScreen: View {
         searchText = ""
         searchHits = []
         guard let cat = hit.category else { return }
-        instrument = cat
+        openInstrument(cat, hit.secid)
+    }
+
+    private func openInstrument(_ category: String, _ secid: String) {
+        instrument = category
         group = "instruments"
-        let vm = entityVMs.vm(for: cat)
-        Task { await vm.select(hit.secid) }
+        let vm = entityVMs.vm(for: category)
+        Task { await vm.select(secid) }
     }
 
     private var identityLine: String {
@@ -321,7 +325,7 @@ struct MarketScreen: View {
     private var content: some View {
         switch group {
         case "overview":
-            OverviewView(onSelect: handleOverviewSelect)
+            OverviewView(onSelect: handleOverviewSelect, onOpen: openInstrument)
         case "instruments":
             // VMs are cached per category: switching sub-tabs re-uses the loaded
             // list/selection instead of refetching ~700KB (audit A4). The .id keeps

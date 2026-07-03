@@ -23,7 +23,10 @@ final class OverviewVM {
 struct OverviewView: View {
     /// Tile tap → parent switches to that data section.
     var onSelect: (String) -> Void
+    /// Indicator / recent-instrument tap → parent opens it (category, secid).
+    var onOpen: (String, String) -> Void
     @State private var vm = OverviewVM()
+    @State private var recents: [RecentInstrument] = []
 
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: Theme.s3)]
 
@@ -35,7 +38,9 @@ struct OverviewView: View {
                 if let line = asOfLine(d) {
                     Text(line).font(.caption).foregroundStyle(.secondary)
                 }
+                if let ind = d.indicators, !ind.isEmpty { indicatorStrip(ind) }
                 tiles(d)
+                if !recents.isEmpty { recentsCard }
                 if let fx = d.fx, !fx.isEmpty { fxCard(fx) }
             } else if vm.loading {
                 ProgressView().frame(maxWidth: .infinity, minHeight: 200)
@@ -43,7 +48,61 @@ struct OverviewView: View {
                 Text("Нет данных. Запусти ingest.").font(.caption).foregroundStyle(.secondary).frame(height: 120)
             }
         }
-        .task { await vm.load() }
+        .task {
+            recents = RecentInstruments.all()
+            await vm.load()
+        }
+    }
+
+    // MARK: market pulse (C2)
+
+    private func indicatorStrip(_ ind: [OverviewIndicator]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Theme.s3) {
+                ForEach(ind) { i in
+                    Button { onOpen(i.category, i.key) } label: { indicatorCard(i) }
+                        .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func indicatorCard(_ i: OverviewIndicator) -> some View {
+        GlassCard(padding: Theme.s3) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(i.label).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                Text(Fmt.number(i.value, digits: 2)).font(.system(size: 16, weight: .bold)).monospacedDigit()
+                Text(i.changePct.map { Fmt.signedPercent($0, digits: 2) } ?? " ")
+                    .font(.system(size: 10, weight: .medium)).monospacedDigit()
+                    .foregroundStyle((i.changePct ?? 0) >= 0 ? Theme.positive : Theme.negative)
+            }
+            .frame(width: 118, alignment: .leading)
+        }
+        .contentShape(Rectangle())
+    }
+
+    private var recentsCard: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s3) {
+                BlockTitle("Недавно просмотренные", icon: "clock.arrow.circlepath")
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: Theme.s2) {
+                        ForEach(recents) { r in
+                            Button { onOpen(r.category, r.secid) } label: {
+                                HStack(spacing: 5) {
+                                    Text(r.label).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                                    Text(r.secid).font(.system(size: 9)).foregroundStyle(.tertiary)
+                                }
+                                .padding(.horizontal, Theme.s3).padding(.vertical, 5)
+                                .background(Color.gray.opacity(0.12), in: Capsule())
+                                .contentShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private func asOfLine(_ d: MDOverview) -> String? {

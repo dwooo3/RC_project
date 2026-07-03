@@ -109,6 +109,10 @@ final class MarketEntityVM {
         guard selectedID == secid else { return }
         entity = e
         loadingDetail = false
+        if let e {
+            RecentInstruments.push(secid: secid, category: category,
+                                   label: e.issuerRu ?? e.nameRu ?? secid)
+        }
     }
 
     /// Daily bars from the EOD store, or live ISS candles when an intraday
