@@ -102,6 +102,44 @@ def _enrich_bonds(ctx, rows: list[dict]) -> None:
             r["g_spread_bp"] = round((ytm - zero(t)) * 1e4, 1)
 
 
+def search(ctx, q: str, limit: int = 20) -> dict:
+    """Global instrument search (C1): secid / ISIN / issuer across instrument_ref
+    plus the index registry. Python-side lower() so Cyrillic matching works
+    (sqlite LIKE is ASCII-only case-insensitive)."""
+    db = ctx.market_db
+    ql = (q or "").strip().lower()
+    if db is None or len(ql) < 2:
+        return {"query": q, "results": []}
+    scored = []
+    for r in db.all_instrument_refs():
+        secid = str(r.get("secid") or "").lower()
+        issuer = str(r.get("issuer_ru") or "").lower()
+        rest = f"{r.get('isin') or ''} {r.get('name_ru') or ''}".lower()
+        # rank: exact/prefix ticker or issuer beats a substring buried in the name
+        if secid.startswith(ql) or issuer.startswith(ql):
+            rank = 0
+        elif ql in secid or ql in issuer:
+            rank = 1
+        elif ql in rest:
+            rank = 2
+        else:
+            continue
+        scored.append((rank, issuer, {
+            "secid": r["secid"], "category": r.get("category"),
+            "issuer_ru": r.get("issuer_ru"), "isin": r.get("isin"),
+            "last": r.get("last"), "change_pct": r.get("change_pct")}))
+    for base, name in _INDICES.items():
+        if ql in base.lower() or ql in name.lower():
+            pts = db.last_two_points(f"{base}:price")
+            if pts:
+                rank = 0 if (base.lower().startswith(ql) or name.lower().startswith(ql)) else 1
+                scored.append((rank, name.lower(), {
+                    "secid": base, "category": "indices", "issuer_ru": name,
+                    "isin": None, "last": pts[0]["value"], "change_pct": None}))
+    scored.sort(key=lambda s: (s[0], s[1]))
+    return {"query": q, "results": [s[2] for s in scored[:limit]]}
+
+
 def refdata(ctx) -> dict:
     """Unified reference look-ups (§8): currencies, boards, sources."""
     db = ctx.market_db
@@ -185,13 +223,44 @@ def overview(ctx) -> dict:
         vp = 0
     tiles.append({"key": "vols", "label": "Volatility", "count": vp})
 
+    fetch_ts = str(meta.get("fetch_ts") or "")
     return {
         "available": True,
         "as_of": meta.get("valuation_date"),
         "source": meta.get("source"),
+        "updated": fetch_ts[11:16] if len(fetch_ts) >= 16 else None,   # HH:MM
         "tiles": tiles,
         "fx": [{"pair": p, "rate": r} for p, r in sorted(fx.items())],
+        "indicators": _overview_indicators(db),
     }
+
+
+def _overview_indicators(db) -> list[dict]:
+    """Headline market indicators for the Overview strip (C2): key indices from
+    the registry + Brent (active futures) + USD/RUB fixing."""
+    out = []
+    for base in ("IMOEX", "RGBI", "RVI"):
+        pts = db.last_two_points(f"{base}:price")
+        if not pts:
+            continue
+        last = pts[0]["value"]
+        prev = pts[1]["value"] if len(pts) > 1 else None
+        chg = ((last - prev) / prev * 100.0) if (last and prev) else None
+        out.append({"key": base, "category": "indices", "label": _INDICES.get(base, base),
+                    "value": last, "change_pct": chg})
+    try:
+        br = [r for r in db.list_instrument_refs("futures", active_only=True)
+              if r.get("asset_code") == "BR" and r.get("last")]
+        if br:
+            out.append({"key": br[0]["secid"], "category": "futures", "label": "Brent",
+                        "value": br[0]["last"], "change_pct": br[0].get("change_pct")})
+    except Exception:
+        pass
+    usd = db.get_instrument_ref("USDRUB")
+    if usd and usd.get("last"):
+        out.append({"key": "USDRUB", "category": "fx", "label": "USD/RUB",
+                    "value": usd["last"], "change_pct": usd.get("change_pct")})
+    return out
 
 
 def _stats_from_closes(closes: list[tuple]) -> dict | None:

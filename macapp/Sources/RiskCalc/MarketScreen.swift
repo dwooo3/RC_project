@@ -158,6 +158,12 @@ struct MarketScreen: View {
     @State private var instrument = "bonds"
     @State private var curveType = "rates"
     @State private var entityVMs = EntityVMCache()
+    // global search (C1)
+    @State private var searchText = ""
+    @State private var searchHits: [SearchHit] = []
+    @State private var searchTask: Task<Void, Never>?
+    @State private var headerMeta: MDOverview?
+    private let client = BridgeClient()
 
     // Doc structure: Market Data is a market-data showcase grouped as
     // Overview · Instruments · Curves · Volatility · History (control/quality
@@ -179,15 +185,111 @@ struct MarketScreen: View {
             content
         }
         .navigationTitle("Market Data")
-        .task { if vm.snapshots.isEmpty { await vm.start() } }
+        .task {
+            if vm.snapshots.isEmpty { await vm.start() }
+            headerMeta = try? await client.mdOverview()
+        }
         .onChange(of: group) { _, g in if g == "history" { vm.changeSection("history") } }
+        .onChange(of: searchText) { _, q in scheduleSearch(q) }
+        .overlay(alignment: .topLeading) { searchResults }
+    }
+
+    // MARK: global search (C1)
+
+    private func scheduleSearch(_ q: String) {
+        searchTask?.cancel()
+        let query = q.trimmingCharacters(in: .whitespaces)
+        guard query.count >= 2 else { searchHits = []; return }
+        searchTask = Task {
+            try? await Task.sleep(for: .milliseconds(250))          // debounce
+            guard !Task.isCancelled else { return }
+            let hits = (try? await client.mdSearch(query))?.results ?? []
+            guard !Task.isCancelled, searchText.trimmingCharacters(in: .whitespaces) == query else { return }
+            searchHits = hits
+        }
+    }
+
+    @ViewBuilder
+    private var searchResults: some View {
+        if !searchHits.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(searchHits.prefix(10)) { hit in
+                    Button { open(hit) } label: {
+                        HStack(spacing: Theme.s2) {
+                            Text(categoryLabel(hit.category)).font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(Theme.accent)
+                                .padding(.horizontal, 5).padding(.vertical, 2)
+                                .background(Theme.accent.opacity(0.12), in: Capsule())
+                                .frame(width: 86, alignment: .leading)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(hit.issuerRu ?? hit.secid).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                                Text(hit.isin ?? hit.secid).font(.system(size: 9)).foregroundStyle(.tertiary)
+                            }
+                            Spacer()
+                            if let l = hit.last {
+                                Text(Fmt.number(l, digits: 2)).font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                            }
+                            if let c = hit.changePct {
+                                Text(Fmt.signedPercent(c, digits: 2)).font(.system(size: 10)).monospacedDigit()
+                                    .foregroundStyle(c >= 0 ? Theme.positive : Theme.negative)
+                            }
+                        }
+                        .padding(.horizontal, Theme.s3).padding(.vertical, 6).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    Divider().opacity(0.25)
+                }
+            }
+            .frame(width: 430)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.gray.opacity(0.25)))
+            .padding(.leading, Theme.s5)
+            .padding(.top, 44)
+            .shadow(radius: 14)
+        }
+    }
+
+    private func categoryLabel(_ cat: String?) -> String {
+        switch cat {
+        case "bonds": "Облигация"; case "equities": "Акция"; case "futures": "Фьючерс"
+        case "options": "Опцион"; case "indices": "Индекс"; case "fx": "Валюта"
+        default: cat ?? "?"
+        }
+    }
+
+    /// Jump to the instrument from a search hit (or Overview's recents).
+    private func open(_ hit: SearchHit) {
+        searchText = ""
+        searchHits = []
+        guard let cat = hit.category else { return }
+        instrument = cat
+        group = "instruments"
+        let vm = entityVMs.vm(for: cat)
+        Task { await vm.select(hit.secid) }
+    }
+
+    private var identityLine: String {
+        var parts: [String] = []
+        if let s = headerMeta?.source { parts.append(s) }
+        if let a = headerMeta?.asOf { parts.append("данные на \(a)") }
+        else if let s = vm.snapshots.first(where: { $0.active }) { parts.append("данные на \(s.valuationDate)") }
+        if let u = headerMeta?.updated { parts.append("обновлено \(u)") }
+        return parts.joined(separator: " · ")
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let s = vm.snapshots.first(where: { $0.active }) {
-                Text("данные на \(s.valuationDate)").font(.caption2).foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+            HStack(spacing: Theme.s3) {
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundStyle(.tertiary)
+                    TextField("Поиск: тикер · ISIN · эмитент", text: $searchText)
+                        .textFieldStyle(.plain).font(.system(size: 12))
+                }
+                .padding(.horizontal, Theme.s2).padding(.vertical, 4)
+                .background(Color.gray.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+                .frame(maxWidth: 280)
+                Spacer()
+                Text(identityLine).font(.caption2).foregroundStyle(.tertiary)
             }
             Picker("Group", selection: $group) {
                 ForEach(groups, id: \.0) { Text($0.1).tag($0.0) }

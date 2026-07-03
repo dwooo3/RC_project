@@ -766,6 +766,12 @@ class MarketDataDB:
             f"SELECT secid, SUM(value) AS s FROM dividends "
             f"WHERE registry_date >= {self.ph} AND value IS NOT NULL GROUP BY secid", (frm,))}
 
+    def all_instrument_refs(self) -> list[dict]:
+        """Every instrument row (search corpus): identity + latest quote fields."""
+        return self._query(
+            "SELECT secid, category, isin, issuer_ru, name_ru, last, change_pct "
+            "FROM instrument_ref ORDER BY issuer_ru, secid")
+
     def bond_maturities(self) -> dict:
         """secid → mat_date for every bond in the static instruments table."""
         return {r["secid"]: r["mat_date"] for r in self._query(

@@ -930,9 +930,45 @@ struct MDOverview: Decodable, Sendable {
     let available: Bool
     let asOf: String?
     let source: String?
+    let updated: String?                 // HH:MM of the last ingest fetch
     let tiles: [OverviewTile]?
     let fx: [OverviewFX]?
-    enum CodingKeys: String, CodingKey { case available, source, tiles, fx; case asOf = "as_of" }
+    let indicators: [OverviewIndicator]?
+    enum CodingKeys: String, CodingKey {
+        case available, source, updated, tiles, fx, indicators
+        case asOf = "as_of"
+    }
+}
+
+struct OverviewIndicator: Decodable, Sendable, Identifiable {
+    let key: String
+    let category: String
+    let label: String
+    let value: Double
+    let changePct: Double?
+    var id: String { key }
+    enum CodingKeys: String, CodingKey {
+        case key, category, label, value
+        case changePct = "change_pct"
+    }
+}
+
+// Global search (GET /md/search)
+struct SearchResults: Decodable, Sendable { let query: String; let results: [SearchHit] }
+
+struct SearchHit: Decodable, Sendable, Identifiable {
+    let secid: String
+    let category: String?
+    let issuerRu: String?
+    let isin: String?
+    let last: Double?
+    let changePct: Double?
+    var id: String { "\(category ?? "")#\(secid)" }
+    enum CodingKeys: String, CodingKey {
+        case secid, category, isin, last
+        case issuerRu = "issuer_ru"
+        case changePct = "change_pct"
+    }
 }
 
 struct OverviewTile: Decodable, Sendable, Identifiable {

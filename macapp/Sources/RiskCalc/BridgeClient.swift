@@ -153,6 +153,14 @@ actor BridgeClient {
 
     func mdOverview() async throws -> MDOverview { try await get("md/overview") }
 
+    func mdSearch(_ q: String) async throws -> SearchResults {
+        var comps = URLComponents(url: base.appending(path: "md/search"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "q", value: q)]
+        let (data, response) = try await session.data(from: comps.url!)
+        try Self.check(response, data)
+        return try JSONDecoder().decode(SearchResults.self, from: data)
+    }
+
     func refData() async throws -> RefData { try await get("md/refdata") }
 
     func mdList(category: String) async throws -> MDListResponse {
