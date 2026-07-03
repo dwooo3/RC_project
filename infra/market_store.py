@@ -289,6 +289,8 @@ class MarketStore:
     def backfill(self, category: str, *, years: int = 8, limit: int | None = None,
                  progress=None) -> dict:
         """Deepen daily history for every tracked instrument of a category."""
+        if category == "fx":                   # CBR fixings, not ISS
+            return self._backfill_fx(years=years, progress=progress)
         engine = "futures" if category in ("futures", "options", "commodities") else "stock"
         refs = self.db.instrument_refs_for(category)
         if category == "futures":              # only active contracts carry history
@@ -305,6 +307,29 @@ class MarketStore:
             if progress and (i + 1) % 25 == 0:
                 progress(f"  {i + 1}/{len(refs)} {category}, {added} rows")
         return {category: len(refs), "rows_added": added}
+
+    def _backfill_fx(self, *, years: int = 8, progress=None) -> dict:
+        """Deepen CBR daily rates backwards to ``years``."""
+        if self.cbr is None:
+            raise ValueError("fx backfill needs a CBR client")
+        today = _dt.date.today()
+        frm = today.replace(year=today.year - years)
+        added = 0
+        for secid, (code, _name, pair) in FX_PAIRS.items():
+            first = self.db.price_history_min_dt(secid, "fx")
+            till = (_dt.date.fromisoformat(first) - _dt.timedelta(days=1)) if first else today
+            if frm > till:
+                continue
+            rows = self.cbr.get_fx_history(code, frm, till)
+            hist = [{"secid": secid, "market": "fx", "dt": d, "open": r, "high": r,
+                     "low": r, "close": r, "volume": None, "value": None,
+                     "yield": None, "numtrades": None} for d, r in rows]
+            if hist:
+                self.db.save_price_history(hist)
+                added += len(hist)
+            if progress:
+                progress(f"  {pair}: +{len(hist)}")
+        return {"fx": len(FX_PAIRS), "rows_added": added}
 
     def preload_bond(self, secid: str, board: str, *, years: int = 5,
                      today: _dt.date | None = None) -> int:
