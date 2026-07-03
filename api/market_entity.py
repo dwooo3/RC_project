@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 
-_RANGE_DAYS = {"1M": 30, "3M": 91, "6M": 182, "1Y": 365, "5Y": 1825, "8Y": 2922}
+_RANGE_DAYS = {"1M": 30, "3M": 91, "6M": 182, "1Y": 365, "3Y": 1096, "5Y": 1825, "8Y": 2922}
 
 
 def _range_from(rng: str) -> str | None:

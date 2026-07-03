@@ -4,12 +4,12 @@ import WebKit
 /// TradingView chart — rendered by TradingView's own open-source Lightweight
 /// Charts™ (Apache 2.0, vendored in Resources/lightweight-charts.js) inside a
 /// WKWebView. Native TV behaviour: high/low-aware autoscale, wheel zoom + drag
-/// pan, crosshair with OHLC legend, volume histogram pane, SMA overlay, log
-/// scale. `window.render(cfg)` redraws on data change and `window.updateLast(bar)`
+/// pan, crosshair with OHLC legend, volume histogram pane.
+/// `window.render(cfg)` redraws on data change and `window.updateLast(bar)`
 /// is the live-update hook for streaming refreshes.
 /// Chart pane only — mode (Candles/Line/Yield) is owned by the caller, which
-/// renders it in its own compact controls row. SMA20 is always on, price scale
-/// is always linear (the toggles were dropped as noise).
+/// renders it in its own compact controls row. Price scale is always linear;
+/// SMA/log toggles were dropped as noise.
 struct TradingChart: View {
     let bars: [MDBar]
     let mode: String            // JS ids: "Candles" | "Line" | "Yield"
@@ -20,7 +20,7 @@ struct TradingChart: View {
     }
 
     var body: some View {
-        LWChartView(bars: bars, mode: mode, showSMA: true, logScale: false)
+        LWChartView(bars: bars, mode: mode)
             .frame(height: 380)
     }
 }
@@ -30,8 +30,6 @@ struct TradingChart: View {
 private struct LWChartView: NSViewRepresentable {
     let bars: [MDBar]
     let mode: String          // "Candles" | "Line" | "Yield"
-    let showSMA: Bool
-    let logScale: Bool
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -68,13 +66,13 @@ private struct LWChartView: NSViewRepresentable {
         let co = context.coordinator
         let dataSig = "\(bars.count)|\(bars.first?.date ?? "")|\(bars.last?.date ?? "")"
             + "|\(bars.first?.close ?? 0)|\(bars.last?.close ?? 0)|\(bars.last?.volume ?? 0)"
-        let sig = dataSig + "|\(mode)|\(showSMA)|\(logScale)"
+        let sig = dataSig + "|\(mode)"
         guard sig != co.lastSig else { return }
         co.lastSig = sig
 
         // Fast path (live polling): same series, only the tail bar refreshed or
         // one new bar appended → stream it via updateLast so zoom/pan survive.
-        let staticSig = "\(mode)|\(showSMA)|\(logScale)|\(bars.first?.date ?? "")"
+        let staticSig = "\(mode)|\(bars.first?.date ?? "")"
         let sameSeries = co.ready && staticSig == co.staticSig && !bars.isEmpty
             && (bars.count == co.lastCount
                 || (bars.count == co.lastCount + 1 && bars.dropLast().last?.date == co.lastDate))
@@ -114,8 +112,6 @@ private struct LWChartView: NSViewRepresentable {
     private struct LWConfig: Encodable {
         let bars: [LWBar]
         let mode: String
-        let sma: Bool
-        let log: Bool
         let intraday: Bool
         let keepView: Bool
     }
@@ -126,8 +122,8 @@ private struct LWChartView: NSViewRepresentable {
     }
 
     private func configJSON(keepView: Bool = false) -> String {
-        let payload = LWConfig(bars: bars.map(lwBar), mode: mode, sma: showSMA,
-                               log: logScale, intraday: bars.last?.ts != nil,
+        let payload = LWConfig(bars: bars.map(lwBar), mode: mode,
+                               intraday: bars.last?.ts != nil,
                                keepView: keepView)
         guard let data = try? JSONEncoder().encode(payload),
               let s = String(data: data, encoding: .utf8) else { return "{}" }
@@ -149,10 +145,10 @@ private struct LWChartView: NSViewRepresentable {
     }()
 
     private static let appJS = #"""
-    let chart = null, priceSeries = null, volSeries = null, smaSeries = null;
+    let chart = null, priceSeries = null, volSeries = null;
     let lastBar = null, lastMode = 'Candles';
 
-    const UP = '#26a69a', DOWN = '#ef5350', ACCENT = '#2962ff', SMA = '#f5a623';
+    const UP = '#26a69a', DOWN = '#ef5350', ACCENT = '#2962ff';
 
     function el(id) { return document.getElementById(id); }
 
@@ -248,7 +244,6 @@ private struct LWChartView: NSViewRepresentable {
             ? chart.timeScale().getVisibleLogicalRange() : null;
         if (priceSeries) { chart.removeSeries(priceSeries); priceSeries = null; }
         if (volSeries)   { chart.removeSeries(volSeries);   volSeries = null; }
-        if (smaSeries)   { chart.removeSeries(smaSeries);   smaSeries = null; }
 
         const bars = cfg.bars || [];
         lastMode = cfg.mode;
@@ -305,25 +300,8 @@ private struct LWChartView: NSViewRepresentable {
             })));
         }
 
-        if (cfg.sma && !yieldMode) {
-            const closes = bars.map(b => b.close);
-            const pts = [];
-            let acc = 0;
-            for (let i = 0; i < closes.length; i++) {
-                acc += closes[i];
-                if (i >= 20) acc -= closes[i - 20];
-                if (i >= 19) pts.push({ time: timeFor(bars[i]), value: acc / 20 });
-            }
-            smaSeries = chart.addLineSeries({
-                color: SMA, lineWidth: 1.5,
-                lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false,
-            });
-            smaSeries.setData(pts);
-        }
-
         chart.priceScale('right').applyOptions({
-            mode: cfg.log ? LightweightCharts.PriceScaleMode.Logarithmic
-                          : LightweightCharts.PriceScaleMode.Normal,
+            mode: LightweightCharts.PriceScaleMode.Normal,
             autoScale: true,
         });
         if (prevRange) chart.timeScale().setVisibleLogicalRange(prevRange);

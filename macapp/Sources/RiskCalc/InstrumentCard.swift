@@ -1,15 +1,15 @@
 import SwiftUI
 import Charts
 
-/// Full instrument card: everything ISS exposes + the 5-year daily price history
-/// (Date · Price · Yield · day change, coloured) + bond coupon schedule.
+/// Full instrument card: everything ISS exposes + bond coupon schedule /
+/// dividends / futures chain / reference versions. The price history table was
+/// dropped — the list's CSV export covers it per timeframe and period.
 struct InstrumentCard: View {
     let category: String
     let secid: String
     var onClose: () -> Void
 
     @State private var entity: MDEntity?
-    @State private var bars: [MDBar] = []
     @State private var loading = true
     private let client = BridgeClient()
 
@@ -32,7 +32,6 @@ struct InstrumentCard: View {
                         }
                         if let vers = entity?.versions, !vers.isEmpty { versionsSection(vers) }
                         if let sv = entity?.scheduleVersions, !sv.isEmpty { scheduleVersionsSection(sv) }
-                        if !bars.isEmpty { historySection }
                     }
                     .padding(Theme.s4)
                 }
@@ -43,10 +42,7 @@ struct InstrumentCard: View {
     }
 
     private func load() async {
-        async let e = try? await client.mdInstrument(category: category, secid: secid)
-        async let h = try? await client.mdHistory(secid: secid, market: market, range: "ALL")
-        entity = await e
-        bars = (await h)?.points ?? []
+        entity = try? await client.mdInstrument(category: category, secid: secid)
         loading = false
     }
 
@@ -216,41 +212,6 @@ struct InstrumentCard: View {
                 Divider().opacity(0.25)
             }
         }
-    }
-
-    // MARK: 5y daily history
-
-    private var historySection: some View {
-        VStack(alignment: .leading, spacing: Theme.s2) {
-            BlockTitle("История цен · \(bars.count) дн.", icon: "calendar")
-            HStack(spacing: Theme.s2) {
-                head("Дата"); head("Цена"); if category == "bonds" { head("Доходность") }; head("Δ день")
-            }
-            .padding(.vertical, 4)
-            Divider()
-            ForEach(Array(rowsNewestFirst().enumerated()), id: \.offset) { _, row in
-                HStack(spacing: Theme.s2) {
-                    cell(row.bar.date, align: .leading)
-                    cell(Fmt.number(row.bar.close, digits: 2))
-                    if category == "bonds" { cell(row.bar.yld.map { Fmt.percent($0, digits: 2) } ?? "—") }
-                    cell(row.change.map { Fmt.signedPercent($0, digits: 2) } ?? "—",
-                         color: row.change.map { $0 >= 0 ? Theme.positive : Theme.negative })
-                }
-                .padding(.vertical, 3)
-                Divider().opacity(0.25)
-            }
-        }
-    }
-
-    private struct Row { let bar: MDBar; let change: Double? }
-    private func rowsNewestFirst() -> [Row] {
-        var out: [Row] = []
-        for i in bars.indices {
-            let prev = i > 0 ? bars[i - 1].close : nil
-            let chg = prev.map { (bars[i].close - $0) / $0 * 100 }
-            out.append(Row(bar: bars[i], change: chg))
-        }
-        return out.reversed()
     }
 
     private func head(_ t: String) -> some View {

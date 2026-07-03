@@ -543,10 +543,11 @@ struct MDEntity: Decodable, Sendable {
     let wap: Double?             // bonds: weighted average price
     let divYieldPct: Double?     // equities: trailing-12m dividend yield, %
     let stats: MDStats?          // 52w range · realized vol · max drawdown
+    let schedule: MDBondSchedule?  // bonds: coupons / amortizations / offers
 
     enum CodingKeys: String, CodingKey {
         case secid, category, isin, currency, board, last, fields, day, dividends, chain, versions
-        case ytm, accrued, wap, stats
+        case ytm, accrued, wap, stats, schedule
         case gSpreadBp = "g_spread_bp"
         case divYieldPct = "div_yield_pct"
         case scheduleVersions = "schedule_versions"
@@ -558,6 +559,49 @@ struct MDEntity: Decodable, Sendable {
         case asOf = "as_of"
         case assetCode = "asset_code"
         case optionChain = "option_chain"
+    }
+}
+
+// Bond cash-flow schedule (bond_coupons / bond_amortizations / bond_offers).
+struct MDBondSchedule: Decodable, Sendable {
+    let coupons: [MDCoupon]?
+    let amortizations: [MDAmortization]?
+    let offers: [MDOffer]?
+}
+
+struct MDCoupon: Decodable, Sendable, Identifiable {
+    let couponDate: String
+    let value: Double?
+    let valuePrc: Double?
+    var id: String { couponDate }
+    enum CodingKeys: String, CodingKey {
+        case value
+        case couponDate = "coupon_date"
+        case valuePrc = "value_prc"
+    }
+}
+
+struct MDAmortization: Decodable, Sendable, Identifiable {
+    let amortDate: String
+    let value: Double?
+    let faceRemaining: Double?
+    var id: String { amortDate }
+    enum CodingKeys: String, CodingKey {
+        case value
+        case amortDate = "amort_date"
+        case faceRemaining = "face_remaining"
+    }
+}
+
+struct MDOffer: Decodable, Sendable, Identifiable {
+    let offerDate: String
+    let price: Double?
+    let offerType: String?
+    var id: String { offerDate }
+    enum CodingKeys: String, CodingKey {
+        case price
+        case offerDate = "offer_date"
+        case offerType = "offer_type"
     }
 }
 

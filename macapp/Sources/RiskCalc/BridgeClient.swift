@@ -171,10 +171,12 @@ actor BridgeClient {
         try await get("md/instrument/\(category)/\(secid)")
     }
 
-    func mdHistory(secid: String, market: String, range: String) async throws -> MDHistory {
+    func mdHistory(secid: String, market: String, range: String,
+                   interval: String = "1d") async throws -> MDHistory {
         var comps = URLComponents(url: base.appending(path: "md/history/\(secid)"), resolvingAgainstBaseURL: false)!
         comps.queryItems = [URLQueryItem(name: "market", value: market),
-                            URLQueryItem(name: "range", value: range)]
+                            URLQueryItem(name: "range", value: range),
+                            URLQueryItem(name: "interval", value: interval)]
         let (data, response) = try await session.data(from: comps.url!)
         try Self.check(response, data)
         return try JSONDecoder().decode(MDHistory.self, from: data)

@@ -18,7 +18,7 @@ final class MarketEntityVM {
     var entity: MDEntity?
     var bars: [MDBar] = []
     var range = "1Y"
-    var interval = "Д"                        // Д (daily) | 1м | 10м | 1ч (live ISS)
+    var interval = "Д"                        // 1м | 5м | 15м | 1ч (live ISS) | Д | Н (store)
     var chartMode = "Свечи"                   // Свечи | Линия | Доходность
     var loadingList = false
     var loadingDetail = false
@@ -115,24 +115,41 @@ final class MarketEntityVM {
         }
     }
 
-    /// Daily bars from the EOD store, or live ISS candles when an intraday
-    /// interval (1м/10м/1ч) is selected. Discards the result if the selection
-    /// moved on while the request was in flight (stale-write guard).
+    /// Daily/weekly bars from the EOD store, or live ISS candles when an
+    /// intraday interval (1м/5м/15м/1ч) is selected. Discards the result if the
+    /// selection moved on while the request was in flight (stale-write guard).
     private func loadBars(_ secid: String) async {
         let wanted = interval
         let pts: [MDBar]
         if let minutes = intradayMinutes {
             pts = (try? await client.mdCandles(secid: secid, market: market, interval: minutes))?.points ?? []
         } else {
-            pts = (try? await client.mdHistory(secid: secid, market: market, range: range))?.points ?? []
+            pts = (try? await client.mdHistory(secid: secid, market: market,
+                                               range: Self.apiRange(range),
+                                               interval: historyInterval))?.points ?? []
         }
         guard !Task.isCancelled, selectedID == secid, interval == wanted else { return }
         bars = pts
     }
 
     var intradayMinutes: Int? {
-        switch interval { case "1м": 1; case "10м": 10; case "1ч": 60; default: nil }
+        switch interval { case "1м": 1; case "5м": 5; case "15м": 15; case "1ч": 60; default: nil }
     }
+
+    /// Store timeframe for Д/Н (the API aggregates weeks from the daily store).
+    var historyInterval: String { interval == "Н" ? "1w" : "1d" }
+
+    var intervals: [String] {
+        supportsIntraday ? ["1м", "5м", "15м", "1ч", "Д", "Н"] : ["Д", "Н"]
+    }
+
+    /// Period choices depend on the timeframe: weeks need a year at least.
+    var rangeOptions: [String] {
+        interval == "Н" ? ["1Y", "3Y", "5Y", "8Y", "Всё"]
+                        : ["1M", "3M", "6M", "1Y", "5Y", "8Y", "Всё"]
+    }
+
+    static func apiRange(_ r: String) -> String { r == "Всё" ? "ALL" : r }
 
     /// FX rows are CBR fixings (no ISS intraday trades under these secids);
     /// options render a chain board instead of a chart.
@@ -149,6 +166,9 @@ final class MarketEntityVM {
         interval = i
         if intradayMinutes != nil && chartMode == "Доходность" {
             chartMode = "Свечи"                // ISS candles carry no yield
+        }
+        if i == "Н" && ["1M", "3M", "6M"].contains(range) {
+            range = "1Y"                       // weeks need a longer window
         }
         reloadBars()
     }
@@ -179,6 +199,10 @@ struct MarketEntityView: View {
     let category: String
     @State private var vm: MarketEntityVM
     @State private var showCard = false
+    // collapsible detail sections (E2) — full spec and long lists fold away
+    @State private var specExpanded = false
+    @State private var couponsExpanded = false
+    @State private var divsExpanded = false
 
     /// Takes a (cached) VM so sub-tab switches keep list/selection state.
     init(vm: MarketEntityVM) {
@@ -211,13 +235,22 @@ struct MarketEntityView: View {
                 TextField("Поиск…", text: $vm.search).textFieldStyle(.roundedBorder)
                 Menu {
                     Button("Список (CSV)") { exportList() }
-                    Button("История выбранного (CSV)") { exportHistory() }
-                        .disabled(vm.bars.isEmpty)
+                    if vm.intradayMinutes != nil {
+                        Button("Свечи \(vm.interval) выбранного (CSV)") { exportIntraday() }
+                            .disabled(vm.bars.isEmpty)
+                    } else {
+                        Menu("История \(vm.interval) выбранного (CSV)") {
+                            ForEach(vm.rangeOptions, id: \.self) { p in
+                                Button(p) { exportHistory(period: p) }
+                            }
+                        }
+                        .disabled(vm.selectedID == nil)
+                    }
                 } label: {
                     Image(systemName: "square.and.arrow.up")
                 }
                 .menuStyle(.borderlessButton).fixedSize()
-                .help("Экспорт в CSV")
+                .help("Экспорт в CSV (текущий таймфрейм)")
             }
             .padding(.horizontal, Theme.s2).padding(.top, Theme.s2)
             HStack(spacing: Theme.s2) {
@@ -338,13 +371,33 @@ struct MarketEntityView: View {
                        header: ["SecID", "Issuer", "ISIN", "Last", "Change%", "AsOf"], rows: rows)
     }
 
-    private func exportHistory() {
-        guard !vm.bars.isEmpty else { return }
-        let rows = vm.bars.map { b in
-            [b.date, num(b.open), num(b.high), num(b.low), String(b.close), num(b.volume), num(b.yld)]
+    /// Export follows the chart's timeframe (Д/Н) with its own period pick —
+    /// the data comes from the local store via the same /md/history endpoint.
+    private func exportHistory(period: String) {
+        guard let secid = vm.selectedID else { return }
+        let tf = vm.interval, apiTF = vm.historyInterval, market = vm.market
+        Task {
+            let pts = (try? await BridgeClient().mdHistory(
+                secid: secid, market: market,
+                range: MarketEntityVM.apiRange(period), interval: apiTF))?.points ?? []
+            guard !pts.isEmpty else { return }
+            let rows = pts.map { b in
+                [b.date, num(b.open), num(b.high), num(b.low), String(b.close), num(b.volume), num(b.yld)]
+            }
+            CSVExport.save(suggestedName: "\(secid)_\(tf)_\(period)",
+                           header: ["Date", "Open", "High", "Low", "Close", "Volume", "Yield"], rows: rows)
         }
-        CSVExport.save(suggestedName: "\(vm.selectedID ?? category)_history",
-                       header: ["Date", "Open", "High", "Low", "Close", "Volume", "Yield"], rows: rows)
+    }
+
+    /// Intraday export dumps the accumulated bars of the current timeframe
+    /// (whatever the local store has collected for this security).
+    private func exportIntraday() {
+        guard !vm.bars.isEmpty, let secid = vm.selectedID else { return }
+        let rows = vm.bars.map { b in
+            [b.date, num(b.open), num(b.high), num(b.low), String(b.close), num(b.volume)]
+        }
+        CSVExport.save(suggestedName: "\(secid)_\(vm.interval)",
+                       header: ["DateTime", "Open", "High", "Low", "Close", "Volume"], rows: rows)
     }
 
     // MARK: detail (2/3)
@@ -364,6 +417,12 @@ struct MarketEntityView: View {
                         if let s = e.stats { statsRow(s) }
                     }
                     keyInfo(e)
+                    if category == "bonds", let cps = e.schedule?.coupons, !cps.isEmpty {
+                        couponsSection(cps)
+                    }
+                    if category == "equities", let divs = e.dividends, !divs.isEmpty {
+                        dividendsSection(divs)
+                    }
                 }
                 .padding(Theme.s4)
             }
@@ -395,10 +454,8 @@ struct MarketEntityView: View {
     /// One compact row of dropdown chips: interval · chart mode · period/LIVE.
     private var rangeBar: some View {
         HStack(spacing: Theme.s2) {
-            if vm.supportsIntraday {
-                chipMenu(["1м", "10м", "1ч", "Д"],
-                         Binding(get: { vm.interval }, set: { vm.changeInterval($0) }))
-            }
+            chipMenu(vm.intervals,
+                     Binding(get: { vm.interval }, set: { vm.changeInterval($0) }))
             chipMenu(vm.chartModes, $vm.chartMode)
             if vm.intradayMinutes != nil {
                 HStack(spacing: 4) {
@@ -407,7 +464,7 @@ struct MarketEntityView: View {
                         .foregroundStyle(Theme.positive)
                 }
             } else {
-                chipMenu(["1M", "3M", "6M", "1Y", "5Y", "ALL"],
+                chipMenu(vm.rangeOptions,
                          Binding(get: { vm.range }, set: { vm.changeRange($0) }))
             }
             Spacer()
@@ -496,6 +553,7 @@ struct MarketEntityView: View {
             keys = ["ISSUENAME", "LATNAME", "ISSUESIZE", "LISTLEVEL", "FACEVALUE", "FACEUNIT", "ISSUEDATE"]
         }
         let info = e.fields.filter { keys.contains($0.name) && ($0.value ?? "").isEmpty == false }
+        let rest = e.fields.filter { !keys.contains($0.name) && ($0.value ?? "").isEmpty == false }
         // store-side analytics (B1/B2/B5): shown ahead of the ISS reference
         var analytics: [(String, String)] = []
         if category == "bonds" {
@@ -512,22 +570,121 @@ struct MarketEntityView: View {
             VStack(alignment: .leading, spacing: Theme.s2) {
                 BlockTitle("Об инструменте", icon: "info.circle")
                 ForEach(analytics, id: \.0) { a in
-                    HStack {
-                        Text(a.0).font(.system(size: 11)).foregroundStyle(.secondary)
-                        Spacer()
-                        Text(a.1).font(.system(size: 11, weight: .semibold)).monospacedDigit()
-                            .foregroundStyle(Theme.accent)
-                    }
+                    infoRow(a.0, a.1, valueColor: Theme.accent, weight: .semibold)
                 }
                 if !analytics.isEmpty && !info.isEmpty { Divider().opacity(0.3) }
                 ForEach(info) { f in
-                    HStack {
-                        Text(f.title ?? f.name).font(.system(size: 11)).foregroundStyle(.secondary)
-                        Spacer()
-                        Text(f.value ?? "—").font(.system(size: 11, weight: .medium)).monospacedDigit()
+                    infoRow(f.title ?? f.name, f.value ?? "—")
+                }
+                // the rest of the ISS reference, folded away (full card contents)
+                if !rest.isEmpty {
+                    DisclosureGroup(isExpanded: $specExpanded) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(rest) { f in
+                                infoRow(f.title ?? f.name, f.value ?? "—")
+                            }
+                        }
+                        .padding(.top, 4)
+                    } label: {
+                        Text("Вся спецификация · \(rest.count) полей")
+                            .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
                     }
                 }
             }
         }
+    }
+
+    private func infoRow(_ label: String, _ value: String,
+                         valueColor: Color = .primary, weight: Font.Weight = .medium) -> some View {
+        HStack(alignment: .top) {
+            Text(label).font(.system(size: 11)).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).font(.system(size: 11, weight: weight)).monospacedDigit()
+                .foregroundStyle(valueColor).multilineTextAlignment(.trailing)
+        }
+    }
+
+    // MARK: cash-flow history (E2) — bond coupons / equity dividends, foldable
+
+    private func couponsSection(_ cps: [MDCoupon]) -> some View {
+        let today = Self.isoToday
+        return GlassCard(padding: Theme.s3) {
+            DisclosureGroup(isExpanded: $couponsExpanded) {
+                VStack(spacing: 0) {
+                    HStack(spacing: Theme.s2) {
+                        flowHead("Дата", .leading); flowHead("Купон", .trailing); flowHead("Ставка", .trailing)
+                    }
+                    .padding(.vertical, 4)
+                    Divider()
+                    ForEach(cps) { c in
+                        let future = c.couponDate >= today
+                        HStack(spacing: Theme.s2) {
+                            flowCell(c.couponDate, .leading,
+                                     color: future ? Theme.accent : .primary,
+                                     weight: future ? .semibold : .regular)
+                            flowCell(c.value.map { Fmt.number($0, digits: 2) } ?? "—", .trailing)
+                            flowCell(c.valuePrc.map { Fmt.percent($0, digits: 2) } ?? "—", .trailing)
+                        }
+                        .padding(.vertical, 3)
+                        Divider().opacity(0.25)
+                    }
+                }
+                .padding(.top, 4)
+            } label: {
+                BlockTitle(couponsTitle(cps, today: today), icon: "calendar.badge.clock")
+            }
+        }
+    }
+
+    private func couponsTitle(_ cps: [MDCoupon], today: String) -> String {
+        if let next = cps.first(where: { $0.couponDate >= today }) {
+            let v = next.value.map { " · \(Fmt.number($0, digits: 2))" } ?? ""
+            return "Купоны · \(cps.count) · ближайший \(next.couponDate)\(v)"
+        }
+        return "Купоны · \(cps.count)"
+    }
+
+    private func dividendsSection(_ divs: [MDDividend]) -> some View {
+        GlassCard(padding: Theme.s3) {
+            DisclosureGroup(isExpanded: $divsExpanded) {
+                VStack(spacing: 0) {
+                    HStack(spacing: Theme.s2) {
+                        flowHead("Закрытие реестра", .leading); flowHead("Дивиденд", .trailing); flowHead("Валюта", .trailing)
+                    }
+                    .padding(.vertical, 4)
+                    Divider()
+                    ForEach(divs.reversed()) { d in
+                        HStack(spacing: Theme.s2) {
+                            flowCell(d.registryDate, .leading)
+                            flowCell(d.value.map { Fmt.number($0, digits: 2) } ?? "—", .trailing)
+                            flowCell(d.currency ?? "—", .trailing)
+                        }
+                        .padding(.vertical, 3)
+                        Divider().opacity(0.25)
+                    }
+                }
+                .padding(.top, 4)
+            } label: {
+                BlockTitle("Дивиденды · \(divs.count)", icon: "banknote")
+            }
+        }
+    }
+
+    private func flowHead(_ t: String, _ align: Alignment) -> some View {
+        Text(t.uppercased()).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: align)
+    }
+
+    private func flowCell(_ t: String, _ align: Alignment,
+                          color: Color = .primary, weight: Font.Weight = .regular) -> some View {
+        Text(t).font(.system(size: 11, weight: weight)).monospacedDigit().foregroundStyle(color)
+            .frame(maxWidth: .infinity, alignment: align)
+    }
+
+    private static var isoToday: String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f.string(from: Date())
     }
 }
