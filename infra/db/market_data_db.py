@@ -74,6 +74,12 @@ _TABLES = {
         ["secid", "market", "dt", "open", "high", "low", "close",
          "volume", "value", "yield", "numtrades"],
         ["secid", "market", "dt"]),
+    # Intraday candles accumulated write-through from live ISS fetches.
+    # Only native ISS intervals are stored (1m, 60m); 5m/15m aggregate on read.
+    "intraday_candles": (
+        ["secid", "market", "interval", "ts", "dt", "open", "high", "low",
+         "close", "volume"],
+        ["secid", "market", "interval", "ts"]),
     # Option chain quotes (current snapshot, one row per option contract).
     "option_quotes": (
         ["secid", "asset_code", "expiry", "strike", "opt_type", "last", "settle",
@@ -158,6 +164,11 @@ def _schema_statements(dialect: str) -> list[str]:
             open REAL, high REAL, low REAL, close REAL, volume REAL, value REAL,
             yield REAL, numtrades REAL, PRIMARY KEY (secid, market, dt))""",
         "CREATE INDEX IF NOT EXISTS idx_price_history_secid ON price_history (secid, dt)",
+        """CREATE TABLE IF NOT EXISTS intraday_candles (
+            secid TEXT NOT NULL, market TEXT NOT NULL, interval INTEGER NOT NULL,
+            ts INTEGER NOT NULL, dt TEXT NOT NULL, open REAL, high REAL, low REAL,
+            close REAL, volume REAL,
+            PRIMARY KEY (secid, market, interval, ts))""",
         """CREATE TABLE IF NOT EXISTS instrument_ref (
             secid TEXT PRIMARY KEY, category TEXT, market TEXT, board TEXT, isin TEXT,
             issuer_ru TEXT, name_ru TEXT, sec_type TEXT, list_level INTEGER, currency TEXT,
@@ -816,6 +827,29 @@ class MarketDataDB:
             sql += f" AND dt<={self.ph}"
             params.append(till)
         sql += " ORDER BY dt"
+        return self._query(sql, tuple(params))
+
+    # -- intraday candles (write-through cache of live ISS fetches) ---------
+    def save_intraday_candles(self, rows: list[dict]) -> None:
+        """Idempotent upsert of intraday bars; the still-open last bar is simply
+        rewritten on the next poll (same PK)."""
+        self._upsert_many("intraday_candles", rows)
+
+    def intraday_max_ts(self, secid, market, interval) -> int | None:
+        row = self._query_one(
+            f"SELECT MAX(ts) AS ts FROM intraday_candles "
+            f"WHERE secid={self.ph} AND market={self.ph} AND interval={self.ph}",
+            (secid, market, interval))
+        return int(row["ts"]) if row and row["ts"] is not None else None
+
+    def get_intraday_candles(self, secid, market, interval, frm_ts=None) -> list[dict]:
+        sql = (f"SELECT ts, dt, open, high, low, close, volume FROM intraday_candles "
+               f"WHERE secid={self.ph} AND market={self.ph} AND interval={self.ph}")
+        params = [secid, market, interval]
+        if frm_ts is not None:
+            sql += f" AND ts>={self.ph}"
+            params.append(int(frm_ts))
+        sql += " ORDER BY ts"
         return self._query(sql, tuple(params))
 
     def save_instrument_ref(self, row: dict) -> None:

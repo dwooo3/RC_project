@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 
-_RANGE_DAYS = {"1M": 30, "3M": 91, "6M": 182, "1Y": 365, "5Y": 1825}
+_RANGE_DAYS = {"1M": 30, "3M": 91, "6M": 182, "1Y": 365, "5Y": 1825, "8Y": 2922}
 
 
 def _range_from(rng: str) -> str | None:
@@ -378,7 +378,38 @@ def _option_chain(rows: list[dict]) -> list[dict]:
     return out
 
 
-def history(ctx, secid: str, market: str = "bonds", rng: str = "5Y") -> dict:
+def _weekly(points: list[dict]) -> list[dict]:
+    """Aggregate daily bars into ISO weeks: open=first, close=last, high/low
+    extremes, volume/value/trades summed, yield=last. Bar is dated by Monday."""
+    weeks: dict[str, dict] = {}
+    order: list[str] = []
+    for p in points:
+        try:
+            d = _dt.date.fromisoformat(str(p["date"])[:10])
+        except ValueError:
+            continue
+        monday = (d - _dt.timedelta(days=d.weekday())).isoformat()
+        w = weeks.get(monday)
+        if w is None:
+            weeks[monday] = {**p, "date": monday}
+            order.append(monday)
+            continue
+        if p.get("high") is not None:
+            w["high"] = max(w["high"], p["high"]) if w.get("high") is not None else p["high"]
+        if p.get("low") is not None:
+            w["low"] = min(w["low"], p["low"]) if w.get("low") is not None else p["low"]
+        if p.get("close") is not None:
+            w["close"] = p["close"]
+        if p.get("yield") is not None:
+            w["yield"] = p["yield"]
+        for k in ("volume", "value", "numtrades"):
+            if p.get(k) is not None:
+                w[k] = (w.get(k) or 0) + p[k]
+    return [weeks[m] for m in order]
+
+
+def history(ctx, secid: str, market: str = "bonds", rng: str = "5Y",
+            interval: str = "1d") -> dict:
     db = ctx.market_db
     if market == "indices":                                    # close-only series from time_series
         frm = _range_from(rng)
@@ -386,15 +417,14 @@ def history(ctx, secid: str, market: str = "bonds", rng: str = "5Y") -> dict:
         pts = [{"date": p["dt"], "open": None, "high": None, "low": None,
                 "close": p["value"], "volume": None, "yield": None, "numtrades": None}
                for p in rows if (not frm or p["dt"] >= frm)]
-        return {"secid": secid, "market": "indices", "range": (rng or "5Y").upper(),
-                "points": pts, "count": len(pts)}
-    pts = db.get_price_history(secid, market, frm=_range_from(rng)) if db is not None else []
-    return {
-        "secid": secid, "market": market, "range": (rng or "5Y").upper(),
-        "points": [{
+    else:
+        rows = db.get_price_history(secid, market, frm=_range_from(rng)) if db is not None else []
+        pts = [{
             "date": p["dt"], "open": p["open"], "high": p["high"], "low": p["low"],
             "close": p["close"], "volume": p["volume"], "yield": p["yield"],
             "numtrades": p["numtrades"],
-        } for p in pts],
-        "count": len(pts),
-    }
+        } for p in rows]
+    if interval == "1w":
+        pts = _weekly(pts)
+    return {"secid": secid, "market": market, "range": (rng or "5Y").upper(),
+            "interval": interval, "points": pts, "count": len(pts)}
