@@ -472,27 +472,17 @@ struct MarketEntityView: View {
     }
 
     private func dayStats(_ e: MDEntity) -> some View {
-        let d = e.day
-        let stats: [(String, String)] = [
-            ("Последняя", d?.close.map { Fmt.number($0, digits: 2) } ?? "—"),
-            ("Открытие", d?.open.map { Fmt.number($0, digits: 2) } ?? "—"),
-            ("Максимум", d?.high.map { Fmt.number($0, digits: 2) } ?? "—"),
-            ("Минимум", d?.low.map { Fmt.number($0, digits: 2) } ?? "—"),
-            (category == "bonds" ? "Доходность" : "Δ%", category == "bonds"
-                ? (d?.yield.map { Fmt.percent($0, digits: 2) } ?? "—")
-                : (e.changePct.map { Fmt.signedPercent($0, digits: 2) } ?? "—")),
-            ("Объём", d?.volume.map { Fmt.money($0) } ?? "—"),
-            ("Оборот", d?.value.map { Fmt.money($0) } ?? "—"),
-            ("Сделки", d?.numtrades.map { Fmt.number($0, digits: 0) } ?? "—"),
-        ]
+        // Metric set is composed by the universal presentation layer (type-aware).
+        let metrics = InstrumentPresentation.dayMetrics(e, category: category)
         return GlassCard(padding: Theme.s3) {
             VStack(alignment: .leading, spacing: Theme.s2) {
-                BlockTitle("Торги за день\(d?.date.map { " · \($0)" } ?? "")", icon: "chart.bar")
+                BlockTitle("Торги за день\(e.day?.date.map { " · \($0)" } ?? "")", icon: "chart.bar")
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4), spacing: Theme.s2) {
-                    ForEach(stats, id: \.0) { s in
+                    ForEach(metrics) { m in
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(s.0).font(.system(size: 10)).foregroundStyle(.secondary)
-                            Text(s.1).font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                            Text(m.title).font(Typography.micro).foregroundStyle(.secondary)
+                            Text(m.value).font(Typography.subtitle.weight(.semibold))
+                                .monospacedDigit().foregroundStyle(m.color)
                         }
                     }
                 }
@@ -522,52 +512,30 @@ struct MarketEntityView: View {
     }
 
     private func keyInfo(_ e: MDEntity) -> some View {
-        let keys: [String]
-        switch category {
-        case "bonds":
-            keys = ["ISSUENAME", "MATDATE", "COUPONPERCENT", "COUPONVALUE", "COUPONFREQUENCY",
-                    "FACEVALUE", "FACEUNIT", "LISTLEVEL", "ISSUESIZE", "BOND_TYPE"]
-        case "fx":
-            keys = ["pair", "code", "source"]
-        default:
-            keys = ["ISSUENAME", "LATNAME", "ISSUESIZE", "LISTLEVEL", "FACEVALUE", "FACEUNIT", "ISSUEDATE"]
-        }
-        let info = e.fields.filter { keys.contains($0.name) && ($0.value ?? "").isEmpty == false }
-        let rest = e.fields.filter { !keys.contains($0.name) && ($0.value ?? "").isEmpty == false }
-        // store-side analytics (B1/B2/B5): shown ahead of the ISS reference
-        var analytics: [(String, String)] = []
-        if category == "bonds" {
-            analytics = [
-                ("Доходность к погашению", e.ytm.map { Fmt.percent($0, digits: 2) } ?? ""),
-                ("G-spread к КБД", e.gSpreadBp.map { "\(Fmt.number($0, digits: 0)) б.п." } ?? ""),
-                ("НКД", e.accrued.map { Fmt.number($0, digits: 2) } ?? ""),
-                ("Средневзв. цена", e.wap.map { Fmt.number($0, digits: 2) } ?? ""),
-            ].filter { !$0.1.isEmpty }
-        } else if category == "equities", let dv = e.divYieldPct {
-            analytics = [("Див. доходность (12м)", Fmt.percent(dv, digits: 2))]
-        }
+        // Attributes are composed by the universal presentation layer (type-aware).
+        let detail = InstrumentPresentation.detail(e, category: category)
         return GlassCard(padding: Theme.s3) {
             VStack(alignment: .leading, spacing: Theme.s2) {
                 BlockTitle("Об инструменте", icon: "info.circle")
-                ForEach(analytics, id: \.0) { a in
-                    infoRow(a.0, a.1, valueColor: Theme.accent, weight: .semibold)
+                ForEach(detail.analytics) { a in
+                    infoRow(a.title, a.value, valueColor: Theme.accent, weight: .semibold)
                 }
-                if !analytics.isEmpty && !info.isEmpty { Divider().opacity(0.3) }
-                ForEach(info) { f in
-                    infoRow(f.title ?? f.name, f.value ?? "—")
+                if !detail.analytics.isEmpty && !detail.reference.isEmpty { Divider().opacity(0.3) }
+                ForEach(detail.reference) { a in
+                    infoRow(a.title, a.value)
                 }
-                // the rest of the ISS reference, folded away (full card contents)
-                if !rest.isEmpty {
+                // the rest of the reference, folded away
+                if !detail.extra.isEmpty {
                     DisclosureGroup(isExpanded: $specExpanded) {
                         VStack(alignment: .leading, spacing: 4) {
-                            ForEach(rest) { f in
-                                infoRow(f.title ?? f.name, f.value ?? "—")
+                            ForEach(detail.extra) { a in
+                                infoRow(a.title, a.value)
                             }
                         }
                         .padding(.top, 4)
                     } label: {
-                        Text("Вся спецификация · \(rest.count) полей")
-                            .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                        Text("Вся спецификация · \(detail.extra.count) полей")
+                            .font(Typography.caption).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -577,9 +545,9 @@ struct MarketEntityView: View {
     private func infoRow(_ label: String, _ value: String,
                          valueColor: Color = .primary, weight: Font.Weight = .medium) -> some View {
         HStack(alignment: .top) {
-            Text(label).font(.system(size: 11)).foregroundStyle(.secondary)
+            Text(label).font(Typography.caption).foregroundStyle(.secondary)
             Spacer()
-            Text(value).font(.system(size: 11, weight: weight)).monospacedDigit()
+            Text(value).font(Typography.caption.weight(weight)).monospacedDigit()
                 .foregroundStyle(valueColor).multilineTextAlignment(.trailing)
         }
     }
