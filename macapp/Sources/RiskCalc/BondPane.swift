@@ -25,10 +25,9 @@ struct BondPane: View {
             } else {
                 VStack(spacing: 0) {
                     HStack {
-                        Picker("Mode", selection: $mode) {
-                            ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
-                        }
-                        .pickerStyle(.segmented).labelsHidden().fixedSize()
+                        SegmentedBar(items: Mode.allCases.map { ($0, $0.rawValue) },
+                                     selection: $mode)
+                            .fixedSize()
                         Spacer()
                     }
                     .padding(.horizontal, Theme.s5).padding(.vertical, Theme.s2)

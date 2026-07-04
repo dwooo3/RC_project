@@ -93,18 +93,19 @@ struct ChoiceField: View {
 
     @ViewBuilder
     private var picker: some View {
-        let base = Picker(spec.label, selection: $value) {
-            ForEach(spec.choices ?? [], id: \.self) { choice in
-                Text(choice).tag(choice)
-            }
-        }
-        .labelsHidden()
-        .fixedSize()
-
         if (spec.choices?.count ?? 0) <= 2 {
-            base.pickerStyle(.segmented)
+            SegmentedBar(items: (spec.choices ?? []).map { ($0, $0) },
+                         selection: $value, compact: true)
+                .fixedSize()
         } else {
-            base.pickerStyle(.menu)
+            Picker(spec.label, selection: $value) {
+                ForEach(spec.choices ?? [], id: \.self) { choice in
+                    Text(choice).tag(choice)
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+            .pickerStyle(.menu)
         }
     }
 }

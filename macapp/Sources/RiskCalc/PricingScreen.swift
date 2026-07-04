@@ -15,12 +15,9 @@ struct PricingScreen: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Picker("Instrument class", selection: $category) {
-                    ForEach(Category.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
+                SegmentedBar(items: Category.allCases.map { ($0, $0.rawValue) },
+                             selection: $category)
+                    .fixedSize()
                 Spacer()
             }
             .padding(.horizontal, Theme.s5)

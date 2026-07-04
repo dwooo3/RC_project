@@ -123,10 +123,9 @@ struct VolSurfaceView: View {
                     Spacer()
                     exportButton
                 }
-                Picker("", selection: $section) {
-                    Text("Биржевые").tag("market"); Text("OTC").tag("otc")
-                }
-                .pickerStyle(.segmented).fixedSize().labelsHidden()
+                SegmentedBar(items: [("market", "Биржевые"), ("otc", "OTC")],
+                             selection: $section, compact: true)
+                    .fixedSize()
 
                 if section == "otc" {
                     otcSection

@@ -32,20 +32,13 @@ struct OptionChainView: View {
         } else {
             VStack(alignment: .leading, spacing: Theme.s3) {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: Theme.s2) {
-                        ForEach(chain) { e in
-                            let on = (expiry?.id ?? chain[0].id) == e.id
-                            Button { expiryID = e.id } label: {
-                                Text(e.expiry)
-                                    .font(.system(size: 11, weight: on ? .semibold : .regular))
-                                    .foregroundStyle(on ? Theme.accent : .secondary)
-                                    .padding(.horizontal, Theme.s2).padding(.vertical, 4)
-                                    .background(on ? Theme.accent.opacity(0.16) : Color.gray.opacity(0.12),
-                                                in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
+                    SegmentedBar(
+                        items: chain.map { ($0.id, $0.expiry) },
+                        selection: Binding(get: { expiry?.id ?? chain.first?.id ?? "" },
+                                           set: { expiryID = $0 }),
+                        compact: true
+                    )
+                    .fixedSize()
                 }
 
                 if let e = expiry {
@@ -63,10 +56,9 @@ struct OptionChainView: View {
 
     private func filterRow(_ e: MDOptionExpiry) -> some View {
         HStack(spacing: Theme.s3) {
-            Picker("", selection: $moneyness) {
-                Text("±5%").tag("5"); Text("±10%").tag("10"); Text("±20%").tag("20"); Text("Все").tag("all")
-            }
-            .pickerStyle(.segmented).fixedSize().labelsHidden()
+            SegmentedBar(items: [("5", "±5%"), ("10", "±10%"), ("20", "±20%"), ("all", "Все")],
+                         selection: $moneyness, compact: true)
+                .fixedSize()
             Menu {
                 Button("OI ≥ 0") { minOI = 0 }
                 Button("OI ≥ 100") { minOI = 100 }

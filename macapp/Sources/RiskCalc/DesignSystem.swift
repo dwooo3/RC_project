@@ -20,34 +20,41 @@ extension View {
 
 /// A segmented control drawn in the app's card idiom: a clean white floating
 /// track with a solid accent-filled pill for the selection. Sizes to content.
-struct SegmentedBar: View {
-    let items: [(String, String)]        // (tag, label)
-    @Binding var selection: String
+/// Generic over any `Hashable` tag so it works for string- and int-keyed sets.
+struct SegmentedBar<Tag: Hashable>: View {
+    let items: [(Tag, String)]           // (tag, label)
+    @Binding var selection: Tag
+    var compact: Bool = false            // tighter padding/type for inline use
+
     var body: some View {
         HStack(spacing: 2) {
             ForEach(items, id: \.0) { item in
-                let on = selection == item.0
-                Button {
-                    withAnimation(.snappy(duration: 0.2)) { selection = item.0 }
-                } label: {
-                    Text(item.1)
-                        .font(.system(size: 13, weight: on ? .semibold : .regular))
-                        .foregroundStyle(on ? Color.white : .secondary)
-                        .padding(.horizontal, Theme.s4)
-                        .padding(.vertical, 6)
-                        .background {
-                            if on {
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(Theme.accent)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+                segment(item.0, item.1)
             }
         }
-        .padding(4)
-        .cardSurface(cornerRadius: 12)
+        .padding(compact ? 3 : 4)
+        .cardSurface(cornerRadius: compact ? 10 : 12)
+    }
+
+    private func segment(_ tag: Tag, _ label: String) -> some View {
+        let on = selection == tag
+        return Button {
+            withAnimation(.snappy(duration: 0.2)) { selection = tag }
+        } label: {
+            Text(label)
+                .font(.system(size: compact ? 11 : 13, weight: on ? .semibold : .regular))
+                .foregroundStyle(on ? Color.white : .secondary)
+                .padding(.horizontal, compact ? Theme.s3 : Theme.s4)
+                .padding(.vertical, compact ? 4 : 6)
+                .background {
+                    if on {
+                        RoundedRectangle(cornerRadius: compact ? 7 : 8, style: .continuous)
+                            .fill(Theme.accent)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 

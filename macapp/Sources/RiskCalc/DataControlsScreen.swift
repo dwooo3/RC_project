@@ -14,10 +14,10 @@ struct DataControlsScreen: View {
     var body: some View {
         VStack(spacing: 0) {
             if tabs.count > 1 {
-                Picker("", selection: $tab) {
-                    ForEach(tabs, id: \.0) { Text($0.1).tag($0.0) }
+                HStack {
+                    SegmentedBar(items: tabs, selection: $tab).fixedSize()
+                    Spacer()
                 }
-                .pickerStyle(.segmented).labelsHidden()
                 .padding(.horizontal, Theme.s5).padding(.vertical, Theme.s3)
                 Divider()
             }

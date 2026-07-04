@@ -60,10 +60,9 @@ struct SpecSheet: View {
                     .tracking(0.5).foregroundStyle(.secondary)
                 if loadingHistory { ProgressView().controlSize(.mini) }
                 Spacer()
-                Picker("", selection: $timeframe) {
-                    ForEach(Timeframe.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize().controlSize(.small)
+                SegmentedBar(items: Timeframe.allCases.map { ($0, $0.rawValue) },
+                             selection: $timeframe, compact: true)
+                    .fixedSize()
             }
             .padding(.horizontal, Theme.s4)
 

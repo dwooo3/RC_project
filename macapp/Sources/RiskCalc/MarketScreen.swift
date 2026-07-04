@@ -305,20 +305,8 @@ struct MarketScreen: View {
                 .fixedSize()
             if group == "instruments" {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: Theme.s2) {
-                        ForEach(instruments, id: \.0) { item in
-                            let on = instrument == item.0
-                            Button { instrument = item.0 } label: {
-                                Text(item.1)
-                                    .font(.system(size: 12, weight: on ? .semibold : .regular))
-                                    .foregroundStyle(on ? Theme.accent : .secondary)
-                                    .padding(.horizontal, Theme.s3).padding(.vertical, 5)
-                                    .background(on ? Theme.accent.opacity(0.16) : Color.gray.opacity(0.12),
-                                                in: RoundedRectangle(cornerRadius: 8))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
+                    SegmentedBar(items: instruments, selection: $instrument, compact: true)
+                        .fixedSize()
                 }
             }
         }
@@ -399,22 +387,15 @@ struct MarketScreen: View {
     private var curvesSection: some View {
         if presentCurveTypes.count > 1 {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Theme.s2) {
-                    ForEach(presentCurveTypes, id: \.0) { t in
-                        let on = curveType == t.0
-                        Button {
-                            curveType = t.0
-                            if let first = curvesOfType(t.0).first { vm.selectedCurveID = first.id }
-                        } label: {
-                            Text(t.1).font(.system(size: 12, weight: on ? .semibold : .regular))
-                                .foregroundStyle(on ? Theme.accent : .secondary)
-                                .padding(.horizontal, Theme.s3).padding(.vertical, 5)
-                                .background(on ? Theme.accent.opacity(0.16) : Color.gray.opacity(0.12),
-                                            in: RoundedRectangle(cornerRadius: 8))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+                SegmentedBar(
+                    items: presentCurveTypes,
+                    selection: Binding(get: { curveType }, set: { newType in
+                        curveType = newType
+                        if let first = curvesOfType(newType).first { vm.selectedCurveID = first.id }
+                    }),
+                    compact: true
+                )
+                .fixedSize()
             }
         }
         HStack {
@@ -525,10 +506,11 @@ struct MarketScreen: View {
     private var historySection: some View {
         VStack(alignment: .leading, spacing: Theme.s3) {
             if let cat = vm.tsCatalog, cat.groups.count > 1 {
-                Picker("Group", selection: Binding(get: { vm.tsGroup }, set: { vm.changeTSGroup($0) })) {
-                    ForEach(cat.groups) { Text($0.label).tag($0.id) }
-                }
-                .pickerStyle(.segmented).labelsHidden()
+                SegmentedBar(
+                    items: cat.groups.map { ($0.id, $0.label) },
+                    selection: Binding(get: { vm.tsGroup }, set: { vm.changeTSGroup($0) })
+                )
+                .fixedSize()
             }
             HStack(spacing: Theme.s3) {
                 Picker("Series", selection: Binding(get: { vm.tsSeriesID }, set: { vm.changeTSSeries($0) })) {
@@ -536,10 +518,9 @@ struct MarketScreen: View {
                 }
                 .labelsHidden().fixedSize()
                 Spacer()
-                Picker("Period", selection: $vm.tsYears) {
-                    Text("1Y").tag(1); Text("3Y").tag(3); Text("5Y").tag(5); Text("Все").tag(0)
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                SegmentedBar(items: [(1, "1Y"), (3, "3Y"), (5, "5Y"), (0, "Все")],
+                             selection: $vm.tsYears, compact: true)
+                    .fixedSize()
                 if vm.isLoading { ProgressView().controlSize(.small) }
                 if let d = vm.tsData { Text("\(vm.tsPoints.count) точек").font(.caption).foregroundStyle(.tertiary).help(d.factorID) }
             }
