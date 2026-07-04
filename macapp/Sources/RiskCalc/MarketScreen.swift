@@ -153,9 +153,10 @@ final class EntityVMCache {
 }
 
 struct MarketScreen: View {
+    // Mode (Обзор/Инструменты/…) is driven by the nested sidebar items in RootView.
+    @Binding var group: String
     @State private var vm = MarketBrowserViewModel()
-    // Second-/third-level selections persist across launches (doc §1).
-    @SceneStorage("mdMode") private var group = "overview"
+    // Third-level selections persist across launches (doc §1).
     @SceneStorage("mdInstrument") private var instrument = "bonds"
     @SceneStorage("mdCurveType") private var curveType = "rates"
     @State private var entityVMs = EntityVMCache()
@@ -167,13 +168,8 @@ struct MarketScreen: View {
     @FocusState private var searchFocused: Bool
     private let client = BridgeClient()
 
-    // Doc structure: Market Data is a market-data showcase grouped as
-    // Overview · Instruments · Curves · Volatility · History (control/quality
-    // lives in the separate Data Controls section).
-    private let groups: [(String, String)] = [
-        ("overview", "Обзор"), ("instruments", "Инструменты"),
-        ("curves", "Кривые"), ("volatility", "Волатильность"), ("history", "История"),
-    ]
+    // Asset-class tabs (third level) shown in the work-area header for the
+    // Инструменты mode. The mode set itself lives in the sidebar (RootView).
     private let instruments: [(String, String)] = [
         ("bonds", "Облигации"), ("equities", "Акции"), ("futures", "Фьючерсы"),
         ("options", "Опционы"), ("indices", "Индексы"), ("fx", "Валюта"),
@@ -181,12 +177,10 @@ struct MarketScreen: View {
     ]
 
     var body: some View {
-        HStack(spacing: 0) {
-            modesSidebar
-                .frame(width: 208)
+        VStack(spacing: 0) {
+            workAreaHeader
             Divider()
-            workArea
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            content
         }
         .navigationTitle("Market Data")
         .task {
@@ -198,40 +192,29 @@ struct MarketScreen: View {
         .overlay(alignment: .topLeading) { searchResults }
     }
 
-    // MARK: second-level sidebar (Market Data modes)
+    // MARK: work-area header (global search + third-level asset-class tabs)
 
-    private let modeIcons: [String: String] = [
-        "overview": "square.grid.2x2", "instruments": "list.bullet.rectangle",
-        "curves": "chart.xyaxis.line", "volatility": "waveform", "history": "clock",
-    ]
-
-    private var modesSidebar: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            globalSearchField
-                .padding(.horizontal, Theme.s3)
-                .padding(.top, Theme.s3)
-                .padding(.bottom, Theme.s2)
-            VStack(spacing: 2) {
-                ForEach(groups, id: \.0) { g in
-                    MDModeRow(title: g.1, icon: modeIcons[g.0] ?? "circle",
-                              selected: group == g.0) { group = g.0 }
+    private var workAreaHeader: some View {
+        VStack(alignment: .leading, spacing: Theme.s2) {
+            HStack(spacing: Theme.s3) {
+                globalSearchField.frame(maxWidth: 320)
+                Spacer()
+                Text(identityLine).font(.caption2).foregroundStyle(.tertiary)
+            }
+            if group == "instruments" {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    SegmentedBar(items: instruments, selection: $instrument, compact: true)
+                        .fixedSize()
                 }
             }
-            .padding(.horizontal, Theme.s2)
-            Spacer(minLength: Theme.s3)
-            Divider().opacity(0.5)
-            Text(identityLine)
-                .font(.caption2).foregroundStyle(.tertiary)
-                .lineLimit(2)
-                .padding(.horizontal, Theme.s3).padding(.vertical, Theme.s2)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .padding(.horizontal, Theme.s5).padding(.top, Theme.s3).padding(.bottom, Theme.s3)
     }
 
     private var globalSearchField: some View {
         HStack(spacing: Theme.s2) {
             Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.tertiary)
-            TextField("Поиск (⌘F)", text: $searchText)
+            TextField("Поиск: тикер · ISIN · эмитент (⌘F)", text: $searchText)
                 .textFieldStyle(.plain).font(.system(size: 12))
                 .focused($searchFocused)
         }
@@ -240,25 +223,6 @@ struct MarketScreen: View {
         .background {
             Button("") { searchFocused = true }
                 .keyboardShortcut("f", modifiers: .command).hidden()
-        }
-    }
-
-    // MARK: work area (third-level tabs + content)
-
-    private var workArea: some View {
-        VStack(spacing: 0) {
-            if group == "instruments" {
-                HStack {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        SegmentedBar(items: instruments, selection: $instrument, compact: true)
-                            .fixedSize()
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, Theme.s5).padding(.vertical, Theme.s2)
-                Divider().opacity(0.5)
-            }
-            content
         }
     }
 
@@ -311,8 +275,8 @@ struct MarketScreen: View {
             .frame(width: 430)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Color.gray.opacity(0.25)))
-            .padding(.leading, Theme.s3)
-            .padding(.top, 52)
+            .padding(.leading, Theme.s5)
+            .padding(.top, 46)
             .shadow(radius: 14)
         }
     }
@@ -627,41 +591,6 @@ struct MarketScreen: View {
     private func cell(_ t: String, weight: Font.Weight = .regular, align: Alignment = .trailing) -> some View {
         Text(t).font(.system(size: 12, weight: weight)).monospacedDigit().lineLimit(1)
             .frame(maxWidth: .infinity, alignment: align)
-    }
-}
-
-/// Second-level Market Data mode row — same rounded accent-pill idiom as the
-/// main app sidebar.
-private struct MDModeRow: View {
-    let title: String
-    let icon: String
-    let selected: Bool
-    let action: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: Theme.s3) {
-                Image(systemName: icon)
-                    .font(.system(size: 12))
-                    .foregroundStyle(selected ? Color.white : .secondary)
-                    .frame(width: 18)
-                Text(title)
-                    .font(.system(size: 13, weight: selected ? .semibold : .regular))
-                    .foregroundStyle(selected ? Color.white : .primary)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, Theme.s3)
-            .padding(.vertical, 6)
-            .background {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(selected ? AnyShapeStyle(Theme.accent)
-                                   : AnyShapeStyle(hovering ? Color.primary.opacity(0.06) : Color.clear))
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
     }
 }
 

@@ -4,6 +4,17 @@ import SwiftUI
 /// bridge-down overlay.
 struct RootView: View {
     @State private var model = AppModel()
+    // Market Data mode expands as sub-rows under the Market Data sidebar item.
+    @SceneStorage("mdMode") private var marketMode = "overview"
+
+    /// Second-level Market Data modes (shown nested under "Market Data").
+    private let marketModes: [(key: String, title: String, icon: String)] = [
+        ("overview", "Обзор", "square.grid.2x2"),
+        ("instruments", "Инструменты", "list.bullet.rectangle"),
+        ("curves", "Кривые", "chart.xyaxis.line"),
+        ("volatility", "Волатильность", "waveform"),
+        ("history", "История", "clock"),
+    ]
 
     var body: some View {
         NavigationSplitView {
@@ -35,10 +46,21 @@ struct RootView: View {
                         NavRow(section: section, selected: model.section == section) {
                             model.section = section
                         }
+                        // Market Data expands its modes as nested sub-rows.
+                        if section == .market && model.section == .market {
+                            ForEach(marketModes, id: \.key) { m in
+                                MDModeSubRow(title: m.title, icon: m.icon,
+                                             selected: marketMode == m.key) {
+                                    marketMode = m.key
+                                }
+                            }
+                            .transition(.opacity)
+                        }
                     }
                 }
                 .padding(.horizontal, Theme.s2)
                 .padding(.top, Theme.s1)
+                .animation(.snappy(duration: 0.2), value: model.section)
             }
             Divider().opacity(0.5)
             footer
@@ -92,7 +114,7 @@ struct RootView: View {
             case .dashboard:  DashboardScreen(model: model)
             case .portfolio:  PortfolioScreen(model: model)
             case .risk:       RiskScreen(model: model)
-            case .market:     MarketScreen()
+            case .market:     MarketScreen(group: $marketMode)
             case .dataControls: DataControlsScreen()
             case .pricing:    PricingScreen()
             case .governance: GovernanceScreen(model: model)
@@ -151,6 +173,42 @@ private struct NavRow: View {
             .padding(.vertical, 7)
             .background {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(selected ? AnyShapeStyle(Theme.accent)
+                                   : AnyShapeStyle(hovering ? Color.primary.opacity(0.06) : Color.clear))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}
+
+/// Nested Market Data mode row — indented under the Market Data item, lighter
+/// than a top-level NavRow but sharing the accent-pill selection.
+private struct MDModeSubRow: View {
+    let title: String
+    let icon: String
+    let selected: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Theme.s2) {
+                Image(systemName: icon)
+                    .font(.system(size: 11))
+                    .foregroundStyle(selected ? Color.white : .secondary)
+                    .frame(width: 16)
+                Text(title)
+                    .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? Color.white : .secondary)
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, Theme.s5 + Theme.s1)   // indent under the parent icon
+            .padding(.trailing, Theme.s3)
+            .padding(.vertical, 5)
+            .background {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(selected ? AnyShapeStyle(Theme.accent)
                                    : AnyShapeStyle(hovering ? Color.primary.opacity(0.06) : Color.clear))
             }
