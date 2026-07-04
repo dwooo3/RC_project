@@ -78,9 +78,10 @@ struct UpcomingEvent: Identifiable {
 
 enum InstrumentPresentation {
 
-    /// "Торги за день" figures for the instrument's type.
-    static func dayMetrics(_ e: MDEntity, category: String) -> [MetricItem] {
-        guard let d = e.day else { return [] }
+    /// "Торги за день" figures for the instrument's type. Pass `day` to show a
+    /// live intraday session instead of the stored EOD day (item 5).
+    static func dayMetrics(_ e: MDEntity, category: String, day: MDDay? = nil) -> [MetricItem] {
+        guard let d = day ?? e.day else { return [] }
         let type = InstrumentType(category: category)
         func px(_ v: Double?) -> String { v.map { Fmt.number($0, digits: 2) } ?? "—" }
 
@@ -95,9 +96,14 @@ enum InstrumentPresentation {
             items.append(MetricItem(id: "yield", title: "Доходность",
                                     value: d.yield.map { Fmt.percent($0, digits: 2) } ?? "—"))
         } else {
+            // change vs the day's own open (works for both live and EOD days)
+            let chg: Double? = {
+                if let c = d.close, let o = d.open, o != 0 { return (c - o) / o * 100 }
+                return e.changePct
+            }()
             items.append(MetricItem(id: "chg", title: "Δ%",
-                                    value: e.changePct.map { Fmt.signedPercent($0, digits: 2) } ?? "—",
-                                    color: e.changePct.map { Theme.changeColor($0) } ?? .primary))
+                                    value: chg.map { Fmt.signedPercent($0, digits: 2) } ?? "—",
+                                    color: chg.map { Theme.changeColor($0) } ?? .primary))
         }
         items.append(MetricItem(id: "vol",    title: "Объём",  value: d.volume.map { Fmt.money($0) } ?? "—"))
         items.append(MetricItem(id: "val",    title: "Оборот", value: d.value.map { Fmt.money($0) } ?? "—"))
@@ -126,9 +132,16 @@ enum InstrumentPresentation {
         func attr(_ f: MDField) -> InstrumentAttribute {
             InstrumentAttribute(id: f.name, title: f.title ?? f.name, value: f.value ?? "—")
         }
+        // Boolean ISS flags decode to "0"/"1" — show them as Нет/Да. Only the
+        // folded spec carries flags; the promoted reference keys are never bools.
+        func attrBool(_ f: MDField) -> InstrumentAttribute {
+            let v = f.value ?? "—"
+            let mapped = v == "1" ? "Да" : (v == "0" ? "Нет" : v)
+            return InstrumentAttribute(id: f.name, title: f.title ?? f.name, value: mapped)
+        }
         let nonEmpty = e.fields.filter { !($0.value ?? "").isEmpty }
         let reference = nonEmpty.filter { keyNames.contains($0.name) }.map(attr)
-        let extra     = nonEmpty.filter { !keyNames.contains($0.name) }.map(attr)
+        let extra     = nonEmpty.filter { !keyNames.contains($0.name) }.map(attrBool)
 
         return InstrumentDetail(analytics: analytics, reference: reference, extra: extra)
     }
