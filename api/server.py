@@ -262,9 +262,9 @@ def md_instrument(category: str, secid: str) -> dict:
 
 @app.get("/md/history/{secid}")
 def md_history(secid: str, market: str = "bonds", range: str = "5Y",
-               interval: str = "1d") -> dict:
+               interval: str = "1d", mode: str = "price") -> dict:
     return jsonable(market_entity.history(CONTEXT, secid, market=market, rng=range,
-                                          interval=interval))
+                                          interval=interval, mode=mode))
 
 
 @app.get("/md/candles/{secid}")

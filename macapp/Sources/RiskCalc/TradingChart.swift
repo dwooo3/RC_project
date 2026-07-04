@@ -46,6 +46,7 @@ private struct LWChartView: NSViewRepresentable {
         var lastCount = 0
         var firstDate = ""
         var lastDate = ""
+        var firstClose: Double?
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             ready = true
@@ -76,8 +77,12 @@ private struct LWChartView: NSViewRepresentable {
 
         // Fast path (live polling): same series, only the tail bar refreshed or
         // one new bar appended → stream it via updateLast so zoom/pan survive.
+        // The first bar's close must be unchanged too — otherwise the whole
+        // series was refetched (e.g. a total-return / vs-index transform) and
+        // every bar differs, which the tail fast-path would corrupt.
         let staticSig = "\(mode)|\(bars.first?.date ?? "")"
         let sameSeries = co.ready && staticSig == co.staticSig && !bars.isEmpty
+            && bars.first?.close == co.firstClose
             && (bars.count == co.lastCount
                 || (bars.count == co.lastCount + 1 && bars.dropLast().last?.date == co.lastDate))
         // Same data, only mode/SMA/log toggled → full render but keep the viewport.
@@ -93,6 +98,7 @@ private struct LWChartView: NSViewRepresentable {
         co.lastCount = bars.count
         co.firstDate = bars.first?.date ?? ""
         co.lastDate = bars.last?.date ?? ""
+        co.firstClose = bars.first?.close
         if co.ready {
             web.evaluateJavaScript(js)
         } else {
@@ -212,6 +218,17 @@ private struct LWChartView: NSViewRepresentable {
                 `<span class="d">${fmtTime(bar.time)}</span> <b style="color:${ACCENT}">YTM ${fmtN(bar.close, 2)}%</b>`;
             return;
         }
+        if (mode === 'TotalReturn') {
+            el('legend').innerHTML =
+                `<span class="d">${fmtTime(bar.time)}</span> <b style="color:${ACCENT}">Полная доходность ${fmtN(bar.close, 2)}</b>`;
+            return;
+        }
+        if (mode === 'RelIndex') {
+            const rc = bar.close >= 100 ? UP : DOWN;
+            el('legend').innerHTML =
+                `<span class="d">${fmtTime(bar.time)}</span> <b style="color:${rc}">vs IMOEX ${fmtN(bar.close, 1)}</b> <span class="d">100 = вровень</span>`;
+            return;
+        }
         const chg = (bar.open && bar.open !== 0) ? ((bar.close - bar.open) / bar.open * 100) : null;
         el('legend').innerHTML =
             `<span class="d">${fmtTime(bar.time)}</span>` +
@@ -290,7 +307,8 @@ private struct LWChartView: NSViewRepresentable {
         chart.applyOptions({ timeScale: { timeVisible: !!cfg.intraday, secondsVisible: false } });
 
         const yieldMode = cfg.mode === 'Yield';
-        const lineMode = cfg.mode === 'Line' || yieldMode;
+        const lineMode = cfg.mode === 'Line' || yieldMode
+            || cfg.mode === 'TotalReturn' || cfg.mode === 'RelIndex';
         const values = yieldMode
             ? bars.filter(b => b.yld !== null && b.yld !== undefined)
                   .map(b => ({ time: timeFor(b), value: b.yld }))

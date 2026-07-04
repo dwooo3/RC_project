@@ -408,8 +408,70 @@ def _weekly(points: list[dict]) -> list[dict]:
     return [weeks[m] for m in order]
 
 
+def _total_return(db, secid: str, pts: list[dict]) -> list[dict]:
+    """Dividend-reinvested (adjusted) close series, based at the first close so
+    it overlays the price and diverges upward by paid dividends (equities)."""
+    pts = [p for p in pts if p.get("close") is not None]
+    if db is None or not pts:
+        return pts
+    divs = sorted(
+        ((d["registry_date"], float(d["value"]))
+         for d in (db.get_dividends(secid) or []) if d.get("value") is not None),
+        key=lambda x: x[0])
+    n, di = len(divs), 0
+    out, prev_close, tr = [], None, None
+    for i, p in enumerate(pts):
+        close = p["close"]
+        if i == 0:
+            tr = close
+            while di < n and divs[di][0] <= p["date"]:   # skip pre-history dividends
+                di += 1
+        else:
+            dsum = 0.0
+            while di < n and divs[di][0] <= p["date"]:    # dividends since the previous bar
+                dsum += divs[di][1]
+                di += 1
+            tr *= (close + dsum) / prev_close if prev_close else 1.0
+        prev_close = close
+        out.append({**p, "open": None, "high": None, "low": None,
+                    "close": round(tr, 4), "volume": p.get("volume")})
+    return out
+
+
+def _relative_to_index(db, benchmark: str, pts: list[dict]) -> list[dict]:
+    """Relative-strength series vs a benchmark index, based at 100 on the first
+    bar (>100 ⇒ outperforming the index since the window start)."""
+    import bisect
+    pts = [p for p in pts if p.get("close") is not None]
+    if db is None or not pts:
+        return pts
+    idx = _index_series(db, benchmark) or []
+    idx_map = {r["dt"]: float(r["value"]) for r in idx if r.get("value") is not None}
+    if not idx_map:
+        return pts                                        # no benchmark → leave as price
+    idx_dates = sorted(idx_map)
+
+    def idx_at(date: str):
+        pos = bisect.bisect_right(idx_dates, date) - 1    # nearest value on/before date
+        return idx_map[idx_dates[pos]] if pos >= 0 else None
+
+    base_inst = pts[0]["close"]
+    base_idx = idx_at(pts[0]["date"])
+    if not base_idx or not base_inst:
+        return pts
+    out = []
+    for p in pts:
+        iv = idx_at(p["date"])
+        if not iv:
+            continue
+        rel = (p["close"] / base_inst) / (iv / base_idx) * 100.0
+        out.append({**p, "open": None, "high": None, "low": None,
+                    "close": round(rel, 3), "volume": p.get("volume")})
+    return out
+
+
 def history(ctx, secid: str, market: str = "bonds", rng: str = "5Y",
-            interval: str = "1d") -> dict:
+            interval: str = "1d", mode: str = "price") -> dict:
     db = ctx.market_db
     if market == "indices":                                    # close-only series from time_series
         frm = _range_from(rng)
@@ -424,7 +486,12 @@ def history(ctx, secid: str, market: str = "bonds", rng: str = "5Y",
             "close": p["close"], "volume": p["volume"], "yield": p["yield"],
             "numtrades": p["numtrades"],
         } for p in rows]
+    # optional derived chart series (equities): dividend-reinvested / vs index
+    if mode == "total_return":
+        pts = _total_return(db, secid, pts)
+    elif mode == "rel_index":
+        pts = _relative_to_index(db, "IMOEX", pts)
     if interval == "1w":
         pts = _weekly(pts)
     return {"secid": secid, "market": market, "range": (rng or "5Y").upper(),
-            "interval": interval, "points": pts, "count": len(pts)}
+            "interval": interval, "mode": mode, "points": pts, "count": len(pts)}

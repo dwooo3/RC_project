@@ -35,12 +35,30 @@ final class MarketEntityVM {
 
     /// RU display mode → the chart's JS series id.
     var jsChartMode: String {
-        switch chartMode { case "Линия": "Line"; case "Доходность": "Yield"; default: "Candles" }
+        switch chartMode {
+        case "Линия":            return "Line"
+        case "Доходность":       return "Yield"
+        case "Полная доходность": return "TotalReturn"
+        case "Отн. IMOEX":       return "RelIndex"
+        default:                 return "Candles"
+        }
+    }
+
+    /// Server-side transform for the fetched series (equities extras).
+    var dataMode: String {
+        switch chartMode {
+        case "Полная доходность": return "total_return"
+        case "Отн. IMOEX":       return "rel_index"
+        default:                 return "price"
+        }
     }
 
     var chartModes: [String] {
         var out = ["Свечи", "Линия"]
-        if category == "bonds" && intradayMinutes == nil { out.append("Доходность") }
+        if intradayMinutes == nil {
+            if category == "bonds" { out.append("Доходность") }
+            if category == "equities" { out += ["Полная доходность", "Отн. IMOEX"] }
+        }
         return out
     }
 
@@ -121,15 +139,17 @@ final class MarketEntityVM {
     /// selection moved on while the request was in flight (stale-write guard).
     private func loadBars(_ secid: String) async {
         let wanted = interval
+        let wantedMode = dataMode
         let pts: [MDBar]
         if let minutes = intradayMinutes {
             pts = (try? await client.mdCandles(secid: secid, market: market, interval: minutes))?.points ?? []
         } else {
             pts = (try? await client.mdHistory(secid: secid, market: market,
                                                range: Self.apiRange(range),
-                                               interval: historyInterval))?.points ?? []
+                                               interval: historyInterval,
+                                               mode: dataMode))?.points ?? []
         }
-        guard !Task.isCancelled, selectedID == secid, interval == wanted else { return }
+        guard !Task.isCancelled, selectedID == secid, interval == wanted, dataMode == wantedMode else { return }
         bars = pts
     }
 
@@ -165,13 +185,22 @@ final class MarketEntityVM {
 
     func changeInterval(_ i: String) {
         interval = i
-        if intradayMinutes != nil && chartMode == "Доходность" {
-            chartMode = "Свечи"                // ISS candles carry no yield
+        // intraday ISS candles carry no yield and no derived (TR / rel) series
+        if intradayMinutes != nil && !["Свечи", "Линия"].contains(chartMode) {
+            chartMode = "Свечи"
         }
         if i == "Н" && ["1M", "3M", "6M"].contains(range) {
             range = "1Y"                       // weeks need a longer window
         }
         reloadBars()
+    }
+
+    /// Switch the display mode; only refetch when the server-side transform
+    /// (price / total-return / vs-index) actually changes.
+    func changeChartMode(_ m: String) {
+        let previous = dataMode
+        chartMode = m
+        if dataMode != previous { reloadBars() }
     }
 
     private func reloadBars() {
@@ -472,7 +501,8 @@ struct MarketEntityView: View {
         HStack(spacing: Theme.s2) {
             chipMenu(vm.intervals,
                      Binding(get: { vm.interval }, set: { vm.changeInterval($0) }))
-            chipMenu(vm.chartModes, $vm.chartMode)
+            chipMenu(vm.chartModes,
+                     Binding(get: { vm.chartMode }, set: { vm.changeChartMode($0) }))
             if vm.intradayMinutes != nil {
                 HStack(spacing: 4) {
                     Circle().fill(Theme.positive).frame(width: 6, height: 6)
