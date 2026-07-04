@@ -42,34 +42,25 @@ final class MarketEntityVM {
 
     // MARK: live (realtime) quote derived from the intraday session (items 4 · 5)
 
-    /// Intraday bars for the last (current) trading day only — the accumulated
-    /// candle store spans several days, so a session must be date-scoped.
-    private var sessionBars: [MDBar] {
-        guard intradayMinutes != nil, let day = bars.last?.date.prefix(10) else { return [] }
-        return bars.filter { $0.date.hasPrefix(day) }
-    }
-
-    /// The current trading day's session aggregated from intraday bars (realtime
-    /// day stats; on a non-trading day this is the last session — item 5).
+    /// Today's session aggregated from intraday bars (realtime day stats).
     var liveDay: MDDay? {
-        let s = sessionBars
-        guard let first = s.first, let last = s.last else { return nil }
-        let highs = s.compactMap { $0.high ?? $0.close }
-        let lows = s.compactMap { $0.low ?? $0.close }
-        let vol = s.compactMap { $0.volume }.reduce(0.0, +)
+        guard intradayMinutes != nil, let last = bars.last else { return nil }
+        let highs = bars.compactMap { $0.high ?? $0.close }
+        let lows = bars.compactMap { $0.low ?? $0.close }
+        let vol = bars.compactMap { $0.volume }.reduce(0.0, +)
         return MDDay(date: String(last.date.prefix(10)),
-                     open: first.open ?? first.close, high: highs.max(), low: lows.min(),
-                     close: last.close, volume: vol > 0 ? vol : nil,
-                     value: nil, yield: nil, numtrades: nil)
+                     open: bars.first?.open ?? bars.first?.close,
+                     high: highs.max(), low: lows.min(), close: last.close,
+                     volume: vol > 0 ? vol : nil, value: nil, yield: nil, numtrades: nil)
     }
 
     /// Latest price — live intraday close while polling, else the stored close.
     var livePrice: Double? { (intradayMinutes != nil ? bars.last?.close : nil) ?? entity?.last }
 
-    /// Session change %: intraday vs the session open, else the stored change.
+    /// Session change %: intraday vs the day open, else the stored change.
     var liveChangePct: Double? {
-        let s = sessionBars
-        if let last = s.last?.close, let open = s.first.flatMap({ $0.open ?? $0.close }), open != 0 {
+        if intradayMinutes != nil, let last = bars.last?.close,
+           let open = bars.first.flatMap({ $0.open ?? $0.close }), open != 0 {
             return (last - open) / open * 100
         }
         return entity?.changePct
