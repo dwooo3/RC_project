@@ -21,12 +21,18 @@ enum Theme {
     static let radius: CGFloat = 10
 
     // MARK: Elevation & surfaces
-    /// Card corner radius — continuous (squircle) corners read as modern macOS.
-    static let cardRadius: CGFloat = 13
-    /// Crisp 1px separator drawn on top of card surfaces.
-    static let hairline = Color.primary.opacity(0.07)
-    /// Soft ambient shadow that lifts cards off the page.
-    static let cardShadow = Color.black.opacity(0.12)
+    /// Card corner radius — generous continuous (squircle) corners, floating look.
+    static let cardRadius: CGFloat = 16
+    /// Clean, solid card fill — paper-white in light, near-black in dark (no grey
+    /// translucency). `textBackgroundColor` is the true content white, so cards
+    /// read as bright floating panels rather than grey material.
+    static let cardFill = Color(nsColor: .textBackgroundColor)
+    /// Barely-there edge so a white card keeps definition against a light page.
+    static let hairline = Color.primary.opacity(0.05)
+    /// Soft, wide ambient shadow — the "float".
+    static let cardShadow = Color.black.opacity(0.08)
+    /// Tight contact shadow layered under the ambient one for crispness.
+    static let cardContactShadow = Color.black.opacity(0.05)
     /// Content column max width — keeps line length comfortable on wide displays.
     static let contentMaxWidth: CGFloat = 1240
 

@@ -1,5 +1,21 @@
 import SwiftUI
 
+// MARK: - Card surface
+
+extension View {
+    /// The app's single card look: a clean solid fill, generous continuous
+    /// corners and a soft two-layer shadow so the panel floats off the page —
+    /// like a rounded input surface. Used by every card/panel for consistency.
+    func cardSurface(cornerRadius: CGFloat = Theme.cardRadius) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        return self
+            .background(Theme.cardFill, in: shape)
+            .overlay(shape.strokeBorder(Theme.hairline, lineWidth: 1))
+            .shadow(color: Theme.cardShadow, radius: 16, x: 0, y: 6)
+            .shadow(color: Theme.cardContactShadow, radius: 1.5, x: 0, y: 1)
+    }
+}
+
 // MARK: - Page scaffolding
 
 /// Large screen header with title, subtitle and optional trailing accessory.
@@ -44,7 +60,7 @@ struct BlockTitle: View {
     }
 }
 
-/// Translucent, elevated surface card (Liquid-Glass friendly).
+/// Clean, elevated white surface card — the floating-panel look.
 struct GlassCard<Content: View>: View {
     var padding: CGFloat = Theme.s4
     @ViewBuilder var content: Content
@@ -53,12 +69,7 @@ struct GlassCard<Content: View>: View {
         content
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.regularMaterial, in: Theme.cardShape)
-            .overlay(
-                Theme.cardShape
-                    .strokeBorder(Theme.hairline, lineWidth: 1)
-            )
-            .shadow(color: Theme.cardShadow, radius: 10, x: 0, y: 3)
+            .cardSurface()
     }
 }
 
@@ -110,15 +121,14 @@ struct KPICard: View {
         }
         .padding(Theme.s4)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial, in: Theme.cardShape)
         .background(
-            // faint accent wash so each metric carries a hint of its colour
+            // faint accent wash so each metric carries a hint of its colour,
+            // sitting over the clean white card fill
             LinearGradient(colors: [accent.opacity(0.10), .clear],
                            startPoint: .topLeading, endPoint: .bottomTrailing),
             in: Theme.cardShape
         )
-        .overlay(Theme.cardShape.strokeBorder(Theme.hairline, lineWidth: 1))
-        .shadow(color: Theme.cardShadow, radius: 10, x: 0, y: 3)
+        .cardSurface()
     }
 }
 

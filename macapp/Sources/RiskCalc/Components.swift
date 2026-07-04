@@ -23,9 +23,7 @@ struct Card<Content: View>: View {
         content
             .padding(Theme.s4)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(nsColor: .controlBackgroundColor), in: Theme.cardShape)
-            .overlay(Theme.cardShape.strokeBorder(Theme.hairline, lineWidth: 1))
-            .shadow(color: Theme.cardShadow, radius: 8, x: 0, y: 2)
+            .cardSurface()
     }
 }
 
