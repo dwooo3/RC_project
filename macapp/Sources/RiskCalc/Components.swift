@@ -6,7 +6,7 @@ struct StatusChip: View {
 
     var body: some View {
         Text(status)
-            .font(.system(size: 10, weight: .semibold))
+            .font(Typography.label)
             .foregroundStyle(Theme.statusColor(status))
             .padding(.horizontal, Theme.s2)
             .padding(.vertical, 2)
@@ -15,13 +15,15 @@ struct StatusChip: View {
     }
 }
 
-/// Rounded surface card with a subtle border (adapts to appearance).
+/// Rounded surface card with a subtle border (adapts to appearance). Inner
+/// padding follows the interface density.
 struct Card<Content: View>: View {
     @ViewBuilder var content: Content
+    @Environment(\.interfaceDensity) private var density
 
     var body: some View {
         content
-            .padding(Theme.s4)
+            .padding(density.cardPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
             .cardSurface()
     }
@@ -33,7 +35,7 @@ struct SectionLabel: View {
 
     var body: some View {
         Text(text.uppercased())
-            .font(.system(size: 11, weight: .semibold))
+            .font(Typography.captionStrong)
             .tracking(0.6)
             .foregroundStyle(.secondary)
     }
@@ -52,10 +54,10 @@ struct NumberField: View {
         HStack(alignment: .firstTextBaseline, spacing: Theme.s3) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(spec.label)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(Typography.bodyMedium)
                 if !spec.help.isEmpty {
                     Text(spec.help)
-                        .font(.system(size: 10))
+                        .font(Typography.label.weight(.regular))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
@@ -68,7 +70,7 @@ struct NumberField: View {
                 .frame(width: 112)
                 .labelsHidden()
             Text(spec.unit)
-                .font(.system(size: 11))
+                .font(Typography.caption)
                 .foregroundStyle(.tertiary)
                 .frame(width: 16, alignment: .leading)
         }
@@ -84,7 +86,7 @@ struct ChoiceField: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Theme.s3) {
             Text(spec.label)
-                .font(.system(size: 12, weight: .medium))
+                .font(Typography.bodyMedium)
             Spacer(minLength: Theme.s2)
             picker
         }
@@ -118,10 +120,10 @@ struct MetricCell: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(name.capitalized)
-                .font(.system(size: 11, weight: .medium))
+                .font(Typography.caption)
                 .foregroundStyle(.secondary)
             Text(value, format: .number.precision(.fractionLength(4)))
-                .font(.system(size: 15, weight: .semibold))
+                .font(Typography.metricValue)
                 .monospacedDigit()
         }
         .frame(maxWidth: .infinity, alignment: .leading)

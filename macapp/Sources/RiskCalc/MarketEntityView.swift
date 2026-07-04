@@ -207,6 +207,7 @@ struct MarketEntityView: View {
     // user-adjustable list width, persisted per window (doc §3)
     @SceneStorage("mdListWidth") private var listWidth: Double = 320
     @State private var dragStartWidth: Double?
+    @Environment(\.interfaceDensity) private var density
 
     /// Takes a (cached) VM so sub-tab switches keep list/selection state.
     init(vm: MarketEntityVM) {
@@ -313,12 +314,12 @@ struct MarketEntityView: View {
     private func row(_ item: MDListItem) -> some View {
         HStack(spacing: Theme.s2) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(item.issuerRu ?? item.secid).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                Text(item.isin ?? item.secid).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+                Text(item.issuerRu ?? item.secid).font(Typography.ticker).lineLimit(1)
+                Text(item.isin ?? item.secid).font(Typography.micro).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: Theme.s2)
             VStack(alignment: .trailing, spacing: 1) {
-                Text(item.last.map { Fmt.number($0, digits: 2) } ?? "—").font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                Text(item.last.map { Fmt.number($0, digits: 2) } ?? "—").font(Typography.ticker).monospacedDigit()
                 HStack(spacing: 4) {
                     if let y = item.ytm {
                         Text("YTM \(Fmt.percent(y, digits: 1))").font(.system(size: 9)).monospacedDigit()
@@ -335,7 +336,7 @@ struct MarketEntityView: View {
                 }
             }
         }
-        .padding(.horizontal, Theme.s2).padding(.vertical, 6).contentShape(Rectangle())
+        .padding(.horizontal, Theme.s3).padding(.vertical, density.listRowVPad).contentShape(Rectangle())
     }
 
     // MARK: export

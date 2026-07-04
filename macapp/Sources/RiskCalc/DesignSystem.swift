@@ -75,8 +75,8 @@ struct PageHeader<Trailing: View>: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.system(size: 27, weight: .bold, design: .rounded))
-                Text(subtitle).font(.system(size: 13)).foregroundStyle(.secondary)
+                Text(title).font(Typography.pageTitle)
+                Text(subtitle).font(Typography.subtitle).foregroundStyle(.secondary)
             }
             Spacer()
             trailing
@@ -97,19 +97,21 @@ struct BlockTitle: View {
     var body: some View {
         HStack(spacing: Theme.s2) {
             if let icon { Image(systemName: icon).foregroundStyle(Theme.accent) }
-            Text(text).font(.system(size: 15, weight: .semibold))
+            Text(text).font(Typography.sectionTitle)
         }
     }
 }
 
-/// Clean, elevated white surface card — the floating-panel look.
+/// Clean, elevated white surface card — the floating-panel look. Inner padding
+/// follows the interface density unless overridden.
 struct GlassCard<Content: View>: View {
-    var padding: CGFloat = Theme.s4
+    var padding: CGFloat? = nil
     @ViewBuilder var content: Content
+    @Environment(\.interfaceDensity) private var density
 
     var body: some View {
         content
-            .padding(padding)
+            .padding(padding ?? density.cardPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
             .cardSurface()
     }
@@ -125,6 +127,7 @@ struct KPICard: View {
     var trend: Double? = nil
     var accent: Color = Theme.accent
     var icon: String? = nil
+    @Environment(\.interfaceDensity) private var density
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.s3) {
@@ -137,7 +140,7 @@ struct KPICard: View {
                         .background(accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 Text(label.uppercased())
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(Typography.label)
                     .tracking(0.6)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -145,7 +148,7 @@ struct KPICard: View {
                 Spacer(minLength: 0)
             }
             Text(value)
-                .font(.system(size: 25, weight: .bold, design: .rounded))
+                .font(Typography.cardValue)
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.55)
@@ -155,13 +158,13 @@ struct KPICard: View {
                     Image(systemName: trend >= 0 ? "arrow.up.right" : "arrow.down.right")
                     Text(Fmt.signedPercent(trend))
                 }
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Theme.trendColor(trend))
+                .font(Typography.captionStrong)
+                .foregroundStyle(Theme.changeColor(trend))
             } else if let sub {
-                Text(sub).font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
+                Text(sub).font(Typography.caption).foregroundStyle(.tertiary).lineLimit(1)
             }
         }
-        .padding(Theme.s4)
+        .padding(density.cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             // faint accent wash so each metric carries a hint of its colour,
@@ -202,7 +205,7 @@ struct Pill: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 10, weight: .semibold))
+            .font(Typography.label)
             .foregroundStyle(filled ? Color.white : color)
             .padding(.horizontal, Theme.s2)
             .padding(.vertical, 2)
@@ -218,7 +221,7 @@ struct SourceBadge: View {
     var body: some View {
         HStack(spacing: Theme.s2) {
             Circle().fill(live ? Theme.positive : Theme.warning).frame(width: 7, height: 7)
-            Text(label).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+            Text(label).font(Typography.caption).foregroundStyle(.secondary)
         }
         .padding(.horizontal, Theme.s3).padding(.vertical, Theme.s2)
         .background(.regularMaterial, in: Capsule())
@@ -233,9 +236,9 @@ struct KeyValueRow: View {
 
     var body: some View {
         HStack {
-            Text(key).font(.system(size: 12)).foregroundStyle(.secondary)
+            Text(key).font(Typography.body).foregroundStyle(.secondary)
             Spacer()
-            Text(value).font(.system(size: 12, weight: .medium)).monospacedDigit().foregroundStyle(valueColor)
+            Text(value).font(Typography.bodyMedium).monospacedDigit().foregroundStyle(valueColor)
         }
     }
 }

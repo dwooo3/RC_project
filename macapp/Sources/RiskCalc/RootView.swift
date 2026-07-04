@@ -6,6 +6,8 @@ struct RootView: View {
     @State private var model = AppModel()
     // Market Data mode expands as sub-rows under the Market Data sidebar item.
     @SceneStorage("mdMode") private var marketMode = "overview"
+    // Interface density (doc §11) — applied app-wide via the environment.
+    @AppStorage("interfaceDensity") private var density: InterfaceDensity = .compact
 
     /// Second-level Market Data modes (shown nested under "Market Data").
     private let marketModes: [(key: String, title: String, icon: String)] = [
@@ -24,6 +26,7 @@ struct RootView: View {
             detail
                 .frame(minWidth: 640)
         }
+        .environment(\.interfaceDensity, density)
         .task { await model.start() }
         .onChange(of: model.section) { _, new in
             Task { await model.load(new) }
@@ -144,6 +147,19 @@ struct RootView: View {
                     Image(systemName: "arrow.clockwise")
                 }
                 .help("Reload from bridge")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Picker("Плотность", selection: $density) {
+                        ForEach(InterfaceDensity.allCases) { d in
+                            Label(d.title, systemImage: d.icon).tag(d)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Image(systemName: "textformat.size")
+                }
+                .help("Плотность интерфейса")
             }
         }
     }

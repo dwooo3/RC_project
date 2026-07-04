@@ -10,6 +10,14 @@ enum Theme {
     static let negative = Color(red: 0.90, green: 0.27, blue: 0.24)   // red
     static let warning  = Color(red: 0.86, green: 0.60, blue: 0.10)   // amber
 
+    // Semantic aliases — use these for meaning, not raw colours
+    static let neutral   = Color.secondary   // flat / no-change / muted
+    static var selected: Color { accent }    // selection highlight
+
+    /// Semantic colour for a signed change (gain / loss / flat). Alias of
+    /// `trendColor` kept for call-site clarity.
+    static func changeColor(_ value: Double) -> Color { trendColor(value) }
+
     // 4/8 spacing rhythm
     static let s1: CGFloat = 4
     static let s2: CGFloat = 8
@@ -122,4 +130,72 @@ enum Fmt {
     private static func round1(_ v: Double) -> String {
         v >= 100 ? String(Int(v.rounded())) : v.formatted(.number.precision(.fractionLength(1)))
     }
+}
+
+// MARK: - Typography tokens
+
+/// Named typography tokens — the single source for every font size/weight so
+/// screens stop drifting into ad-hoc `.system(size:)` literals. Financial
+/// figures should additionally carry `.monospacedDigit()` at the call site.
+enum Typography {
+    static let pageTitle     = Font.system(size: 27, weight: .bold, design: .rounded)
+    static let cardValue     = Font.system(size: 25, weight: .bold, design: .rounded)
+    static let metricValue   = Font.system(size: 15, weight: .semibold)
+    static let sectionTitle  = Font.system(size: 15, weight: .semibold)
+    static let subtitle      = Font.system(size: 13)
+    static let ticker        = Font.system(size: 12, weight: .semibold)
+    static let body          = Font.system(size: 12)
+    static let bodyMedium    = Font.system(size: 12, weight: .medium)
+    static let caption       = Font.system(size: 11)
+    static let captionStrong = Font.system(size: 11, weight: .semibold)
+    static let label         = Font.system(size: 10, weight: .semibold)   // UPPERCASE tracked labels
+    static let micro         = Font.system(size: 9)
+}
+
+// MARK: - Interface density
+
+/// Row/card spacing scale for the professional workstation — Compact is the
+/// default; Dense packs more data on screen (doc §11).
+enum InterfaceDensity: String, CaseIterable, Identifiable {
+    case comfortable, compact, dense
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .comfortable: return "Просторный"
+        case .compact:     return "Обычный"
+        case .dense:       return "Плотный"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .comfortable: return "rectangle.expand.vertical"
+        case .compact:     return "rectangle.grid.1x2"
+        case .dense:       return "rectangle.compress.vertical"
+        }
+    }
+
+    /// Vertical padding for watchlist rows.
+    var listRowVPad: CGFloat {
+        switch self {
+        case .comfortable: return 8
+        case .compact:     return 6
+        case .dense:       return 3
+        }
+    }
+
+    /// Default inner padding for content cards.
+    var cardPadding: CGFloat {
+        switch self {
+        case .comfortable: return 18
+        case .compact:     return Theme.s4
+        case .dense:       return Theme.s3
+        }
+    }
+}
+
+extension EnvironmentValues {
+    @Entry var interfaceDensity: InterfaceDensity = .compact
 }
