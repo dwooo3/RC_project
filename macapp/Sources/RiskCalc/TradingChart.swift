@@ -13,15 +13,17 @@ import WebKit
 struct TradingChart: View {
     let bars: [MDBar]
     let mode: String            // JS ids: "Candles" | "Line" | "Yield"
+    let events: [ChartEvent]    // coupons / offers / dividends / maturity …
 
-    init(bars: [MDBar], mode: String = "Candles") {
+    init(bars: [MDBar], mode: String = "Candles", events: [ChartEvent] = []) {
         self.bars = bars
         self.mode = mode
+        self.events = events
     }
 
     var body: some View {
-        LWChartView(bars: bars, mode: mode)
-            .frame(height: 380)
+        LWChartView(bars: bars, mode: mode, events: events)
+            .frame(height: 440)
     }
 }
 
@@ -30,6 +32,7 @@ struct TradingChart: View {
 private struct LWChartView: NSViewRepresentable {
     let bars: [MDBar]
     let mode: String          // "Candles" | "Line" | "Yield"
+    let events: [ChartEvent]
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -66,6 +69,7 @@ private struct LWChartView: NSViewRepresentable {
         let co = context.coordinator
         let dataSig = "\(bars.count)|\(bars.first?.date ?? "")|\(bars.last?.date ?? "")"
             + "|\(bars.first?.close ?? 0)|\(bars.last?.close ?? 0)|\(bars.last?.volume ?? 0)"
+            + "|ev\(events.count)"
         let sig = dataSig + "|\(mode)"
         guard sig != co.lastSig else { return }
         co.lastSig = sig
@@ -114,6 +118,7 @@ private struct LWChartView: NSViewRepresentable {
         let mode: String
         let intraday: Bool
         let keepView: Bool
+        let events: [ChartEvent]
     }
 
     private func lwBar(_ b: MDBar) -> LWBar {
@@ -124,7 +129,7 @@ private struct LWChartView: NSViewRepresentable {
     private func configJSON(keepView: Bool = false) -> String {
         let payload = LWConfig(bars: bars.map(lwBar), mode: mode,
                                intraday: bars.last?.ts != nil,
-                               keepView: keepView)
+                               keepView: keepView, events: events)
         guard let data = try? JSONEncoder().encode(payload),
               let s = String(data: data, encoding: .utf8) else { return "{}" }
         return s
@@ -216,6 +221,35 @@ private struct LWChartView: NSViewRepresentable {
             (bar.volume ? ` <span class="d">Vol ${fmtN(bar.volume, 0)}</span>` : '');
     }
 
+    // Event markers (coupons / offers / amortizations / maturity / dividends).
+    // Snap each event to the first bar on/after its date so markers land on
+    // real data points; drop events outside the loaded daily window.
+    const EV_ACCENT = '#cc7859', EV_POS = '#22b356', EV_WARN = '#dc9a1a', EV_NEG = '#e64540';
+    function markerFor(ev, t) {
+        switch (ev.type) {
+            case 'coupon':       return { time: t, position: 'belowBar', color: EV_ACCENT, shape: 'circle', size: 0.9 };
+            case 'amortization': return { time: t, position: 'belowBar', color: EV_ACCENT, shape: 'square', text: 'Ам', size: 1.2 };
+            case 'offer':        return { time: t, position: 'aboveBar', color: EV_WARN,  shape: 'square', text: 'Оферта', size: 1.2 };
+            case 'maturity':     return { time: t, position: 'aboveBar', color: EV_NEG,   shape: 'arrowDown', text: 'Погашение', size: 1.2 };
+            case 'dividend':     return { time: t, position: 'belowBar', color: EV_POS,   shape: 'circle', text: 'Див', size: 1.2 };
+            default:             return { time: t, position: 'belowBar', color: '#9aa0aa', shape: 'circle', size: 0.9 };
+        }
+    }
+
+    function applyMarkers(events, barTimes) {
+        if (!priceSeries) return;
+        if (!events || !events.length || !barTimes.length) { priceSeries.setMarkers([]); return; }
+        const markers = [];
+        for (const ev of events) {
+            let t = null;
+            for (const bt of barTimes) { if (bt >= ev.date) { t = bt; break; } }  // first bar >= event date
+            if (t === null) continue;                                             // event beyond loaded range
+            markers.push(markerFor(ev, t));
+        }
+        markers.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+        priceSeries.setMarkers(markers);
+    }
+
     function onCrosshair(param) {
         if (!priceSeries) return;
         if (!param || !param.time || !param.seriesData || param.seriesData.size === 0) {
@@ -299,6 +333,11 @@ private struct LWChartView: NSViewRepresentable {
                 color: (b.close >= (b.open ?? b.close)) ? 'rgba(38,166,154,0.45)' : 'rgba(239,83,80,0.45)',
             })));
         }
+
+        // event markers on the time axis (daily windows only) — events that
+        // fall on an actual price bar (e.g. past dividends)
+        if (!cfg.intraday) applyMarkers(cfg.events || [], bars.map(b => b.time));
+        else priceSeries.setMarkers([]);
 
         chart.priceScale('right').applyOptions({
             mode: LightweightCharts.PriceScaleMode.Normal,

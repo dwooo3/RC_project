@@ -392,7 +392,9 @@ struct MarketEntityView: View {
                         OptionChainView(chain: e.optionChain ?? [])
                     } else {
                         rangeBar
-                        TradingChart(bars: vm.bars, mode: vm.jsChartMode)
+                        TradingChart(bars: vm.bars, mode: vm.jsChartMode,
+                                     events: InstrumentPresentation.chartEvents(e))
+                        eventChips(e)
                         dayStats(e)
                         if let s = e.stats { statsRow(s) }
                     }
@@ -487,6 +489,56 @@ struct MarketEntityView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// Upcoming events (next coupon / offer / amortization / maturity / dividend)
+    /// as a compact chip row under the chart — coupon schedules are forward-
+    /// looking, so they live here rather than on the historical price axis.
+    @ViewBuilder
+    private func eventChips(_ e: MDEntity) -> some View {
+        let events = InstrumentPresentation.upcomingEvents(e, today: Self.isoToday)
+        if !events.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Theme.s2) {
+                    Text("Ближайшие события")
+                        .font(Typography.micro).foregroundStyle(.tertiary)
+                    ForEach(events) { ev in
+                        let color = eventColor(ev.type)
+                        HStack(spacing: 5) {
+                            Image(systemName: eventIcon(ev.type)).font(.system(size: 9))
+                            Text(ev.title).font(Typography.caption.weight(.medium))
+                            Text(ev.date).font(Typography.caption).monospacedDigit().foregroundStyle(.secondary)
+                            if !ev.detail.isEmpty {
+                                Text(ev.detail).font(Typography.caption).monospacedDigit().foregroundStyle(.secondary)
+                            }
+                        }
+                        .foregroundStyle(color)
+                        .padding(.horizontal, Theme.s2).padding(.vertical, 3)
+                        .background(color.opacity(0.12), in: Capsule())
+                    }
+                }
+            }
+        }
+    }
+
+    private func eventIcon(_ type: InstrumentEventType) -> String {
+        switch type {
+        case .coupon:       return "banknote"
+        case .offer:        return "arrow.left.arrow.right"
+        case .amortization: return "chart.line.downtrend.xyaxis"
+        case .maturity:     return "flag.checkered"
+        case .dividend:     return "banknote.fill"
+        default:            return "circle"
+        }
+    }
+
+    private func eventColor(_ type: InstrumentEventType) -> Color {
+        switch type {
+        case .offer:     return Theme.warning
+        case .maturity:  return Theme.negative
+        case .dividend:  return Theme.positive
+        default:         return Theme.accent
         }
     }
 

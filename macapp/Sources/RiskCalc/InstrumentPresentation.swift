@@ -51,10 +51,27 @@ struct InstrumentDetail {
     var extra: [InstrumentAttribute]
 }
 
-/// Chart event kinds (marked on the price axis — wired in the chart phase).
+/// Chart event kinds (marked on the price axis).
 enum InstrumentEventType: String {
     case coupon, offer, call, put, amortization, maturity   // bonds
     case dividend, earnings, split, buyback                 // equities
+}
+
+/// A dated event to mark on the price chart's time axis.
+struct ChartEvent: Encodable, Identifiable {
+    let id: String
+    let date: String        // yyyy-MM-dd
+    let type: String        // InstrumentEventType.rawValue
+}
+
+/// An upcoming dated event shown as a chip beside the chart (coupon schedules
+/// are forward-looking, so these live off-axis).
+struct UpcomingEvent: Identifiable {
+    let id: String
+    let type: InstrumentEventType
+    let title: String
+    let date: String
+    let detail: String
 }
 
 // MARK: - Composition
@@ -114,6 +131,59 @@ enum InstrumentPresentation {
         let extra     = nonEmpty.filter { !keyNames.contains($0.name) }.map(attr)
 
         return InstrumentDetail(analytics: analytics, reference: reference, extra: extra)
+    }
+
+    /// Dated events (coupons / offers / amortizations / maturity / dividends)
+    /// to mark on the chart's time axis. Only those inside the loaded window
+    /// actually render — snapping is done chart-side.
+    static func chartEvents(_ e: MDEntity) -> [ChartEvent] {
+        var out: [ChartEvent] = []
+        for c in e.schedule?.coupons ?? [] {
+            out.append(ChartEvent(id: "c-\(c.couponDate)", date: c.couponDate, type: InstrumentEventType.coupon.rawValue))
+        }
+        for a in e.schedule?.amortizations ?? [] {
+            out.append(ChartEvent(id: "a-\(a.amortDate)", date: a.amortDate, type: InstrumentEventType.amortization.rawValue))
+        }
+        for o in e.schedule?.offers ?? [] {
+            out.append(ChartEvent(id: "o-\(o.offerDate)", date: o.offerDate, type: InstrumentEventType.offer.rawValue))
+        }
+        for d in e.dividends ?? [] {
+            out.append(ChartEvent(id: "d-\(d.registryDate)", date: d.registryDate, type: InstrumentEventType.dividend.rawValue))
+        }
+        if let mat = e.fields.first(where: { $0.name == "MATDATE" })?.value,
+           mat.count >= 10 {
+            out.append(ChartEvent(id: "m-\(mat)", date: String(mat.prefix(10)), type: InstrumentEventType.maturity.rawValue))
+        }
+        return out
+    }
+
+    /// The next few dated events (coupon / offer / amortization / maturity /
+    /// dividend) after `today`, sorted by date. Surfaced as chips near the
+    /// chart since forward-looking coupon schedules can't mark past bars.
+    static func upcomingEvents(_ e: MDEntity, today: String, limit: Int = 4) -> [UpcomingEvent] {
+        var out: [UpcomingEvent] = []
+        for c in e.schedule?.coupons ?? [] where c.couponDate > today {
+            out.append(.init(id: "c-\(c.couponDate)", type: .coupon, title: "Купон",
+                             date: c.couponDate, detail: c.value.map { Fmt.number($0, digits: 2) } ?? ""))
+        }
+        for o in e.schedule?.offers ?? [] where o.offerDate > today {
+            out.append(.init(id: "o-\(o.offerDate)", type: .offer, title: "Оферта",
+                             date: o.offerDate, detail: o.offerType ?? ""))
+        }
+        for a in e.schedule?.amortizations ?? [] where a.amortDate > today {
+            out.append(.init(id: "a-\(a.amortDate)", type: .amortization, title: "Амортизация",
+                             date: a.amortDate, detail: a.value.map { Fmt.number($0, digits: 2) } ?? ""))
+        }
+        if let mat = e.fields.first(where: { $0.name == "MATDATE" })?.value,
+           mat.count >= 10, String(mat.prefix(10)) > today {
+            out.append(.init(id: "m", type: .maturity, title: "Погашение",
+                             date: String(mat.prefix(10)), detail: ""))
+        }
+        for dv in e.dividends ?? [] where dv.registryDate > today {
+            out.append(.init(id: "d-\(dv.registryDate)", type: .dividend, title: "Дивиденд",
+                             date: dv.registryDate, detail: dv.value.map { Fmt.number($0, digits: 2) } ?? ""))
+        }
+        return Array(out.sorted { $0.date < $1.date }.prefix(limit))
     }
 
     // MARK: helpers
