@@ -178,7 +178,6 @@ struct MarketScreen: View {
             Divider()
             content
         }
-        .navigationTitle("Market Data")
         .task {
             if vm.snapshots.isEmpty { await vm.start() }
             headerMeta = try? await client.mdOverview()

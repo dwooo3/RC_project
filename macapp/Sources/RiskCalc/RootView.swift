@@ -215,13 +215,19 @@ struct RootView: View {
             case .analytics:  AnalyticsScreen(model: model)
             }
         }
+        .navigationTitle("")               // suppress the default "RiskCalc" window title
         .toolbar {
-            // Centred section-name pill (glass) — like the ChatGPT title chip.
-            ToolbarItem(placement: .principal) {
-                Text(model.section.title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .padding(.horizontal, 14).padding(.vertical, 5)
-                    .glassCapsule()
+            // Section-name pill on the left (replaces the plain title). A Menu
+            // gets the native Liquid Glass capsule + chevron on macOS 26 — no
+            // manual glassEffect, which would double-glass and artefact.
+            ToolbarItem(placement: .navigation) {
+                Menu {
+                    ForEach(AppSection.allCases) { s in
+                        Button { model.section = s } label: { Label(s.title, systemImage: s.icon) }
+                    }
+                } label: {
+                    Text(model.section.title).fontWeight(.semibold)
+                }
             }
             // Right group: search (leftmost) · ingest · refresh.
             ToolbarItem(placement: .primaryAction) {

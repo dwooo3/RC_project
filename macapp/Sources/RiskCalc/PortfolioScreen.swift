@@ -11,7 +11,6 @@ struct PortfolioScreen: View {
                 content(d)
             }
         }
-        .navigationTitle("Portfolio")
     }
 
     @ViewBuilder

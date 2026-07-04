@@ -11,7 +11,6 @@ struct DashboardScreen: View {
                 content(d)
             }
         }
-        .navigationTitle("Dashboard")
     }
 
     @ViewBuilder

@@ -28,6 +28,5 @@ struct DataControlsScreen: View {
             default:           DataHealthView()
             }
         }
-        .navigationTitle("Контроль данных")
     }
 }

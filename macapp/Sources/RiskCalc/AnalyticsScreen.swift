@@ -12,7 +12,6 @@ struct AnalyticsScreen: View {
                 content(d)
             }
         }
-        .navigationTitle("Analytics Lab")
     }
 
     @ViewBuilder

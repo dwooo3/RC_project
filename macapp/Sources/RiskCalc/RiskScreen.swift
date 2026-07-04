@@ -12,7 +12,6 @@ struct RiskScreen: View {
                 content(d)
             }
         }
-        .navigationTitle("Risk")
     }
 
     @ViewBuilder

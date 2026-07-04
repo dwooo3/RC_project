@@ -12,7 +12,6 @@ struct GovernanceScreen: View {
                 content(d)
             }
         }
-        .navigationTitle("Governance")
     }
 
     private struct StatusSlice: Identifiable {

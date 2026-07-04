@@ -28,7 +28,6 @@ struct PricingScreen: View {
             case .bond: BondPane()
             }
         }
-        .navigationTitle("Pricing")
     }
 }
 
@@ -51,7 +50,6 @@ struct PricingView: View {
             }
         }
         .task { await vm.load() }
-        .navigationTitle("Pricing")
     }
 
     // MARK: pricer rail (left)
