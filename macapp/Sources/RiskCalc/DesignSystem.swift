@@ -254,19 +254,16 @@ struct LoadableView<T, Content: View>: View {
     var body: some View {
         switch state {
         case .idle, .loading:
-            VStack(spacing: Theme.s3) {
-                ProgressView().controlSize(.large)
-                Text("Loading…").font(.caption).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, minHeight: 280, alignment: .center)
+            SkeletonScreen()
         case .failed(let message):
             ContentUnavailableView {
-                Label("Couldn't load data", systemImage: "exclamationmark.triangle")
+                Label("Не удалось загрузить данные", systemImage: "exclamationmark.triangle")
             } description: {
-                Text(message).font(.caption)
+                Text(message).font(Typography.caption)
             } actions: {
-                Button("Retry", action: retry).buttonStyle(.borderedProminent)
+                Button("Повторить", action: retry).buttonStyle(.borderedProminent)
             }
+            .frame(maxWidth: .infinity, minHeight: 280)
         case .loaded(let value):
             content(value)
         }

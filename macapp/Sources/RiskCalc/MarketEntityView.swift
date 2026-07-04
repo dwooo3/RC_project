@@ -288,11 +288,20 @@ struct MarketEntityView: View {
             .padding(.horizontal, Theme.s3).padding(.vertical, Theme.s2)
             Divider()
             if vm.serverDown {
-                ContentUnavailableView("Bridge offline", systemImage: "bolt.horizontal.circle").frame(maxHeight: .infinity)
-            } else if vm.filtered.isEmpty && !vm.loadingList {
+                ContentUnavailableView("Мост недоступен", systemImage: "bolt.horizontal.circle").frame(maxHeight: .infinity)
+            } else if vm.loadingList && vm.filtered.isEmpty {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(0..<14, id: \.self) { _ in
+                            SkeletonRow()
+                            Divider().opacity(0.15)
+                        }
+                    }
+                }
+            } else if vm.filtered.isEmpty {
                 VStack(spacing: 6) {
                     Image(systemName: "tray").foregroundStyle(.tertiary)
-                    Text("Нет данных. Запусти предзагрузку:").font(.caption).foregroundStyle(.secondary)
+                    Text("Нет данных. Запусти предзагрузку:").font(Typography.caption).foregroundStyle(.secondary)
                     Text("python3.14 -m scripts.preload_history \(category)").font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
                 }
                 .multilineTextAlignment(.center).padding().frame(maxHeight: .infinity)
@@ -408,8 +417,33 @@ struct MarketEntityView: View {
                 }
                 .padding(Theme.s4)
             }
+        } else if vm.loadingDetail {
+            skeletonDetail
         } else {
             ContentUnavailableView("Выбери инструмент слева", systemImage: "chart.xyaxis.line")
+        }
+    }
+
+    /// Skeleton shown while the first instrument's detail loads.
+    private var skeletonDetail: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Theme.s4) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        SkeletonBar(width: 170, height: 18)
+                        SkeletonBar(width: 230, height: 10)
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 4) {
+                        SkeletonBar(width: 84, height: 18)
+                        SkeletonBar(width: 52, height: 10)
+                    }
+                }
+                SkeletonBar(height: 440, radius: Theme.cardRadius)
+                SkeletonCard(lines: 3)
+                SkeletonCard(lines: 5)
+            }
+            .padding(Theme.s4)
         }
     }
 
