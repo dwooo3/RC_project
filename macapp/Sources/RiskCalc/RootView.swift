@@ -217,12 +217,17 @@ struct RootView: View {
         }
         .navigationTitle("")               // suppress the default "RiskCalc" window title
         .toolbar {
-            // Static section-name pill on the left (no dropdown). Native Liquid
-            // Glass comes from the toolbar itself — no manual glassEffect, which
-            // would double-glass and produce a halo artefact.
+            // Section-name pill on the left. A Menu gets the native Liquid Glass
+            // capsule on macOS 26; the dropdown indicator is hidden per request.
             ToolbarItem(placement: .navigation) {
-                Text(model.section.title)
-                    .font(.system(size: 15, weight: .semibold))
+                Menu {
+                    ForEach(AppSection.allCases) { s in
+                        Button { model.section = s } label: { Label(s.title, systemImage: s.icon) }
+                    }
+                } label: {
+                    Text(model.section.title).font(.system(size: 14, weight: .semibold))
+                }
+                .menuIndicator(.hidden)
             }
             // Right group: search (leftmost) · ingest · refresh.
             ToolbarItem(placement: .primaryAction) {
