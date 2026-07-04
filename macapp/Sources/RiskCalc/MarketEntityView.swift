@@ -1,5 +1,6 @@
 import SwiftUI
 import Observation
+import AppKit
 
 /// Instrument-entity browser: master list (1/3) + TradingView-style detail (2/3).
 /// Each row is an entity (issuer · ISIN · price · change); selecting one loads its
@@ -203,6 +204,9 @@ struct MarketEntityView: View {
     @State private var specExpanded = false
     @State private var couponsExpanded = false
     @State private var divsExpanded = false
+    // user-adjustable list width, persisted per window (doc §3)
+    @SceneStorage("mdListWidth") private var listWidth: Double = 320
+    @State private var dragStartWidth: Double?
 
     /// Takes a (cached) VM so sub-tab switches keep list/selection state.
     init(vm: MarketEntityVM) {
@@ -211,12 +215,13 @@ struct MarketEntityView: View {
     }
 
     var body: some View {
-        GeometryReader { geo in
-            HStack(spacing: 0) {
-                listPane.frame(width: max(280, geo.size.width * 0.33))
-                Divider()
-                detailPane.frame(maxWidth: .infinity)
-            }
+        HStack(spacing: 0) {
+            listPane
+                .frame(width: listWidth)
+                .background(Theme.cardFill)          // list reads as its own panel
+            splitter
+            detailPane
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task { if vm.items.isEmpty { await vm.start() } }
         .task(id: "\(vm.selectedID ?? "")|\(vm.interval)") { await vm.pollIntraday() }
@@ -225,6 +230,27 @@ struct MarketEntityView: View {
                 InstrumentCard(category: category, secid: id) { showCard = false }
             }
         }
+    }
+
+    /// Soft draggable divider between the list panel and the detail area — a
+    /// hairline centred in an 8pt grab strip, with a left-right resize cursor.
+    private var splitter: some View {
+        ZStack {
+            Color.clear.frame(width: 8)
+            Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 1)
+        }
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onHover { $0 ? NSCursor.resizeLeftRight.push() : NSCursor.pop() }
+        .gesture(
+            DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    let start = dragStartWidth ?? listWidth
+                    if dragStartWidth == nil { dragStartWidth = listWidth }
+                    listWidth = min(480, max(260, start + Double(value.translation.width)))
+                }
+                .onEnded { _ in dragStartWidth = nil }
+        )
     }
 
     // MARK: master list (1/3)
@@ -287,8 +313,8 @@ struct MarketEntityView: View {
     private func row(_ item: MDListItem) -> some View {
         HStack(spacing: Theme.s2) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(item.issuerRu ?? item.secid).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                Text(item.isin ?? item.secid).font(.system(size: 9)).foregroundStyle(.tertiary).lineLimit(1)
+                Text(item.issuerRu ?? item.secid).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                Text(item.isin ?? item.secid).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: Theme.s2)
             VStack(alignment: .trailing, spacing: 1) {

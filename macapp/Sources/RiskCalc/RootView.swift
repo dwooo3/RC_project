@@ -197,20 +197,20 @@ private struct MDModeSubRow: View {
             HStack(spacing: Theme.s2) {
                 Image(systemName: icon)
                     .font(.system(size: 11))
-                    .foregroundStyle(selected ? Color.white : .secondary)
+                    .foregroundStyle(selected ? Theme.accent : .secondary)
                     .frame(width: 16)
                 Text(title)
                     .font(.system(size: 12, weight: selected ? .semibold : .regular))
-                    .foregroundStyle(selected ? Color.white : .secondary)
+                    .foregroundStyle(selected ? Theme.accent : .secondary)
                 Spacer(minLength: 0)
             }
             .padding(.leading, Theme.s5 + Theme.s1)   // indent under the parent icon
             .padding(.trailing, Theme.s3)
             .padding(.vertical, 5)
             .background {
+                // No accent fill for sub-items — active state is orange text only.
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(selected ? AnyShapeStyle(Theme.accent)
-                                   : AnyShapeStyle(hovering ? Color.primary.opacity(0.06) : Color.clear))
+                    .fill(hovering && !selected ? Color.primary.opacity(0.06) : Color.clear)
             }
             .contentShape(Rectangle())
         }
