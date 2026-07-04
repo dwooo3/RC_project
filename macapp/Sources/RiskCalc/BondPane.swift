@@ -235,7 +235,7 @@ struct BondPane: View {
 
     @ViewBuilder
     private func resultSection(_ r: BondResult) -> some View {
-        KPIStrip(items: priceCards(r), minWidth: 150)
+        KPIStrip(items: priceCards(r))
         if !r.analytics.isEmpty { analyticsCard(r.analytics) }
         HStack(alignment: .top, spacing: Theme.s4) {
             if !r.cashflows.isEmpty { cashflowChart(r.cashflows) }

@@ -23,11 +23,9 @@ struct Card<Content: View>: View {
         content
             .padding(Theme.s4)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: Theme.radius))
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.radius)
-                    .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
-            )
+            .background(Color(nsColor: .controlBackgroundColor), in: Theme.cardShape)
+            .overlay(Theme.cardShape.strokeBorder(Theme.hairline, lineWidth: 1))
+            .shadow(color: Theme.cardShadow, radius: 8, x: 0, y: 2)
     }
 }
 
@@ -129,6 +127,6 @@ struct MetricCell: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Theme.s3)
-        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }

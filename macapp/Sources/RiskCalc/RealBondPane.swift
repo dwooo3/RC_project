@@ -258,7 +258,7 @@ struct RealBondPane: View {
                     sub: "curve-implied", accent: Theme.bucketColor("Rates"), icon: "function"),
             KPICard(label: "Market YTM", value: r.marketYtm.map { Fmt.percent($0 * 100, digits: 2) } ?? "—",
                     sub: "MOEX quote", accent: Theme.warning, icon: "percent"),
-        ], minWidth: 150)
+        ])
     }
 
     private func spreadNote(_ r: RepriceResult) -> some View {

@@ -16,8 +16,8 @@ struct PageHeader<Trailing: View>: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 26, weight: .bold))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.system(size: 27, weight: .bold, design: .rounded))
                 Text(subtitle).font(.system(size: 13)).foregroundStyle(.secondary)
             }
             Spacer()
@@ -44,7 +44,7 @@ struct BlockTitle: View {
     }
 }
 
-/// Translucent surface card (Liquid-Glass friendly).
+/// Translucent, elevated surface card (Liquid-Glass friendly).
 struct GlassCard<Content: View>: View {
     var padding: CGFloat = Theme.s4
     @ViewBuilder var content: Content
@@ -53,11 +53,12 @@ struct GlassCard<Content: View>: View {
         content
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Theme.radius))
+            .background(.regularMaterial, in: Theme.cardShape)
             .overlay(
-                RoundedRectangle(cornerRadius: Theme.radius)
-                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                Theme.cardShape
+                    .strokeBorder(Theme.hairline, lineWidth: 1)
             )
+            .shadow(color: Theme.cardShadow, radius: 10, x: 0, y: 3)
     }
 }
 
@@ -73,53 +74,68 @@ struct KPICard: View {
     var icon: String? = nil
 
     var body: some View {
-        GlassCard {
-            VStack(alignment: .leading, spacing: Theme.s2) {
-                HStack(spacing: Theme.s2) {
-                    if let icon {
-                        Image(systemName: icon)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(accent)
-                            .frame(width: 22, height: 22)
-                            .background(accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 6))
-                    }
-                    Text(label.uppercased())
-                        .font(.system(size: 10, weight: .semibold))
-                        .tracking(0.5)
-                        .foregroundStyle(.secondary)
-                    Spacer()
+        VStack(alignment: .leading, spacing: Theme.s3) {
+            HStack(spacing: Theme.s2) {
+                if let icon {
+                    Image(systemName: icon)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(accent)
+                        .frame(width: 26, height: 26)
+                        .background(accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
-                Text(value)
-                    .font(.system(size: 24, weight: .bold))
-                    .monospacedDigit()
+                Text(label.uppercased())
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.6)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-                if let trend {
-                    HStack(spacing: 3) {
-                        Image(systemName: trend >= 0 ? "arrow.up.right" : "arrow.down.right")
-                        Text(Fmt.signedPercent(trend))
-                    }
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Theme.trendColor(trend))
-                } else if let sub {
-                    Text(sub).font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 0)
+            }
+            Text(value)
+                .font(.system(size: 25, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.55)
+                .contentTransition(.numericText())
+            if let trend {
+                HStack(spacing: 3) {
+                    Image(systemName: trend >= 0 ? "arrow.up.right" : "arrow.down.right")
+                    Text(Fmt.signedPercent(trend))
                 }
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.trendColor(trend))
+            } else if let sub {
+                Text(sub).font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
             }
         }
+        .padding(Theme.s4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: Theme.cardShape)
+        .background(
+            // faint accent wash so each metric carries a hint of its colour
+            LinearGradient(colors: [accent.opacity(0.10), .clear],
+                           startPoint: .topLeading, endPoint: .bottomTrailing),
+            in: Theme.cardShape
+        )
+        .overlay(Theme.cardShape.strokeBorder(Theme.hairline, lineWidth: 1))
+        .shadow(color: Theme.cardShadow, radius: 10, x: 0, y: 3)
     }
 }
 
-/// Responsive KPI strip.
+/// Responsive KPI strip. Cards share the row equally and stretch to fill the
+/// full content width — up to `maxColumns` across, wrapping on narrow windows.
 struct KPIStrip: View {
     let items: [KPICard]
-    var minWidth: CGFloat = 180
+    var maxColumns: Int = 5
 
     var body: some View {
-        LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: minWidth), spacing: Theme.s3)],
-            spacing: Theme.s3
-        ) {
-            ForEach(Array(items.enumerated()), id: \.offset) { _, card in card }
+        let count = max(1, min(items.count, maxColumns))
+        let columns = Array(
+            repeating: GridItem(.flexible(minimum: 150), spacing: Theme.s3),
+            count: count
+        )
+        LazyVGrid(columns: columns, spacing: Theme.s3) {
+            ForEach(items, id: \.label) { card in card }
         }
     }
 }

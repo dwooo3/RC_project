@@ -132,9 +132,18 @@ struct ScreenScaffold<Content: View>: View {
                 content
             }
             .padding(Theme.s5)
-            .frame(maxWidth: 1200, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: Theme.contentMaxWidth)   // cap reading width; cards fill it
+            .frame(maxWidth: .infinity)               // centre the column on wide displays
         }
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.4))
+        .background {
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .windowBackgroundColor),
+                    Color(nsColor: .underPageBackgroundColor).opacity(0.5),
+                ],
+                startPoint: .top, endPoint: .bottom
+            )
+            .ignoresSafeArea()
+        }
     }
 }

@@ -20,6 +20,21 @@ enum Theme {
 
     static let radius: CGFloat = 10
 
+    // MARK: Elevation & surfaces
+    /// Card corner radius — continuous (squircle) corners read as modern macOS.
+    static let cardRadius: CGFloat = 13
+    /// Crisp 1px separator drawn on top of card surfaces.
+    static let hairline = Color.primary.opacity(0.07)
+    /// Soft ambient shadow that lifts cards off the page.
+    static let cardShadow = Color.black.opacity(0.12)
+    /// Content column max width — keeps line length comfortable on wide displays.
+    static let contentMaxWidth: CGFloat = 1240
+
+    /// Rounded rect used for every card surface.
+    static var cardShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
+    }
+
     /// Status chip colour for a governance status string.
     static func statusColor(_ status: String) -> Color {
         switch status.lowercased() {

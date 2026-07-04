@@ -58,7 +58,9 @@ struct PortfolioScreen: View {
                     TableColumn("DV01") { p in num(p.dv01, 2) }
                     TableColumn("Vega") { p in num(p.vega, 2) }
                 }
-                .frame(minHeight: 240)
+                // Size to content (+ header) so the table doesn't pad out with
+                // empty filler rows; cap so a large book still scrolls.
+                .frame(height: min(CGFloat(max(1, positions.count)), 14) * 28 + 36)
             }
         }
     }
@@ -66,7 +68,8 @@ struct PortfolioScreen: View {
     private func exposuresCard(_ buckets: [String: [String: Double]]) -> some View {
         VStack(alignment: .leading, spacing: Theme.s3) {
             BlockTitle("Risk-factor exposures", icon: "square.stack.3d.up")
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: Theme.s3)], spacing: Theme.s3) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: Theme.s3)],
+                      alignment: .leading, spacing: Theme.s3) {
                 ForEach(buckets.filter { !$0.value.isEmpty }.sorted(by: { $0.key < $1.key }), id: \.key) { name, metrics in
                     GlassCard {
                         VStack(alignment: .leading, spacing: Theme.s2) {
@@ -79,6 +82,7 @@ struct PortfolioScreen: View {
                                 KeyValueRow(key: metric, value: Fmt.money(value))
                             }
                         }
+                        .frame(maxHeight: .infinity, alignment: .top)
                     }
                 }
             }

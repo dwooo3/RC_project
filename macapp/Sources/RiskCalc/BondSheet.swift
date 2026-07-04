@@ -186,7 +186,7 @@ struct BondSheetView: View {
                 KPICard(label: "Total DV01", value: Fmt.number(agg.dv01, digits: 3), sub: "per bp", accent: Theme.negative, icon: "shield.lefthalf.filled"),
                 KPICard(label: "Mod duration", value: Fmt.number(agg.modDuration, digits: 3), sub: "MV-weighted", accent: Theme.bucketColor("Rates"), icon: "timer"),
                 KPICard(label: "Convexity", value: Fmt.number(agg.convexity, digits: 2), sub: "MV-weighted", accent: Theme.bucketColor("Volatility"), icon: "function"),
-            ], minWidth: 150)
+            ])
             if !agg.keyRateDurations.isEmpty {
                 GlassCard {
                     VStack(alignment: .leading, spacing: Theme.s3) {
