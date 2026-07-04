@@ -155,17 +155,13 @@ final class EntityVMCache {
 struct MarketScreen: View {
     // Mode (Обзор/Инструменты/…) is driven by the nested sidebar items in RootView.
     @Binding var group: String
+    var model: AppModel                       // global search open-requests
     @State private var vm = MarketBrowserViewModel()
     // Third-level selections persist across launches (doc §1).
     @SceneStorage("mdInstrument") private var instrument = "bonds"
     @SceneStorage("mdCurveType") private var curveType = "rates"
     @State private var entityVMs = EntityVMCache()
-    // global search (C1)
-    @State private var searchText = ""
-    @State private var searchHits: [SearchHit] = []
-    @State private var searchTask: Task<Void, Never>?
     @State private var headerMeta: MDOverview?
-    @FocusState private var searchFocused: Bool
     private let client = BridgeClient()
 
     // Asset-class tabs (third level) shown in the work-area header for the
@@ -188,16 +184,20 @@ struct MarketScreen: View {
             headerMeta = try? await client.mdOverview()
         }
         .onChange(of: group) { _, g in if g == "history" { vm.changeSection("history") } }
-        .onChange(of: searchText) { _, q in scheduleSearch(q) }
-        .overlay(alignment: .topLeading) { searchResults }
+        // Global search / recents jump here.
+        .onChange(of: model.openRequest) { _, req in
+            if let req { openInstrument(req.category, req.secid); model.openRequest = nil }
+        }
+        .task(id: model.openRequest?.id) {
+            if let req = model.openRequest { openInstrument(req.category, req.secid); model.openRequest = nil }
+        }
     }
 
-    // MARK: work-area header (global search + third-level asset-class tabs)
+    // MARK: work-area header (identity + third-level asset-class tabs)
 
     private var workAreaHeader: some View {
         VStack(alignment: .leading, spacing: Theme.s2) {
-            HStack(spacing: Theme.s3) {
-                globalSearchField.frame(maxWidth: 320)
+            HStack {
                 Spacer()
                 Text(identityLine).font(.caption2).foregroundStyle(.tertiary)
             }
@@ -209,92 +209,6 @@ struct MarketScreen: View {
             }
         }
         .padding(.horizontal, Theme.s5).padding(.top, Theme.s3).padding(.bottom, Theme.s3)
-    }
-
-    private var globalSearchField: some View {
-        HStack(spacing: Theme.s2) {
-            Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.tertiary)
-            TextField("Поиск: тикер · ISIN · эмитент (⌘F)", text: $searchText)
-                .textFieldStyle(.plain).font(.system(size: 12))
-                .focused($searchFocused)
-        }
-        .padding(.horizontal, Theme.s3).padding(.vertical, 7)
-        .cardSurface(cornerRadius: 10)
-        .background {
-            Button("") { searchFocused = true }
-                .keyboardShortcut("f", modifiers: .command).hidden()
-        }
-    }
-
-    // MARK: global search (C1)
-
-    private func scheduleSearch(_ q: String) {
-        searchTask?.cancel()
-        let query = q.trimmingCharacters(in: .whitespaces)
-        guard query.count >= 2 else { searchHits = []; return }
-        searchTask = Task {
-            try? await Task.sleep(for: .milliseconds(250))          // debounce
-            guard !Task.isCancelled else { return }
-            let hits = (try? await client.mdSearch(query))?.results ?? []
-            guard !Task.isCancelled, searchText.trimmingCharacters(in: .whitespaces) == query else { return }
-            searchHits = hits
-        }
-    }
-
-    @ViewBuilder
-    private var searchResults: some View {
-        if !searchHits.isEmpty {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(searchHits.prefix(10)) { hit in
-                    Button { open(hit) } label: {
-                        HStack(spacing: Theme.s2) {
-                            Text(categoryLabel(hit.category)).font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(Theme.accent)
-                                .padding(.horizontal, 5).padding(.vertical, 2)
-                                .background(Theme.accent.opacity(0.12), in: Capsule())
-                                .frame(width: 86, alignment: .leading)
-                            VStack(alignment: .leading, spacing: 0) {
-                                Text(hit.issuerRu ?? hit.secid).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                                Text(hit.isin ?? hit.secid).font(.system(size: 9)).foregroundStyle(.tertiary)
-                            }
-                            Spacer()
-                            if let l = hit.last {
-                                Text(Fmt.number(l, digits: 2)).font(.system(size: 12, weight: .semibold)).monospacedDigit()
-                            }
-                            if let c = hit.changePct {
-                                Text(Fmt.signedPercent(c, digits: 2)).font(.system(size: 10)).monospacedDigit()
-                                    .foregroundStyle(c >= 0 ? Theme.positive : Theme.negative)
-                            }
-                        }
-                        .padding(.horizontal, Theme.s3).padding(.vertical, 6).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    Divider().opacity(0.25)
-                }
-            }
-            .frame(width: 430)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Color.gray.opacity(0.25)))
-            .padding(.leading, Theme.s5)
-            .padding(.top, 46)
-            .shadow(radius: 14)
-        }
-    }
-
-    private func categoryLabel(_ cat: String?) -> String {
-        switch cat {
-        case "bonds": "Облигация"; case "equities": "Акция"; case "futures": "Фьючерс"
-        case "options": "Опцион"; case "indices": "Индекс"; case "fx": "Валюта"
-        default: cat ?? "?"
-        }
-    }
-
-    /// Jump to the instrument from a search hit (or Overview's recents).
-    private func open(_ hit: SearchHit) {
-        searchText = ""
-        searchHits = []
-        guard let cat = hit.category else { return }
-        openInstrument(cat, hit.secid)
     }
 
     private func openInstrument(_ category: String, _ secid: String) {

@@ -89,6 +89,13 @@ struct IngestStatus: Decodable, Sendable {
     }
 }
 
+/// A request to open a specific instrument in Market Data (from global search).
+struct OpenInstrumentRequest: Equatable, Identifiable {
+    let id = UUID()
+    let category: String
+    let secid: String
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -107,7 +114,34 @@ final class AppModel {
     var governance: Loadable<GovernanceData> = .idle
     var analytics: Loadable<AnalyticsData> = .idle
 
+    // Global search (toolbar command palette)
+    var searchText = ""
+    var searchHits: [SearchHit] = []
+    @ObservationIgnored private var searchTask: Task<Void, Never>?
+    /// Set when a search hit / recent is chosen — Market Data opens it.
+    var openRequest: OpenInstrumentRequest?
+
     private let client = BridgeClient()
+
+    /// Debounced global instrument search (ticker · ISIN · issuer).
+    func runSearch(_ q: String) {
+        searchTask?.cancel()
+        let query = q.trimmingCharacters(in: .whitespaces)
+        guard query.count >= 2 else { searchHits = []; return }
+        searchTask = Task {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            let hits = (try? await client.mdSearch(query))?.results ?? []
+            guard !Task.isCancelled, searchText.trimmingCharacters(in: .whitespaces) == query else { return }
+            searchHits = hits
+        }
+    }
+
+    /// Route to Market Data → Instruments and open the given instrument.
+    func requestOpen(category: String, secid: String) {
+        openRequest = OpenInstrumentRequest(category: category, secid: secid)
+        section = .market
+    }
 
     func start() async {
         await loadHealth()

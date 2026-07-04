@@ -6,8 +6,9 @@ struct RootView: View {
     @State private var model = AppModel()
     // Market Data mode expands as sub-rows under the Market Data sidebar item.
     @SceneStorage("mdMode") private var marketMode = "overview"
-    // Interface density (doc §11) — applied app-wide via the environment.
-    @AppStorage("interfaceDensity") private var density: InterfaceDensity = .compact
+    // Global search (toolbar command palette)
+    @State private var searchOpen = false
+    @FocusState private var searchFocused: Bool
 
     /// Second-level Market Data modes (shown nested under "Market Data").
     private let marketModes: [(key: String, title: String, icon: String)] = [
@@ -26,7 +27,6 @@ struct RootView: View {
             detail
                 .frame(minWidth: 640)
         }
-        .environment(\.interfaceDensity, density)
         .task { await model.start() }
         .onChange(of: model.section) { _, new in
             Task { await model.load(new) }
@@ -35,6 +35,97 @@ struct RootView: View {
             if model.serverDown {
                 ServerDownView(message: nil) { Task { await model.refresh() } }
             }
+        }
+        .overlay {
+            if searchOpen { searchOverlay }
+        }
+    }
+
+    // MARK: global search overlay (glass command palette)
+
+    private func openSearch()  { withAnimation(.snappy(duration: 0.2)) { searchOpen = true }; searchFocused = true }
+    private func closeSearch() { withAnimation(.snappy(duration: 0.2)) { searchOpen = false }; model.searchText = ""; model.searchHits = [] }
+
+    private func open(_ hit: SearchHit) {
+        guard let cat = hit.category else { return }
+        marketMode = "instruments"
+        model.requestOpen(category: cat, secid: hit.secid)
+        closeSearch()
+    }
+
+    private var searchOverlay: some View {
+        ZStack(alignment: .top) {
+            Rectangle().fill(.black.opacity(0.12)).ignoresSafeArea()
+                .onTapGesture { closeSearch() }
+            VStack(spacing: 0) {
+                HStack(spacing: Theme.s3) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 15)).foregroundStyle(.secondary)
+                    TextField("Поиск: тикер · ISIN · эмитент", text: $model.searchText)
+                        .textFieldStyle(.plain).font(.system(size: 16))
+                        .focused($searchFocused)
+                        .onSubmit { if let h = model.searchHits.first { open(h) } }
+                    if !model.searchText.isEmpty {
+                        Button { model.searchText = "" } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, Theme.s4).padding(.vertical, 14)
+                if !model.searchHits.isEmpty {
+                    Divider().opacity(0.4)
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(model.searchHits.prefix(12)) { hit in
+                                searchResultRow(hit)
+                                Divider().opacity(0.15)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 380)
+                }
+            }
+            .frame(width: 580)
+            .glassPanel(cornerRadius: 18)
+            .shadow(color: .black.opacity(0.25), radius: 30, x: 0, y: 12)
+            .padding(.top, 78)
+        }
+        .onChange(of: model.searchText) { _, q in model.runSearch(q) }
+        .onExitCommand { closeSearch() }
+        .transition(.opacity)
+    }
+
+    private func searchResultRow(_ hit: SearchHit) -> some View {
+        Button { open(hit) } label: {
+            HStack(spacing: Theme.s3) {
+                Text(searchCategoryLabel(hit.category))
+                    .font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.accent)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Theme.accent.opacity(0.14), in: Capsule())
+                    .frame(width: 92, alignment: .leading)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(hit.issuerRu ?? hit.secid).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                    Text(hit.isin ?? hit.secid).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+                }
+                Spacer()
+                if let l = hit.last {
+                    Text(Fmt.number(l, digits: 2)).font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                }
+                if let c = hit.changePct {
+                    Text(Fmt.signedPercent(c, digits: 2)).font(.system(size: 11)).monospacedDigit()
+                        .foregroundStyle(c >= 0 ? Theme.positive : Theme.negative)
+                }
+            }
+            .padding(.horizontal, Theme.s4).padding(.vertical, 8).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func searchCategoryLabel(_ cat: String?) -> String {
+        switch cat {
+        case "bonds": "Облигация"; case "equities": "Акция"; case "futures": "Фьючерс"
+        case "options": "Опцион"; case "indices": "Индекс"; case "fx": "Валюта"
+        case "commodities": "Товар"; default: cat ?? "?"
         }
     }
 
@@ -117,7 +208,7 @@ struct RootView: View {
             case .dashboard:  DashboardScreen(model: model)
             case .portfolio:  PortfolioScreen(model: model)
             case .risk:       RiskScreen(model: model)
-            case .market:     MarketScreen(group: $marketMode)
+            case .market:     MarketScreen(group: $marketMode, model: model)
             case .dataControls: DataControlsScreen()
             case .pricing:    PricingScreen()
             case .governance: GovernanceScreen(model: model)
@@ -125,6 +216,19 @@ struct RootView: View {
             }
         }
         .toolbar {
+            // Centred section-name pill (glass) — like the ChatGPT title chip.
+            ToolbarItem(placement: .principal) {
+                Text(model.section.title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .padding(.horizontal, 14).padding(.vertical, 5)
+                    .glassCapsule()
+            }
+            // Right group: search (leftmost) · ingest · refresh.
+            ToolbarItem(placement: .primaryAction) {
+                Button { openSearch() } label: { Image(systemName: "magnifyingglass") }
+                    .help("Поиск (⌘F)")
+                    .keyboardShortcut("f", modifiers: .command)
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     Task { await model.startIngest() }
@@ -136,8 +240,8 @@ struct RootView: View {
                     }
                 }
                 .help(model.ingestRunning
-                      ? "Loading today's data… \(model.ingestMessage)"
-                      : "Load today's market data from MOEX + CBR")
+                      ? "Загрузка данных за сегодня… \(model.ingestMessage)"
+                      : "Загрузить рыночные данные MOEX + CBR")
                 .disabled(model.ingestRunning)
             }
             ToolbarItem(placement: .primaryAction) {
@@ -146,21 +250,29 @@ struct RootView: View {
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
-                .help("Reload from bridge")
+                .help("Обновить с моста")
             }
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Picker("Плотность", selection: $density) {
-                        ForEach(InterfaceDensity.allCases) { d in
-                            Label(d.title, systemImage: d.icon).tag(d)
-                        }
-                    }
-                    .pickerStyle(.inline)
-                } label: {
-                    Image(systemName: "textformat.size")
-                }
-                .help("Плотность интерфейса")
-            }
+        }
+    }
+}
+
+// MARK: - Liquid Glass helpers (macOS 26+, material fallback)
+
+extension View {
+    @ViewBuilder func glassCapsule() -> some View {
+        if #available(macOS 26, *) {
+            self.glassEffect(.regular, in: .capsule)
+        } else {
+            self.background(.regularMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(Color.primary.opacity(0.06), lineWidth: 1))
+        }
+    }
+
+    @ViewBuilder func glassPanel(cornerRadius: CGFloat) -> some View {
+        if #available(macOS 26, *) {
+            self.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+        } else {
+            self.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
     }
 }
