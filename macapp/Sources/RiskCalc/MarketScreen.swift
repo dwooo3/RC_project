@@ -285,15 +285,15 @@ struct MarketScreen: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: Theme.s3) {
-                HStack(spacing: 4) {
-                    Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundStyle(.tertiary)
+                HStack(spacing: Theme.s2) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.tertiary)
                     TextField("Поиск: тикер · ISIN · эмитент (⌘F)", text: $searchText)
                         .textFieldStyle(.plain).font(.system(size: 12))
                         .focused($searchFocused)
                 }
-                .padding(.horizontal, Theme.s2).padding(.vertical, 4)
-                .background(Color.gray.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
-                .frame(maxWidth: 280)
+                .padding(.horizontal, Theme.s3).padding(.vertical, 7)
+                .cardSurface(cornerRadius: 10)
+                .frame(maxWidth: 300)
                 .background {
                     Button("") { searchFocused = true }
                         .keyboardShortcut("f", modifiers: .command).hidden()
@@ -301,10 +301,8 @@ struct MarketScreen: View {
                 Spacer()
                 Text(identityLine).font(.caption2).foregroundStyle(.tertiary)
             }
-            Picker("Group", selection: $group) {
-                ForEach(groups, id: \.0) { Text($0.1).tag($0.0) }
-            }
-            .pickerStyle(.segmented).labelsHidden()
+            SegmentedBar(items: groups, selection: $group)
+                .fixedSize()
             if group == "instruments" {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: Theme.s2) {

@@ -29,17 +29,22 @@ struct RootView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             brand
-            List(selection: $model.section) {
-                ForEach(AppSection.allCases) { section in
-                    Label(section.title, systemImage: section.icon)
-                        .tag(section)
+            ScrollView {
+                VStack(spacing: 2) {
+                    ForEach(AppSection.allCases) { section in
+                        NavRow(section: section, selected: model.section == section) {
+                            model.section = section
+                        }
+                    }
                 }
+                .padding(.horizontal, Theme.s2)
+                .padding(.top, Theme.s1)
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
-            Divider()
+            Divider().opacity(0.5)
             footer
         }
+        // Same clean surface as the content blocks: solid white, no vibrancy.
+        .background(Theme.cardFill.ignoresSafeArea())
     }
 
     private var brand: some View {
@@ -122,6 +127,40 @@ struct RootView: View {
     }
 }
 
+/// Sidebar navigation row — a rounded accent pill when selected (matching the
+/// content blocks), with a soft hover highlight otherwise.
+private struct NavRow: View {
+    let section: AppSection
+    let selected: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Theme.s3) {
+                Image(systemName: section.icon)
+                    .font(.system(size: 13))
+                    .foregroundStyle(selected ? Color.white : Color.secondary)
+                    .frame(width: 20)
+                Text(section.title)
+                    .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? Color.white : .primary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Theme.s3)
+            .padding(.vertical, 7)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(selected ? AnyShapeStyle(Theme.accent)
+                                   : AnyShapeStyle(hovering ? Color.primary.opacity(0.06) : Color.clear))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}
+
 /// Standard scrollable page container with consistent padding.
 struct ScreenScaffold<Content: View>: View {
     @ViewBuilder var content: Content
@@ -135,15 +174,6 @@ struct ScreenScaffold<Content: View>: View {
             .frame(maxWidth: Theme.contentMaxWidth)   // cap reading width; cards fill it
             .frame(maxWidth: .infinity)               // centre the column on wide displays
         }
-        .background {
-            LinearGradient(
-                colors: [
-                    Color(nsColor: .windowBackgroundColor),
-                    Color(nsColor: .underPageBackgroundColor).opacity(0.5),
-                ],
-                startPoint: .top, endPoint: .bottom
-            )
-            .ignoresSafeArea()
-        }
+        .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
     }
 }

@@ -16,6 +16,41 @@ extension View {
     }
 }
 
+// MARK: - Segmented control
+
+/// A segmented control drawn in the app's card idiom: a clean white floating
+/// track with a solid accent-filled pill for the selection. Sizes to content.
+struct SegmentedBar: View {
+    let items: [(String, String)]        // (tag, label)
+    @Binding var selection: String
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(items, id: \.0) { item in
+                let on = selection == item.0
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) { selection = item.0 }
+                } label: {
+                    Text(item.1)
+                        .font(.system(size: 13, weight: on ? .semibold : .regular))
+                        .foregroundStyle(on ? Color.white : .secondary)
+                        .padding(.horizontal, Theme.s4)
+                        .padding(.vertical, 6)
+                        .background {
+                            if on {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Theme.accent)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .cardSurface(cornerRadius: 12)
+    }
+}
+
 // MARK: - Page scaffolding
 
 /// Large screen header with title, subtitle and optional trailing accessory.

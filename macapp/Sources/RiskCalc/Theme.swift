@@ -5,7 +5,7 @@ import SwiftUI
 /// adapts automatically, and only the brand/status accents are fixed.
 enum Theme {
     // Brand + status accents (fixed across appearances)
-    static let accent   = Color(red: 0.36, green: 0.42, blue: 0.95)   // indigo
+    static let accent   = Color(red: 0.80, green: 0.47, blue: 0.35)   // terracotta
     static let positive = Color(red: 0.13, green: 0.70, blue: 0.38)   // green
     static let negative = Color(red: 0.90, green: 0.27, blue: 0.24)   // red
     static let warning  = Color(red: 0.86, green: 0.60, blue: 0.10)   // amber
@@ -60,7 +60,7 @@ enum Theme {
     }
 
     static let bucketColors: [String: Color] = [
-        "Equity": accent,
+        "Equity": Color(red: 0.36, green: 0.42, blue: 0.95),   // indigo (kept distinct from FX/accent)
         "Rates": Color(red: 0.20, green: 0.66, blue: 0.62),
         "FX": Color(red: 0.85, green: 0.47, blue: 0.18),
         "Volatility": Color(red: 0.60, green: 0.36, blue: 0.86),
