@@ -235,7 +235,9 @@ struct MarketScreen: View {
             // VMs are cached per category: switching sub-tabs re-uses the loaded
             // list/selection instead of refetching ~700KB (audit A4). The .id keeps
             // view identity per category so @State re-binds to the cached VM.
+            // Leading indent matches the asset-class tabs above (Theme.s5).
             MarketEntityView(vm: entityVMs.vm(for: instrument)).id(instrument)
+                .padding(.leading, Theme.s5)
         case "curves":
             ScreenScaffold {
                 if vm.serverDown {

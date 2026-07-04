@@ -226,6 +226,7 @@ struct RootView: View {
                     }
                 } label: {
                     Text(model.section.title).font(.system(size: 14, weight: .semibold))
+                        .padding(.leading, Theme.s5)      // align with the content indent
                 }
                 .menuIndicator(.hidden)
             }
