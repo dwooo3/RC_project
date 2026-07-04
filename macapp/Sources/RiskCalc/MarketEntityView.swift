@@ -31,39 +31,6 @@ final class MarketEntityVM {
     init(category: String) {
         self.category = category
         if category == "fx" || category == "indices" { chartMode = "Линия" }
-        if supportsIntraday { interval = "15м" }        // realtime default (item 7)
-    }
-
-    /// The bridge category — ETF/ПИФ funds are served under equities (item 12).
-    var apiCategory: String { category == "funds" ? "equities" : category }
-
-    /// True for ETF / unit-fund rows (secType starts with "Пай").
-    private func isFund(_ i: MDListItem) -> Bool { (i.secType ?? "").hasPrefix("Пай") }
-
-    // MARK: live (realtime) quote derived from the intraday session (items 4 · 5)
-
-    /// Today's session aggregated from intraday bars (realtime day stats).
-    var liveDay: MDDay? {
-        guard intradayMinutes != nil, let last = bars.last else { return nil }
-        let highs = bars.compactMap { $0.high ?? $0.close }
-        let lows = bars.compactMap { $0.low ?? $0.close }
-        let vol = bars.compactMap { $0.volume }.reduce(0.0, +)
-        return MDDay(date: String(last.date.prefix(10)),
-                     open: bars.first?.open ?? bars.first?.close,
-                     high: highs.max(), low: lows.min(), close: last.close,
-                     volume: vol > 0 ? vol : nil, value: nil, yield: nil, numtrades: nil)
-    }
-
-    /// Latest price — live intraday close while polling, else the stored close.
-    var livePrice: Double? { (intradayMinutes != nil ? bars.last?.close : nil) ?? entity?.last }
-
-    /// Session change %: intraday vs the day open, else the stored change.
-    var liveChangePct: Double? {
-        if intradayMinutes != nil, let last = bars.last?.close,
-           let open = bars.first.flatMap({ $0.open ?? $0.close }), open != 0 {
-            return (last - open) / open * 100
-        }
-        return entity?.changePct
     }
 
     /// RU display mode → the chart's JS series id.
@@ -95,7 +62,7 @@ final class MarketEntityVM {
         return out
     }
 
-    var market: String { mdMarket(apiCategory) }
+    var market: String { mdMarket(category) }
 
     var availableBoards: [String] {
         Array(Set(items.compactMap { $0.board })).sorted()
@@ -117,9 +84,7 @@ final class MarketEntityVM {
     var filtered: [MDListItem] {
         let q = search.lowercased().trimmingCharacters(in: .whitespaces)
         let rows = items.filter { i in
-            // equities tab excludes funds; the funds tab keeps only them (item 12)
-            (category == "funds" ? isFund(i) : (category == "equities" ? !isFund(i) : true))
-                && (boardFilter.isEmpty || i.board == boardFilter)
+            (boardFilter.isEmpty || i.board == boardFilter)
                 && (currencyFilter.isEmpty || i.currency == currencyFilter)
                 && (q.isEmpty
                     || (i.issuerRu ?? "").lowercased().contains(q)
@@ -138,7 +103,7 @@ final class MarketEntityVM {
     func start() async {
         loadingList = true
         do {
-            items = try await client.mdList(category: apiCategory).instruments
+            items = try await client.mdList(category: category).instruments
             serverDown = false
         } catch { serverDown = true }
         if currencyNames.isEmpty, let rd = try? await client.refData() {
@@ -146,14 +111,14 @@ final class MarketEntityVM {
                                        uniquingKeysWith: { a, _ in a })
         }
         loadingList = false
-        if selectedID == nil, let first = filtered.first { await select(first.secid) }
+        if selectedID == nil, let first = items.first { await select(first.secid) }
     }
 
     func select(_ secid: String) async {
         selectedID = secid
         loadTask?.cancel()
         loadingDetail = true
-        let e = try? await client.mdInstrument(category: apiCategory, secid: secid)
+        let e = try? await client.mdInstrument(category: category, secid: secid)
         guard selectedID == secid else { return }        // a later click won the race
         if category == "options" {
             bars = []                                   // options have no price series
@@ -210,7 +175,7 @@ final class MarketEntityVM {
     /// FX rows are CBR fixings (no ISS intraday trades under these secids);
     /// options render a chain board instead of a chart.
     var supportsIntraday: Bool {
-        ["bonds", "equities", "funds", "futures", "commodities", "indices"].contains(category)
+        ["bonds", "equities", "futures", "commodities", "indices"].contains(category)
     }
 
     func changeRange(_ r: String) {
@@ -322,8 +287,35 @@ struct MarketEntityView: View {
 
     private var listPane: some View {
         VStack(spacing: 0) {
-            // No count / export header — the instrument count is dropped (item 6)
-            // and CSV export lives in the "Торги за день" card.
+            // The per-list filter/sort/search block is retired — the global
+            // Market Data search covers lookup. Only CSV export remains.
+            HStack(spacing: Theme.s2) {
+                Text("\(vm.filtered.count)")
+                    .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(.secondary)
+                Text("инструментов").font(.system(size: 11)).foregroundStyle(.tertiary)
+                Spacer()
+                Menu {
+                    Button("Список (CSV)") { exportList() }
+                    if vm.intradayMinutes != nil {
+                        Button("Свечи \(vm.interval) выбранного (CSV)") { exportIntraday() }
+                            .disabled(vm.bars.isEmpty)
+                    } else {
+                        Menu("История \(vm.interval) выбранного (CSV)") {
+                            ForEach(vm.rangeOptions, id: \.self) { p in
+                                Button(p) { exportHistory(period: p) }
+                            }
+                        }
+                        .disabled(vm.selectedID == nil)
+                    }
+                } label: {
+                    Image(systemName: "square.and.arrow.up").font(.system(size: 12))
+                }
+                .menuStyle(.borderlessButton).fixedSize()
+                .help("Экспорт в CSV (текущий таймфрейм)")
+            }
+            .padding(.horizontal, Theme.s3).padding(.vertical, Theme.s2)
+            Divider()
             if vm.serverDown {
                 ContentUnavailableView("Мост недоступен", systemImage: "bolt.horizontal.circle").frame(maxHeight: .infinity)
             } else if vm.loadingList && vm.filtered.isEmpty {
@@ -438,7 +430,8 @@ struct MarketEntityView: View {
                         OptionChainView(chain: e.optionChain ?? [])
                     } else {
                         rangeBar
-                        TradingChart(bars: vm.bars, mode: vm.jsChartMode)   // no on-chart markers (item 7)
+                        TradingChart(bars: vm.bars, mode: vm.jsChartMode,
+                                     events: InstrumentPresentation.chartEvents(e))
                         eventChips(e)
                         dayStats(e)
                         if let s = e.stats { statsRow(s) }
@@ -484,33 +477,20 @@ struct MarketEntityView: View {
     }
 
     private func detailHeader(_ e: MDEntity) -> some View {
-        // Realtime quote from the live intraday session when available (item 4);
-        // only the ticker under the issuer (item 3).
-        let price = vm.livePrice
-        let chg = vm.liveChangePct
-        let live = vm.intradayMinutes != nil && vm.bars.last != nil
-        return HStack(alignment: .firstTextBaseline, spacing: Theme.s3) {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.s3) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(e.issuerRu ?? e.secid).font(.system(size: 18, weight: .bold))
-                Text(e.secid).font(.system(size: 11)).foregroundStyle(.secondary)
+                Text("\(e.secid)\(e.isin.map { " · \($0)" } ?? "") · \(e.secType ?? "")")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 1) {
-                Text(price.map { Fmt.number($0, digits: 2) } ?? "—")
-                    .font(.system(size: 20, weight: .bold)).monospacedDigit()
-                    .contentTransition(.numericText())
-                if let c = chg {
+                Text(e.last.map { Fmt.number($0, digits: 2) } ?? "—").font(.system(size: 20, weight: .bold)).monospacedDigit()
+                if let c = e.changePct {
                     Text(Fmt.signedPercent(c, digits: 2)).font(.system(size: 12, weight: .semibold)).monospacedDigit()
                         .foregroundStyle(c >= 0 ? Theme.positive : Theme.negative)
                 }
-                if live {
-                    HStack(spacing: 3) {
-                        Circle().fill(Theme.positive).frame(width: 5, height: 5)
-                        Text("LIVE").font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.positive)
-                    }
-                } else if let d = e.asOf {
-                    Text(d).font(.system(size: 9)).foregroundStyle(.tertiary)
-                }
+                if let d = e.asOf { Text(d).font(.system(size: 9)).foregroundStyle(.tertiary) }
             }
             Button { showCard = true } label: { Label("Карточка", systemImage: "doc.text.magnifyingglass") }
         }
@@ -558,21 +538,11 @@ struct MarketEntityView: View {
     }
 
     private func dayStats(_ e: MDEntity) -> some View {
-        // Live intraday session when polling, else the stored EOD day (item 5).
-        let day = vm.liveDay ?? e.day
-        let live = vm.liveDay != nil
-        let metrics = InstrumentPresentation.dayMetrics(e, category: category, day: day)
+        // Metric set is composed by the universal presentation layer (type-aware).
+        let metrics = InstrumentPresentation.dayMetrics(e, category: category)
         return GlassCard(padding: Theme.s3) {
             VStack(alignment: .leading, spacing: Theme.s2) {
-                HStack {
-                    BlockTitle("Торги за день\(day?.date.map { " · \($0)" } ?? "")", icon: "chart.bar")
-                    if live {
-                        Text("LIVE").font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(Theme.positive)
-                    }
-                    Spacer()
-                    exportMenu                       // download moved here (item 6)
-                }
+                BlockTitle("Торги за день\(e.day?.date.map { " · \($0)" } ?? "")", icon: "chart.bar")
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4), spacing: Theme.s2) {
                     ForEach(metrics) { m in
                         VStack(alignment: .leading, spacing: 1) {
@@ -584,28 +554,6 @@ struct MarketEntityView: View {
                 }
             }
         }
-    }
-
-    /// CSV export menu — lives in the "Торги за день" card header (item 6).
-    private var exportMenu: some View {
-        Menu {
-            Button("Список (CSV)") { exportList() }
-            if vm.intradayMinutes != nil {
-                Button("Свечи \(vm.interval) выбранного (CSV)") { exportIntraday() }
-                    .disabled(vm.bars.isEmpty)
-            } else {
-                Menu("История \(vm.interval) выбранного (CSV)") {
-                    ForEach(vm.rangeOptions, id: \.self) { p in
-                        Button(p) { exportHistory(period: p) }
-                    }
-                }
-                .disabled(vm.selectedID == nil)
-            }
-        } label: {
-            Image(systemName: "square.and.arrow.up").font(.system(size: 12)).foregroundStyle(.secondary)
-        }
-        .menuStyle(.borderlessButton).fixedSize()
-        .help("Экспорт в CSV")
     }
 
     /// Upcoming events (next coupon / offer / amortization / maturity / dividend)
@@ -755,9 +703,9 @@ struct MarketEntityView: View {
     private func couponsTitle(_ cps: [MDCoupon], today: String) -> String {
         if let next = cps.first(where: { $0.couponDate >= today }) {
             let v = next.value.map { " · \(Fmt.number($0, digits: 2))" } ?? ""
-            return "Купоны · ближайший \(next.couponDate)\(v)"
+            return "Купоны · \(cps.count) · ближайший \(next.couponDate)\(v)"
         }
-        return "Купоны"
+        return "Купоны · \(cps.count)"
     }
 
     private func dividendsSection(_ divs: [MDDividend]) -> some View {
@@ -781,7 +729,7 @@ struct MarketEntityView: View {
                 }
                 .padding(.top, 4)
             } label: {
-                BlockTitle("Дивиденды", icon: "banknote")
+                BlockTitle("Дивиденды · \(divs.count)", icon: "banknote")
             }
         }
     }

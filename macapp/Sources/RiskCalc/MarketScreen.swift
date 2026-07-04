@@ -171,9 +171,9 @@ struct MarketScreen: View {
     // Asset-class tabs (third level) shown in the work-area header for the
     // Инструменты mode. The mode set itself lives in the sidebar (RootView).
     private let instruments: [(String, String)] = [
-        ("bonds", "Облигации"), ("equities", "Акции"), ("funds", "ПИФы"),
-        ("futures", "Фьючерсы"), ("options", "Опционы"), ("indices", "Индексы"),
-        ("fx", "Валюта"), ("commodities", "Товары"),
+        ("bonds", "Облигации"), ("equities", "Акции"), ("futures", "Фьючерсы"),
+        ("options", "Опционы"), ("indices", "Индексы"), ("fx", "Валюта"),
+        ("commodities", "Товары"),
     ]
 
     var body: some View {
@@ -195,22 +195,17 @@ struct MarketScreen: View {
     // MARK: work-area header (global search + third-level asset-class tabs)
 
     private var workAreaHeader: some View {
-        VStack(alignment: .leading, spacing: Theme.s3) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Market Data")               // prominent section title (item 10)
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
+        VStack(alignment: .leading, spacing: Theme.s2) {
+            HStack(spacing: Theme.s3) {
+                globalSearchField.frame(maxWidth: 320)
                 Spacer()
                 Text(identityLine).font(.caption2).foregroundStyle(.tertiary)
             }
-            HStack(spacing: Theme.s3) {
-                globalSearchField.frame(maxWidth: 340)   // left, over the list column (item 2)
-                if group == "instruments" {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        SegmentedBar(items: instruments, selection: $instrument, compact: true)
-                            .fixedSize()
-                    }
+            if group == "instruments" {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    SegmentedBar(items: instruments, selection: $instrument, compact: true)
+                        .fixedSize()
                 }
-                Spacer(minLength: 0)
             }
         }
         .padding(.horizontal, Theme.s5).padding(.top, Theme.s3).padding(.bottom, Theme.s3)
@@ -218,15 +213,13 @@ struct MarketScreen: View {
 
     private var globalSearchField: some View {
         HStack(spacing: Theme.s2) {
-            Image(systemName: "magnifyingglass").font(.system(size: 13)).foregroundStyle(.tertiary)
+            Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.tertiary)
             TextField("Поиск: тикер · ISIN · эмитент (⌘F)", text: $searchText)
-                .textFieldStyle(.plain).font(.system(size: 13))
+                .textFieldStyle(.plain).font(.system(size: 12))
                 .focused($searchFocused)
         }
-        .padding(.horizontal, Theme.s3).padding(.vertical, 10)
-        // A clean, light surface — one soft shadow, no heavy card elevation (item 2).
-        .background(Theme.cardFill, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 1)
+        .padding(.horizontal, Theme.s3).padding(.vertical, 7)
+        .cardSurface(cornerRadius: 10)
         .background {
             Button("") { searchFocused = true }
                 .keyboardShortcut("f", modifiers: .command).hidden()
@@ -283,7 +276,7 @@ struct MarketScreen: View {
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Color.gray.opacity(0.25)))
             .padding(.leading, Theme.s5)
-            .padding(.top, 88)          // under the title + search rows
+            .padding(.top, 46)
             .shadow(radius: 14)
         }
     }
