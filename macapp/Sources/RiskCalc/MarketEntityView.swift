@@ -231,8 +231,14 @@ struct MarketEntityView: View {
 
     private var listPane: some View {
         VStack(spacing: 0) {
+            // The per-list filter/sort/search block is retired — the global
+            // Market Data search covers lookup. Only CSV export remains.
             HStack(spacing: Theme.s2) {
-                TextField("Поиск…", text: $vm.search).textFieldStyle(.roundedBorder)
+                Text("\(vm.filtered.count)")
+                    .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(.secondary)
+                Text("инструментов").font(.system(size: 11)).foregroundStyle(.tertiary)
+                Spacer()
                 Menu {
                     Button("Список (CSV)") { exportList() }
                     if vm.intradayMinutes != nil {
@@ -247,42 +253,12 @@ struct MarketEntityView: View {
                         .disabled(vm.selectedID == nil)
                     }
                 } label: {
-                    Image(systemName: "square.and.arrow.up")
+                    Image(systemName: "square.and.arrow.up").font(.system(size: 12))
                 }
                 .menuStyle(.borderlessButton).fixedSize()
                 .help("Экспорт в CSV (текущий таймфрейм)")
             }
-            .padding(.horizontal, Theme.s2).padding(.top, Theme.s2)
-            HStack(spacing: Theme.s2) {
-                if vm.availableBoards.count > 1 {
-                    filterMenu("Борд", vm.availableBoards, $vm.boardFilter)
-                }
-                if vm.availableCurrencies.count > 1 {
-                    filterMenu("Валюта", vm.availableCurrencies, $vm.currencyFilter,
-                               label: { vm.currencyLabel($0) })
-                }
-                Menu {
-                    ForEach(vm.sortKeys, id: \.self) { k in
-                        Button { vm.sortKey = k } label: {
-                            if k == vm.sortKey { Label(k, systemImage: "checkmark") } else { Text(k) }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "arrow.up.arrow.down").font(.system(size: 8))
-                        Text(vm.sortKey).font(.system(size: 10, weight: vm.sortKey == "Имя" ? .regular : .semibold))
-                        Image(systemName: "chevron.down").font(.system(size: 7))
-                    }
-                    .padding(.horizontal, Theme.s2).padding(.vertical, 3)
-                    .background(vm.sortKey == "Имя" ? Color.gray.opacity(0.12) : Theme.accent.opacity(0.16),
-                                in: RoundedRectangle(cornerRadius: 7))
-                    .foregroundStyle(vm.sortKey == "Имя" ? .secondary : Theme.accent)
-                }
-                .menuStyle(.borderlessButton).fixedSize()
-                Spacer()
-            }
-            .padding(.horizontal, Theme.s2)
-            Color.clear.frame(height: Theme.s2)
+            .padding(.horizontal, Theme.s3).padding(.vertical, Theme.s2)
             Divider()
             if vm.serverDown {
                 ContentUnavailableView("Bridge offline", systemImage: "bolt.horizontal.circle").frame(maxHeight: .infinity)
@@ -306,29 +282,6 @@ struct MarketEntityView: View {
                 }
             }
         }
-    }
-
-    private func filterMenu(_ title: String, _ options: [String], _ binding: Binding<String>,
-                            label: ((String) -> String)? = nil) -> some View {
-        let active = !binding.wrappedValue.isEmpty
-        return Menu {
-            Button("Все") { binding.wrappedValue = "" }
-            Divider()
-            ForEach(options, id: \.self) { o in
-                Button(label?(o) ?? o) { binding.wrappedValue = o }
-            }
-        } label: {
-            HStack(spacing: 3) {
-                Text("\(title): \(active ? binding.wrappedValue : "все")")
-                    .font(.system(size: 10, weight: active ? .semibold : .regular)).lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 7))
-            }
-            .padding(.horizontal, Theme.s2).padding(.vertical, 3)
-            .background(active ? Theme.accent.opacity(0.16) : Color.gray.opacity(0.12),
-                        in: RoundedRectangle(cornerRadius: 7))
-            .foregroundStyle(active ? Theme.accent : .secondary)
-        }
-        .menuStyle(.borderlessButton).fixedSize()
     }
 
     private func row(_ item: MDListItem) -> some View {
