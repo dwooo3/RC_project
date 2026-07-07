@@ -216,20 +216,20 @@ struct RootView: View {
             }
         }
         .navigationTitle("")               // suppress the default "RiskCalc" window title
+        // The system toolbar pins its glass items at a fixed inset that SwiftUI
+        // padding/offset can't move, so the title pill is drawn in the content
+        // layer instead (manual glass renders cleanly here — the halo only
+        // appears when stacking glass inside the glass toolbar) and raised into
+        // the toolbar row. Leading = Theme.s4, matching the content indent.
+        .overlay(alignment: .topLeading) {
+            Text(model.section.title)
+                .font(.system(size: 14, weight: .semibold))
+                .padding(.horizontal, 15).padding(.vertical, 7)
+                .glassCapsule()
+                .padding(.leading, Theme.s4)
+                .offset(y: -43)
+        }
         .toolbar {
-            // Section-name pill on the left. A Menu gets the native Liquid Glass
-            // capsule on macOS 26; the dropdown indicator is hidden per request.
-            ToolbarItem(placement: .navigation) {
-                Menu {
-                    ForEach(AppSection.allCases) { s in
-                        Button { model.section = s } label: { Label(s.title, systemImage: s.icon) }
-                    }
-                } label: {
-                    Text(model.section.title).font(.system(size: 14, weight: .semibold))
-                        .padding(.leading, Theme.s5)      // align with the content indent
-                }
-                .menuIndicator(.hidden)
-            }
             // Right group: search (leftmost) · ingest · refresh.
             ToolbarItem(placement: .primaryAction) {
                 Button { openSearch() } label: { Image(systemName: "magnifyingglass") }
@@ -363,7 +363,9 @@ struct ScreenScaffold<Content: View>: View {
             VStack(alignment: .leading, spacing: Theme.s5) {
                 content
             }
-            .padding(Theme.s5)
+            // Horizontal gutter = Theme.s4, one line with the title pill and
+            // the Market Data tabs/list ("ровно всё").
+            .padding(.horizontal, Theme.s4).padding(.vertical, Theme.s5)
             .frame(maxWidth: Theme.contentMaxWidth)   // cap reading width; cards fill it
             .frame(maxWidth: .infinity)               // centre the column on wide displays
         }
