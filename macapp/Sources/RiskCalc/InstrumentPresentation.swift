@@ -79,8 +79,10 @@ struct UpcomingEvent: Identifiable {
 enum InstrumentPresentation {
 
     /// "Торги за день" figures for the instrument's type. Pass `day` to show a
-    /// live intraday session instead of the stored EOD day.
-    static func dayMetrics(_ e: MDEntity, category: String, day: MDDay? = nil) -> [MetricItem] {
+    /// live intraday session instead of the stored EOD day; `changePct`
+    /// overrides the Δ% (e.g. the realtime quote's change vs previous close).
+    static func dayMetrics(_ e: MDEntity, category: String, day: MDDay? = nil,
+                           changePct: Double? = nil) -> [MetricItem] {
         guard let d = day ?? e.day else { return [] }
         let type = InstrumentType(category: category)
         func px(_ v: Double?) -> String { v.map { Fmt.number($0, digits: 2) } ?? "—" }
@@ -96,8 +98,8 @@ enum InstrumentPresentation {
             items.append(MetricItem(id: "yield", title: "Доходность",
                                     value: d.yield.map { Fmt.percent($0, digits: 2) } ?? "—"))
         } else {
-            // change vs the day's own open (works for both live and EOD days)
-            let chg: Double? = {
+            // quote's Δ% vs prev close when given, else vs the day's own open
+            let chg: Double? = changePct ?? {
                 if let c = d.close, let o = d.open, o != 0 { return (c - o) / o * 100 }
                 return e.changePct
             }()

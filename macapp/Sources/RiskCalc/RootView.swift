@@ -9,6 +9,9 @@ struct RootView: View {
     // Global search (toolbar command palette)
     @State private var searchOpen = false
     @FocusState private var searchFocused: Bool
+    // Fullscreen: the titlebar becomes a separate auto-hiding window, so the
+    // overlay pill raised into it would be clipped — track and reposition.
+    @State private var isFullscreen = false
 
     /// Second-level Market Data modes (shown nested under "Market Data").
     private let marketModes: [(key: String, title: String, icon: String)] = [
@@ -221,13 +224,28 @@ struct RootView: View {
         // layer instead (manual glass renders cleanly here — the halo only
         // appears when stacking glass inside the glass toolbar) and raised into
         // the toolbar row. Leading = Theme.s4, matching the content indent.
+        // In fullscreen the titlebar is a separate auto-hiding window (the
+        // raised pill would be clipped), so it gets its own row instead.
         .overlay(alignment: .topLeading) {
-            Text(model.section.title)
-                .font(.system(size: 14, weight: .semibold))
-                .padding(.horizontal, 15).padding(.vertical, 7)
-                .glassCapsule()
-                .padding(.leading, Theme.s4)
-                .offset(y: -43)
+            if !isFullscreen { titlePill.offset(y: -43) }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if isFullscreen {
+                HStack {
+                    titlePill
+                    Spacer()
+                }
+                .padding(.top, Theme.s2)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in
+            isFullscreen = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
+            isFullscreen = false
+        }
+        .onAppear {
+            isFullscreen = NSApp.windows.contains { $0.styleMask.contains(.fullScreen) }
         }
         .toolbar {
             // Right group: search (leftmost) · ingest · refresh.
@@ -260,6 +278,15 @@ struct RootView: View {
                 .help("Обновить с моста")
             }
         }
+    }
+
+    /// Glass section-name pill, aligned to the content gutter (Theme.s4).
+    private var titlePill: some View {
+        Text(model.section.title)
+            .font(.system(size: 14, weight: .semibold))
+            .padding(.horizontal, 15).padding(.vertical, 7)
+            .glassCapsule()
+            .padding(.leading, Theme.s4)
     }
 }
 

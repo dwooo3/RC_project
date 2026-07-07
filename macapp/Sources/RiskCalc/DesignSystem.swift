@@ -3,16 +3,19 @@ import SwiftUI
 // MARK: - Card surface
 
 extension View {
-    /// The app's single card look: a clean solid fill, generous continuous
-    /// corners and a soft two-layer shadow so the panel floats off the page —
-    /// like a rounded input surface. Used by every card/panel for consistency.
+    /// The app's single card look — Liquid Glass on macOS 26 (matching the
+    /// toolbar pill), a soft floating panel as the fallback. Used by every
+    /// card/panel for consistency.
+    @ViewBuilder
     func cardSurface(cornerRadius: CGFloat = Theme.cardRadius) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        return self
-            .background(Theme.cardFill, in: shape)
-            // No outline between blocks — separation reads through the shadow.
-            .shadow(color: Theme.cardShadow, radius: 16, x: 0, y: 6)
-            .shadow(color: Theme.cardContactShadow, radius: 1.5, x: 0, y: 1)
+        if #available(macOS 26.0, *) {
+            self.glassEffect(.regular, in: shape)
+        } else {
+            self.background(Theme.cardFill, in: shape)
+                .shadow(color: Theme.cardShadow, radius: 16, x: 0, y: 6)
+                .shadow(color: Theme.cardContactShadow, radius: 1.5, x: 0, y: 1)
+        }
     }
 }
 

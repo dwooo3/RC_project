@@ -490,6 +490,31 @@ struct MDListResponse: Decodable, Sendable {
     let count: Int
 }
 
+/// Realtime quote from the ISS marketdata block (one per security).
+struct MDLiveQuote: Decodable, Sendable {
+    let last: Double?
+    let changePct: Double?
+    let open: Double?
+    let high: Double?
+    let low: Double?
+    let value: Double?        // turnover, RUB
+    let volume: Double?
+    let numtrades: Double?
+    let yld: Double?
+    let time: String?
+
+    enum CodingKeys: String, CodingKey {
+        case last, open, high, low, value, volume, numtrades, time
+        case changePct = "change_pct"
+        case yld = "yield"
+    }
+}
+
+struct MDLiveResponse: Decodable, Sendable {
+    let category: String
+    let quotes: [String: MDLiveQuote]
+}
+
 struct MDListItem: Decodable, Sendable, Identifiable {
     let secid: String
     let issuerRu: String?

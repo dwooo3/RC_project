@@ -46,6 +46,16 @@ final class MarketEntityVM {
     /// (independent of the chart's timeframe).
     var sessionCandles: [MDBar] = []
 
+    /// Realtime quotes for the whole category (ISS marketdata): last, Δ% vs
+    /// prev close, OHLC, turnover, trade count. Keeps the watchlist live too.
+    var liveQuotes: [String: MDLiveQuote] = [:]
+
+    /// Realtime quote for the selected instrument.
+    var selectedQuote: MDLiveQuote? { selectedID.flatMap { liveQuotes[$0] } }
+
+    /// True when any live source is feeding the selected instrument.
+    var isLive: Bool { selectedQuote?.last != nil || !sessionCandles.isEmpty }
+
     /// Candles of the last (current) trading day only — the candle store spans
     /// several days, so the session must be date-scoped. On a non-trading day
     /// this is simply the last session.
@@ -54,24 +64,36 @@ final class MarketEntityVM {
         return sessionCandles.filter { $0.date.hasPrefix(day) }
     }
 
-    /// The current trading day aggregated from the live session.
+    /// The current trading day: the realtime ISS quote when available (carries
+    /// turnover + trade count), else aggregated from the candle session.
     var liveDay: MDDay? {
+        let sessionDate = sessionDayBars.last.map { String($0.date.prefix(10)) }
+        if let q = selectedQuote, let last = q.last {
+            return MDDay(date: sessionDate ?? entity?.day?.date,
+                         open: q.open, high: q.high, low: q.low, close: last,
+                         volume: q.volume, value: q.value, yield: q.yld,
+                         numtrades: q.numtrades)
+        }
         let s = sessionDayBars
         guard let first = s.first, let last = s.last else { return nil }
         let highs = s.compactMap { $0.high ?? $0.close }
         let lows = s.compactMap { $0.low ?? $0.close }
         let vol = s.compactMap { $0.volume }.reduce(0.0, +)
-        return MDDay(date: String(last.date.prefix(10)),
+        return MDDay(date: sessionDate,
                      open: first.open ?? first.close, high: highs.max(), low: lows.min(),
                      close: last.close, volume: vol > 0 ? vol : nil,
                      value: nil, yield: nil, numtrades: nil)
     }
 
-    /// Latest price — live session close when available, else the stored close.
-    var livePrice: Double? { sessionDayBars.last?.close ?? entity?.last }
+    /// Latest price — realtime quote, else live session close, else stored.
+    var livePrice: Double? {
+        selectedQuote?.last ?? sessionDayBars.last?.close ?? entity?.last
+    }
 
-    /// Session change %: live close vs the session open, else the stored change.
+    /// Change %: quote's Δ% vs previous close, else session close vs open,
+    /// else the stored change.
     var liveChangePct: Double? {
+        if let c = selectedQuote?.changePct { return c }
         let s = sessionDayBars
         if let last = s.last?.close, let open = s.first.flatMap({ $0.open ?? $0.close }), open != 0 {
             return (last - open) / open * 100
@@ -159,6 +181,8 @@ final class MarketEntityVM {
                                        uniquingKeysWith: { a, _ in a })
         }
         loadingList = false
+        // realtime quotes for the whole list (watchlist prices go live)
+        if let live = try? await client.mdLive(category: apiCategory) { liveQuotes = live.quotes }
         if selectedID == nil, let first = filtered.first { await select(first.secid) }
     }
 
@@ -207,12 +231,14 @@ final class MarketEntityVM {
         }
     }
 
-    /// One live-session refresh: fetch intraday candles, update the session,
-    /// stream them into an intraday chart, or merge into the daily tail.
+    /// One live-session refresh: fetch intraday candles + realtime quotes,
+    /// stream candles into an intraday chart, or merge into the daily tail.
     private func refreshSession(_ secid: String) async {
         let m = intradayMinutes ?? 15
-        guard let pts = try? await client.mdCandles(secid: secid, market: market, interval: m).points,
-              !Task.isCancelled, selectedID == secid else { return }
+        async let liveReq = try? client.mdLive(category: apiCategory)
+        let pts = (try? await client.mdCandles(secid: secid, market: market, interval: m))?.points
+        if let live = await liveReq { liveQuotes = live.quotes }
+        guard let pts, !Task.isCancelled, selectedID == secid else { return }
         sessionCandles = pts
         if let viewM = intradayMinutes, viewM == m {
             bars = pts
@@ -389,44 +415,20 @@ struct MarketEntityView: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(vm.filtered) { item in
-                            Button { Task { await vm.select(item.secid) } } label: { row(item) }
-                                .buttonStyle(.plain)
-                                .background(vm.selectedID == item.secid ? Theme.accent.opacity(0.14) : .clear)
-                            Divider().opacity(0.25)
+                            InstrumentRow(item: item, quote: vm.liveQuotes[item.secid],
+                                          selected: vm.selectedID == item.secid,
+                                          vPad: density.listRowVPad) {
+                                Task { await vm.select(item.secid) }
+                            }
                         }
                     }
+                    .padding(.vertical, Theme.s1)
                 }
             }
         }
     }
 
-    private func row(_ item: MDListItem) -> some View {
-        HStack(spacing: Theme.s2) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(item.issuerRu ?? item.secid).font(Typography.ticker).lineLimit(1)
-                Text(item.isin ?? item.secid).font(Typography.micro).foregroundStyle(.secondary).lineLimit(1)
-            }
-            Spacer(minLength: Theme.s2)
-            VStack(alignment: .trailing, spacing: 1) {
-                Text(item.last.map { Fmt.number($0, digits: 2) } ?? "—").font(Typography.ticker).monospacedDigit()
-                HStack(spacing: 4) {
-                    if let y = item.ytm {
-                        Text("YTM \(Fmt.percent(y, digits: 1))").font(.system(size: 9)).monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                    if let dv = item.divYieldPct {
-                        Text("Див \(Fmt.percent(dv, digits: 1))").font(.system(size: 9)).monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                    if let c = item.changePct {
-                        Text(Fmt.signedPercent(c, digits: 2)).font(.system(size: 9, weight: .medium)).monospacedDigit()
-                            .foregroundStyle(c >= 0 ? Theme.positive : Theme.negative)
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, Theme.s3).padding(.vertical, density.listRowVPad).contentShape(Rectangle())
-    }
+    // (row view extracted to InstrumentRow below — live quotes + styled selection)
 
     // MARK: export
 
@@ -527,10 +529,10 @@ struct MarketEntityView: View {
     }
 
     private func detailHeader(_ e: MDEntity) -> some View {
-        // Realtime quote from the live session when available (else stored EOD).
+        // Realtime quote when available (else stored EOD).
         let price = vm.livePrice
         let chg = vm.liveChangePct
-        let live = !vm.sessionCandles.isEmpty
+        let live = vm.isLive
         return HStack(alignment: .firstTextBaseline, spacing: Theme.s3) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(e.issuerRu ?? e.secid).font(.system(size: 18, weight: .bold))
@@ -555,7 +557,6 @@ struct MarketEntityView: View {
                     Text(d).font(.system(size: 9)).foregroundStyle(.tertiary)
                 }
             }
-            Button { showCard = true } label: { Label("Карточка", systemImage: "doc.text.magnifyingglass") }
         }
     }
 
@@ -605,7 +606,8 @@ struct MarketEntityView: View {
         // day; on a weekend — the last session).
         let day = vm.liveDay ?? e.day
         let live = vm.liveDay != nil
-        let metrics = InstrumentPresentation.dayMetrics(e, category: category, day: day)
+        let metrics = InstrumentPresentation.dayMetrics(e, category: category, day: day,
+                                                        changePct: live ? vm.liveChangePct : nil)
         return GlassCard(padding: Theme.s3) {
             VStack(alignment: .leading, spacing: Theme.s2) {
                 HStack(spacing: Theme.s2) {
@@ -846,5 +848,59 @@ struct MarketEntityView: View {
         f.dateFormat = "yyyy-MM-dd"
         f.locale = Locale(identifier: "en_US_POSIX")
         return f.string(from: Date())
+    }
+}
+
+/// Watchlist row: live quote overrides the stored price/Δ%; the selected row
+/// is a rounded accent pill (matching the sidebar), with a soft hover wash.
+private struct InstrumentRow: View {
+    let item: MDListItem
+    let quote: MDLiveQuote?
+    let selected: Bool
+    let vPad: CGFloat
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        let last = quote?.last ?? item.last
+        let chg = quote?.changePct ?? item.changePct
+        Button(action: action) {
+            HStack(spacing: Theme.s2) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(item.issuerRu ?? item.secid).font(Typography.ticker).lineLimit(1)
+                    Text(item.isin ?? item.secid).font(Typography.micro).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: Theme.s2)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(last.map { Fmt.number($0, digits: 2) } ?? "—")
+                        .font(Typography.ticker).monospacedDigit()
+                        .contentTransition(.numericText())
+                    HStack(spacing: 4) {
+                        if let y = item.ytm {
+                            Text("YTM \(Fmt.percent(y, digits: 1))").font(.system(size: 9)).monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        if let dv = item.divYieldPct {
+                            Text("Див \(Fmt.percent(dv, digits: 1))").font(.system(size: 9)).monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        if let c = chg {
+                            Text(Fmt.signedPercent(c, digits: 2)).font(.system(size: 9, weight: .medium)).monospacedDigit()
+                                .foregroundStyle(c >= 0 ? Theme.positive : Theme.negative)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, Theme.s3).padding(.vertical, vPad)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(selected ? AnyShapeStyle(Theme.accent.opacity(0.16))
+                                   : AnyShapeStyle(hovering ? Color.primary.opacity(0.05) : Color.clear))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .padding(.horizontal, Theme.s2)
     }
 }

@@ -32,6 +32,7 @@ from api import (
     ingest_job,
     intraday,
     instruments,
+    livequotes,
     market_entity,
     marketdata,
     payloads,
@@ -272,6 +273,11 @@ def md_candles(secid: str, market: str = "bonds", interval: int = 60,
                category: str | None = None) -> dict:
     return jsonable(intraday.candles(CONTEXT, secid, market=market,
                                      interval=interval, category=category))
+
+
+@app.get("/md/live/{category}")
+def md_live(category: str) -> dict:
+    return jsonable(livequotes.live_quotes(category))
 
 
 @app.get("/md/overview")

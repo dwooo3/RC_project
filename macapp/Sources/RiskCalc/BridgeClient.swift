@@ -183,6 +183,8 @@ actor BridgeClient {
         return try JSONDecoder().decode(MDHistory.self, from: data)
     }
 
+    func mdLive(category: String) async throws -> MDLiveResponse { try await get("md/live/\(category)") }
+
     func dataHealth() async throws -> DataHealth { try await get("md/health") }
     func validation() async throws -> ValidationData { try await get("md/validation") }
 
