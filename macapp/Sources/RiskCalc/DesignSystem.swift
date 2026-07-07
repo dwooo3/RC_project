@@ -10,7 +10,7 @@ extension View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         return self
             .background(Theme.cardFill, in: shape)
-            .overlay(shape.strokeBorder(Theme.hairline, lineWidth: 1))
+            // No outline between blocks — separation reads through the shadow.
             .shadow(color: Theme.cardShadow, radius: 16, x: 0, y: 6)
             .shadow(color: Theme.cardContactShadow, radius: 1.5, x: 0, y: 1)
     }

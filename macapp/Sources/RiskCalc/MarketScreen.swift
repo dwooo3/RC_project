@@ -167,15 +167,14 @@ struct MarketScreen: View {
     // Asset-class tabs (third level) shown in the work-area header for the
     // Инструменты mode. The mode set itself lives in the sidebar (RootView).
     private let instruments: [(String, String)] = [
-        ("bonds", "Облигации"), ("equities", "Акции"), ("futures", "Фьючерсы"),
-        ("options", "Опционы"), ("indices", "Индексы"), ("fx", "Валюта"),
-        ("commodities", "Товары"),
+        ("bonds", "Облигации"), ("equities", "Акции"), ("funds", "ПИФы"),
+        ("futures", "Фьючерсы"), ("options", "Опционы"), ("indices", "Индексы"),
+        ("fx", "Валюта"), ("commodities", "Товары"),
     ]
 
     var body: some View {
         VStack(spacing: 0) {
             workAreaHeader
-            Divider()
             content
         }
         .task {
@@ -195,19 +194,19 @@ struct MarketScreen: View {
     // MARK: work-area header (identity + third-level asset-class tabs)
 
     private var workAreaHeader: some View {
-        VStack(alignment: .leading, spacing: Theme.s2) {
-            HStack {
-                Spacer()
-                Text(identityLine).font(.caption2).foregroundStyle(.tertiary)
-            }
+        // One tight row right under the toolbar: tabs left, identity right —
+        // no empty band between the title pill and the tabs panel.
+        HStack(spacing: Theme.s3) {
             if group == "instruments" {
                 ScrollView(.horizontal, showsIndicators: false) {
                     SegmentedBar(items: instruments, selection: $instrument, compact: true)
                         .fixedSize()
                 }
             }
+            Spacer(minLength: 0)
+            Text(identityLine).font(.caption2).foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, Theme.s4).padding(.top, Theme.s3).padding(.bottom, Theme.s3)
+        .padding(.horizontal, Theme.s4).padding(.top, Theme.s2).padding(.bottom, Theme.s2)
     }
 
     private func openInstrument(_ category: String, _ secid: String) {
