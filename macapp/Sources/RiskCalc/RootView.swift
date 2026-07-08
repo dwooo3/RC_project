@@ -9,9 +9,6 @@ struct RootView: View {
     // Global search (toolbar command palette)
     @State private var searchOpen = false
     @FocusState private var searchFocused: Bool
-    // Fullscreen: the titlebar becomes a separate auto-hiding window, so the
-    // overlay pill raised into it would be clipped — track and reposition.
-    @State private var isFullscreen = false
 
     /// Second-level Market Data modes (shown nested under "Market Data").
     private let marketModes: [(key: String, title: String, icon: String)] = [
@@ -30,6 +27,7 @@ struct RootView: View {
             detail
                 .frame(minWidth: 640)
         }
+        .background(TitlebarSeparatorRemover())
         .task { await model.start() }
         .onChange(of: model.section) { _, new in
             Task { await model.load(new) }
@@ -219,35 +217,21 @@ struct RootView: View {
             }
         }
         .navigationTitle("")               // suppress the default "RiskCalc" window title
-        // The system toolbar pins its glass items at a fixed inset that SwiftUI
-        // padding/offset can't move, so the title pill is drawn in the content
-        // layer instead (manual glass renders cleanly here — the halo only
-        // appears when stacking glass inside the glass toolbar) and raised into
-        // the toolbar row. Leading = Theme.s4, matching the content indent.
-        // In fullscreen the titlebar is a separate auto-hiding window (the
-        // raised pill would be clipped), so it gets its own row instead.
-        .overlay(alignment: .topLeading) {
-            if !isFullscreen { titlePill.offset(y: -43) }
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if isFullscreen {
-                HStack {
-                    titlePill
-                    Spacer()
-                }
-                .padding(.top, Theme.s2)
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in
-            isFullscreen = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
-            isFullscreen = false
-        }
-        .onAppear {
-            isFullscreen = NSApp.windows.contains { $0.styleMask.contains(.fullScreen) }
-        }
         .toolbar {
+            // Section-name pill as a NATIVE toolbar item: the system gives it
+            // the same glass capsule and metrics as the right-side controls,
+            // lays it out after the traffic lights / sidebar toggle when the
+            // sidebar collapses, and keeps it in place in fullscreen.
+            ToolbarItem(placement: .navigation) {
+                Menu {
+                    ForEach(AppSection.allCases) { s in
+                        Button { model.section = s } label: { Label(s.title, systemImage: s.icon) }
+                    }
+                } label: {
+                    Text(model.section.title).fontWeight(.semibold)
+                }
+                .menuIndicator(.hidden)
+            }
             // Right group: search (leftmost) · ingest · refresh.
             ToolbarItem(placement: .primaryAction) {
                 Button { openSearch() } label: { Image(systemName: "magnifyingglass") }
@@ -280,13 +264,37 @@ struct RootView: View {
         }
     }
 
-    /// Glass section-name pill, aligned to the content gutter (Theme.s4).
-    private var titlePill: some View {
-        Text(model.section.title)
-            .font(.system(size: 14, weight: .semibold))
-            .padding(.horizontal, 15).padding(.vertical, 7)
-            .glassCapsule()
-            .padding(.leading, Theme.s4)
+}
+
+// MARK: - Titlebar separator removal
+
+/// The hairline under the titlebar over the sidebar comes from the
+/// NSSplitViewItem's own titlebarSeparatorStyle (the window-level property
+/// doesn't cover it) — walk the controller tree and switch every one off.
+private struct TitlebarSeparatorRemover: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        DispatchQueue.main.async { Self.apply(v.window) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { Self.apply(v.window) }
+        return v
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { Self.apply(nsView.window) }
+    }
+
+    private static func apply(_ window: NSWindow?) {
+        guard let window else { return }
+        window.titlebarSeparatorStyle = .none
+        fix(window.contentViewController)
+    }
+
+    private static func fix(_ vc: NSViewController?) {
+        guard let vc else { return }
+        if let split = vc as? NSSplitViewController {
+            split.splitViewItems.forEach { $0.titlebarSeparatorStyle = .none }
+        }
+        vc.children.forEach { fix($0) }
     }
 }
 
