@@ -41,7 +41,7 @@ from api import (
     timeseries,
     volsurface,
 )
-from api import pricing_workstation, underlying
+from api import marketrisk, pricing_workstation, underlying
 from api.catalogue import build_catalogue, find_pricer
 from api.context import CONTEXT
 from api.serialization import jsonable
@@ -180,6 +180,25 @@ def ws_ladder(req: WsLadderRequest) -> dict:
         raise HTTPException(status_code=404 if "unknown product" in str(exc) else 400,
                             detail=str(exc))
     return jsonable(result)
+
+
+# ── Market Risk workstation (ERS-style: HypPL / VaR / backtesting) ──
+@app.get("/marketrisk")
+def marketrisk_overview(confidence: float = 0.99, window: int = 500,
+                        horizon: int = 1) -> dict:
+    try:
+        return jsonable(marketrisk.overview(CONTEXT, confidence, window, horizon))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/marketrisk/backtest")
+def marketrisk_backtest(confidence: float = 0.99, window: int = 500,
+                        lookback: int = 250) -> dict:
+    try:
+        return jsonable(marketrisk.backtest(CONTEXT, confidence, window, lookback))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @app.post("/pricing/scenarios")

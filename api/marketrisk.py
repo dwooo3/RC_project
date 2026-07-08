@@ -1,0 +1,200 @@
+"""Market Risk workstation (Calypso ERS-style) for the bridge.
+
+Two-step process, faithful to the doc: (1) shifts generation — joint daily
+factor changes from REAL stored history (IMOEX equity returns, КБД 5Y absolute
+rate changes, RVI vol-point changes); (2) risk metric computation — the demo
+book is FULL-REPRICED through its actual pricers on every historical scenario
+(PortfolioService.full_reprice_pnl), giving a Hypothetical P&L distribution
+from which VaR / ES / EVT metrics and the backtest are computed.
+
+FX fixings history is too short in the store (12 snapshots), so the FX factor
+is zero for now — flagged in `data_quality`.
+"""
+
+from __future__ import annotations
+
+import math
+
+import numpy as np
+
+# HypPL series cache: (snapshot_id, window) -> {"dates": [...], "pnl": np.ndarray, ...}
+_CACHE: dict = {}
+
+
+def _series(db, factor_id: str) -> list[tuple[str, float]]:
+    rows = db.get_time_series(factor_id) or []
+    return [(r["dt"], float(r["value"])) for r in rows if r.get("value") is not None]
+
+
+def factor_shifts(ctx, window: int = 500) -> dict:
+    """Step 1 — shifts generation: aligned joint daily factor changes."""
+    db = ctx.market_db
+    eq = dict(_series(db, "IMOEX:price"))
+    kbd = dict(_series(db, "KBD:5Y"))
+    rvi = dict(_series(db, "RVI:price"))
+    dates = sorted(set(eq) & set(kbd) & set(rvi))
+    if len(dates) < 60:
+        raise ValueError("not enough joint factor history (need >= 60 days)")
+
+    out_dates, eq_ret, dr, dvol = [], [], [], []
+    for prev, cur in zip(dates, dates[1:]):
+        if eq[prev] <= 0 or eq[cur] <= 0:
+            continue
+        out_dates.append(cur)
+        eq_ret.append(math.log(eq[cur] / eq[prev]))
+        dr.append(kbd[cur] - kbd[prev])                 # КБД already decimal
+        dvol.append((rvi[cur] - rvi[prev]) / 100.0)      # RVI points -> decimal vol
+    if window and len(out_dates) > window:
+        out_dates, eq_ret, dr, dvol = (out_dates[-window:], eq_ret[-window:],
+                                       dr[-window:], dvol[-window:])
+    return {
+        "dates": out_dates,
+        "eq": np.array(eq_ret), "dr": np.array(dr), "dvol": np.array(dvol),
+        "fx": np.zeros(len(out_dates)),
+        "factors": ["IMOEX (equity, log-return)", "КБД 5Y (rates, abs Δ)",
+                    "RVI (vol, Δ points)", "FX (no history — zero)"],
+    }
+
+
+def hyppl(ctx, window: int = 500) -> dict:
+    """Step 2 — Hypothetical P&L: full revaluation of the current book on every
+    historical joint scenario. Cached per (snapshot, window)."""
+    key = (getattr(ctx.snapshot, "snapshot_id", "?"), int(window))
+    if key in _CACHE:
+        return _CACHE[key]
+    shifts = factor_shifts(ctx, window)
+    ps = ctx.portfolio
+    pnl = np.empty(len(shifts["dates"]))
+    errors: set[str] = set()
+    for i in range(len(pnl)):
+        res = ps.full_reprice_pnl(dS=float(shifts["eq"][i]), dr=float(shifts["dr"][i]),
+                                  dvol=float(shifts["dvol"][i]), dfx=float(shifts["fx"][i]))
+        pnl[i] = res["pnl"]
+        errors.update(res["errors"])
+    out = {"dates": shifts["dates"], "pnl": pnl, "factors": shifts["factors"],
+           "reprice_errors": sorted(errors)}
+    _CACHE[key] = out
+    return out
+
+
+def _histogram(pnl: np.ndarray, bins: int = 31) -> list[dict]:
+    counts, edges = np.histogram(pnl, bins=bins)
+    return [{"x": float((edges[i] + edges[i + 1]) / 2), "count": int(counts[i])}
+            for i in range(len(counts))]
+
+
+def _var_es(losses: np.ndarray, confidence: float) -> tuple[float, float]:
+    var = float(np.quantile(losses, confidence))
+    tail = losses[losses >= var]
+    return var, (float(tail.mean()) if tail.size else var)
+
+
+def overview(ctx, confidence: float = 0.99, window: int = 500,
+             horizon: int = 1) -> dict:
+    """VaR analysis report: HypPL distribution + metrics by method + drill-down."""
+    from risk.var import evt_var, montecarlo_var, parametric_var
+
+    hp = hyppl(ctx, window)
+    pnl = hp["pnl"] * math.sqrt(max(horizon, 1))     # sqrt-time to the horizon
+    losses = -pnl
+    var_h, es_h = _var_es(losses, confidence)
+
+    methods = [{
+        "method": "historical", "label": "Historical (full reprice)",
+        "model_id": "var_full_reprice", "var": var_h, "es": es_h,
+    }]
+    try:
+        p = parametric_var(pnl, 1.0, confidence, 1, "normal")
+        methods.append({"method": "parametric", "label": "Parametric (normal)",
+                        "model_id": "var_parametric",
+                        "var": float(p["VaR"]), "es": float(p.get("ES", p["VaR"]))})
+    except Exception:
+        pass
+    try:
+        t = parametric_var(pnl, 1.0, confidence, 1, "t")
+        methods.append({"method": "parametric_t", "label": "Parametric (Student-t)",
+                        "model_id": "var_parametric",
+                        "var": float(t["VaR"]), "es": float(t.get("ES", t["VaR"]))})
+    except Exception:
+        pass
+    try:
+        mc = montecarlo_var(pnl, 1.0, confidence, 1)
+        methods.append({"method": "monte_carlo", "label": "Monte Carlo (fitted normal)",
+                        "model_id": "var_mc",
+                        "var": float(mc["VaR"]), "es": float(mc.get("ES", mc["VaR"]))})
+    except Exception:
+        pass
+    try:
+        ev = evt_var(pnl, 1.0, max(confidence, 0.99))
+        methods.append({"method": "evt", "label": "EVT (GPD tail)",
+                        "model_id": "evt_var",
+                        "var": float(ev["VaR"]), "es": float(ev.get("ES", ev["VaR"]))})
+    except Exception:
+        pass
+
+    order = np.argsort(pnl)
+    worst = [{"date": hp["dates"][int(i)], "pnl": float(pnl[int(i)])} for i in order[:5]]
+    best = [{"date": hp["dates"][int(i)], "pnl": float(pnl[int(i)])} for i in order[-5:][::-1]]
+
+    val = ctx.portfolio.value()
+    quality = []
+    if any("FX" in f and "zero" in f for f in hp["factors"]):
+        quality.append("FX-фактор без истории — валютный риск в HypPL не учтён")
+    if hp["reprice_errors"]:
+        quality.append(f"{len(hp['reprice_errors'])} позиций не переоценились")
+
+    return {
+        "confidence": confidence, "window": window, "horizon": horizon,
+        "n_scenarios": len(pnl),
+        "portfolio_value": float(val.total_market_value),
+        "positions": len(ctx.portfolio.positions),
+        "var": var_h, "es": es_h,
+        "methods": methods,
+        "histogram": _histogram(pnl),
+        "var_line": -var_h,
+        "hyppl": [{"date": d, "pnl": float(p)} for d, p in zip(hp["dates"], pnl.tolist())],
+        "worst": worst, "best": best,
+        "factors": hp["factors"],
+        "data_quality": quality,
+        "pnl_mean": float(pnl.mean()), "pnl_std": float(pnl.std()),
+    }
+
+
+def backtest(ctx, confidence: float = 0.99, window: int = 500,
+             lookback: int = 250) -> dict:
+    """Backtesting analysis: rolling historical VaR vs next-day HypPL —
+    exceptions, Kupiec POF, Christoffersen independence, Basel traffic light."""
+    from risk.var import christoffersen_test, kupiec_test
+
+    hp = hyppl(ctx, window)
+    pnl = hp["pnl"]
+    if len(pnl) <= lookback + 20:
+        lookback = max(60, len(pnl) // 2)
+
+    rows, exceptions = [], []
+    for t in range(lookback, len(pnl)):
+        var_t = float(np.quantile(-pnl[t - lookback:t], confidence))
+        breach = bool(pnl[t] < -var_t)
+        exceptions.append(breach)
+        rows.append({"date": hp["dates"][t], "pnl": float(pnl[t]),
+                     "var": -var_t, "breach": breach})
+
+    n_obs, n_exc = len(exceptions), int(sum(exceptions))
+    expected = n_obs * (1 - confidence)
+    kupiec = kupiec_test(n_obs, n_exc, confidence)
+    christ = christoffersen_test(exceptions) if n_exc > 0 else {}
+
+    # Basel traffic light, generalized: the 99%/250d thresholds (5/10 breaches)
+    # are exactly 2x/4x the expected count — apply that ratio at any confidence.
+    ratio = (n_exc / expected) if expected > 0 else 0.0
+    zone = "green" if ratio < 2.0 else ("amber" if ratio < 4.0 else "red")
+
+    return {
+        "confidence": confidence, "lookback": lookback,
+        "n_obs": n_obs, "n_exceptions": n_exc,
+        "expected_exceptions": expected,
+        "exception_rate": (n_exc / n_obs) if n_obs else 0.0,
+        "kupiec": kupiec, "christoffersen": christ,
+        "traffic_light": zone,
+        "rows": rows,
+    }

@@ -4,7 +4,35 @@ import Charts
 struct RiskScreen: View {
     @Bindable var model: AppModel
 
+    enum Mode: String, CaseIterable, Identifiable {
+        case marketRisk = "Market Risk"
+        case parametric = "Parametric"
+        var id: String { rawValue }
+    }
+
+    @State private var mode: Mode = .marketRisk
+
     var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                SegmentedBar(items: Mode.allCases.map { ($0, $0.rawValue) },
+                             selection: $mode)
+                    .fixedSize()
+                Spacer()
+            }
+            .padding(.horizontal, Theme.s5)
+            .padding(.vertical, Theme.s2)
+            Divider()
+            switch mode {
+            case .marketRisk:
+                MarketRiskPane()
+            case .parametric:
+                parametricBody
+            }
+        }
+    }
+
+    private var parametricBody: some View {
         ScreenScaffold {
             PageHeader("Risk", subtitle: AppSection.risk.subtitle)
             LoadableView(state: model.risk,
