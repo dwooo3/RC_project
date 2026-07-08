@@ -21,6 +21,16 @@ final class WorkstationViewModel {
     var isSearching = false
     var autofilledKeys: [String] = []
 
+    // desk risk
+    var ladderKey: String?
+    var ladderLo: Double = 0
+    var ladderHi: Double = 0
+    var ladderSteps: Int = 15
+    var ladder: WsLadder?
+    var scenarios: WsScenarios?
+    var isRunningLadder = false
+    var isRunningScenarios = false
+
     var isLoading = false
     var isPricing = false
     var serverDown = false
@@ -64,6 +74,9 @@ final class WorkstationViewModel {
         productID = id
         engineID = selectedProduct?.engines.first?.id
         result = nil
+        ladder = nil
+        scenarios = nil
+        ladderKey = nil
         errorMessage = nil
         clearUnderlying()
         resetForSelection()
@@ -168,21 +181,75 @@ final class WorkstationViewModel {
 
     // MARK: pricing
 
+    private func bridgeParams() -> [String: BridgeValue] {
+        var params: [String: BridgeValue] = [:]
+        for (key, value) in numericValues { params[key] = BridgeValue(kind: .number(value)) }
+        for (key, value) in choiceValues { params[key] = BridgeValue(kind: .string(value)) }
+        return params
+    }
+
     func price() async {
         guard let product = selectedProduct, let engine = selectedEngine else { return }
         isPricing = true
         errorMessage = nil
-        var params: [String: BridgeValue] = [:]
-        for (key, value) in numericValues { params[key] = BridgeValue(kind: .number(value)) }
-        for (key, value) in choiceValues { params[key] = BridgeValue(kind: .string(value)) }
         do {
             let priced = try await client.wsPrice(product: product.id, engine: engine.id,
-                                                  params: params)
+                                                  params: bridgeParams())
             result = priced
             if let first = priced.errors.first { errorMessage = first }
         } catch {
             errorMessage = error.localizedDescription
         }
         isPricing = false
+    }
+
+    // MARK: desk risk
+
+    /// Numeric params eligible for a ladder bump.
+    var ladderableParams: [ParamSpec] {
+        (selectedEngine?.params ?? []).filter {
+            ($0.dtype == "float" || $0.dtype == "int") && $0.key != "shift_bps"
+        }
+    }
+
+    func selectLadderKey(_ key: String) {
+        ladderKey = key
+        ladder = nil
+        let current = numericValues[key] ?? 0
+        if current == 0 {
+            ladderLo = -1; ladderHi = 1
+        } else {
+            ladderLo = current * 0.7
+            ladderHi = current * 1.3
+        }
+    }
+
+    func runLadder() async {
+        guard let product = selectedProduct, let engine = selectedEngine,
+              let key = ladderKey else { return }
+        isRunningLadder = true
+        errorMessage = nil
+        do {
+            ladder = try await client.wsLadder(product: product.id, engine: engine.id,
+                                               params: bridgeParams(), bumpKey: key,
+                                               lo: ladderLo, hi: ladderHi,
+                                               steps: ladderSteps)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isRunningLadder = false
+    }
+
+    func runScenarios() async {
+        guard let product = selectedProduct, let engine = selectedEngine else { return }
+        isRunningScenarios = true
+        errorMessage = nil
+        do {
+            scenarios = try await client.wsScenarios(product: product.id, engine: engine.id,
+                                                     params: bridgeParams())
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isRunningScenarios = false
     }
 }

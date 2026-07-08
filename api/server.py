@@ -69,6 +69,16 @@ class WsPriceRequest(BaseModel):
     params: dict[str, float | int | str | None] = {}
 
 
+class WsLadderRequest(BaseModel):
+    product: str
+    engine: str | None = None
+    params: dict[str, float | int | str | None] = {}
+    bump_key: str
+    lo: float
+    hi: float
+    steps: int = 11
+
+
 class InstrumentPriceRequest(BaseModel):
     instrument: str
     params: dict[str, float | int | str | None] = {}
@@ -157,6 +167,31 @@ def ws_underlying(category: str, secid: str) -> dict:
         return jsonable(underlying.facts(CONTEXT, category, secid))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/pricing/ladder")
+def ws_ladder(req: WsLadderRequest) -> dict:
+    try:
+        _svc.market_data = CONTEXT.market
+        result = pricing_workstation.ladder_ws(
+            _svc, CONTEXT.snapshot, req.product, req.engine, req.params,
+            req.bump_key, req.lo, req.hi, req.steps)
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if "unknown product" in str(exc) else 400,
+                            detail=str(exc))
+    return jsonable(result)
+
+
+@app.post("/pricing/scenarios")
+def ws_scenarios(req: WsPriceRequest) -> dict:
+    try:
+        _svc.market_data = CONTEXT.market
+        result = pricing_workstation.scenarios_ws(
+            _svc, CONTEXT.snapshot, req.product, req.engine, req.params)
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if "unknown product" in str(exc) else 400,
+                            detail=str(exc))
+    return jsonable(result)
 
 
 # ── per-screen data endpoints ────────────────────────────

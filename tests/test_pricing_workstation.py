@@ -15,8 +15,10 @@ from api.pricing_workstation import (
     PRODUCTS,
     build_ws_catalogue,
     find_product,
+    ladder_ws,
     normalize_ws_result,
     price_ws,
+    scenarios_ws,
 )
 from services.pricing_service import PricingService
 
@@ -80,6 +82,45 @@ def test_catalogue_serializes():
 def test_unknown_product_raises(svc):
     with pytest.raises(ValueError):
         price_ws(svc, None, "no_such_product", None, {})
+
+
+def test_ladder_full_revaluation(svc):
+    product = find_product("european_option")
+    params = _default_params(product, product.engines[0])
+    params["curve_id"] = FLAT_CURVE
+    out = ladder_ws(svc, None, "european_option", "black_scholes", params,
+                    "S", 70.0, 130.0, steps=7)
+    assert len(out["rows"]) == 7
+    values = [r["value"] for r in out["rows"]]
+    assert all(v is not None for v in values)
+    assert values == sorted(values), "call value must rise with spot"
+    mid = out["rows"][3]                       # S=100 == base params
+    assert abs(mid["pnl"]) < 1e-9
+
+
+def test_scenarios_full_revaluation(svc):
+    product = find_product("european_option")
+    params = _default_params(product, product.engines[0])
+    out = scenarios_ws(svc, None, "european_option", "black_scholes", params)
+    assert len(out["rows"]) >= 10
+    by_name = {r["scenario"]: r for r in out["rows"]}
+    lehman = next(v for k, v in by_name.items() if "Lehman" in k)
+    assert lehman["error"] is None
+    assert lehman["pnl"] is not None and lehman["pnl"] < 0, (
+        "long ATM call must lose in a -35% spot crash")
+    squeeze = next(v for k, v in by_name.items() if "Meme" in k)
+    assert squeeze["pnl"] > 0
+
+
+def test_scenarios_rate_product_uses_curve_shift(svc):
+    product = find_product("irs")
+    params = _default_params(product, product.engines[0])
+    params["curve_id"] = FLAT_CURVE
+    out = scenarios_ws(svc, None, "irs", "irs", params)
+    hike = next(r for r in out["rows"] if "Rate hike" in r["scenario"])
+    assert hike["error"] is None
+    assert hike["pnl"] is not None and hike["pnl"] != 0, (
+        "IRS must react to a +400bp rate scenario via the curve shift")
 
 
 def test_normalizer_extracts_greeks_and_series():

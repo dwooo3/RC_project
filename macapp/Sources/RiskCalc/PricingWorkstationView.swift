@@ -112,6 +112,12 @@ struct PricingWorkstationView: View {
                         WorkstationResultPanel(vm: vm)
                             .frame(width: 360)
                     }
+                    if vm.result != nil {
+                        HStack(alignment: .top, spacing: Theme.s4) {
+                            LadderCard(vm: vm)
+                            ScenarioCard(vm: vm)
+                        }
+                    }
                 }
                 .padding(Theme.s5)
                 .frame(maxWidth: 1240, alignment: .leading)
@@ -304,6 +310,141 @@ private struct UnderlyingPickerCard: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Desk risk: ladder
+
+/// Full-revaluation sensitivity ladder over any numeric input of the pricer.
+private struct LadderCard: View {
+    @Bindable var vm: WorkstationViewModel
+
+    var body: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s3) {
+                BlockTitle("Sensitivity ladder", icon: "chart.line.uptrend.xyaxis")
+                HStack(spacing: Theme.s2) {
+                    Picker("", selection: Binding(
+                        get: { vm.ladderKey ?? "" },
+                        set: { vm.selectLadderKey($0) }
+                    )) {
+                        Text("— параметр —").tag("")
+                        ForEach(vm.ladderableParams) { spec in
+                            Text(spec.label).tag(spec.key)
+                        }
+                    }
+                    .labelsHidden().pickerStyle(.menu).fixedSize()
+
+                    TextField("от", value: $vm.ladderLo, format: .number)
+                        .textFieldStyle(.roundedBorder).frame(width: 80).monospacedDigit()
+                    Text("–").foregroundStyle(.tertiary)
+                    TextField("до", value: $vm.ladderHi, format: .number)
+                        .textFieldStyle(.roundedBorder).frame(width: 80).monospacedDigit()
+
+                    Button {
+                        Task { await vm.runLadder() }
+                    } label: {
+                        if vm.isRunningLadder {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("Run")
+                        }
+                    }
+                    .disabled(vm.ladderKey == nil || vm.isRunningLadder)
+                    Spacer()
+                }
+                if let ladder = vm.ladder {
+                    let pts = ladder.rows.filter { $0.pnl != nil }
+                    Chart(pts, id: \.x) { row in
+                        LineMark(x: .value(ladder.bumpKey, row.x),
+                                 y: .value("P&L", row.pnl ?? 0))
+                            .foregroundStyle(Theme.accent)
+                            .interpolationMethod(.monotone)
+                        AreaMark(x: .value(ladder.bumpKey, row.x),
+                                 y: .value("P&L", row.pnl ?? 0))
+                            .foregroundStyle(
+                                LinearGradient(colors: [Theme.accent.opacity(0.18), .clear],
+                                               startPoint: .top, endPoint: .bottom))
+                            .interpolationMethod(.monotone)
+                        RuleMark(y: .value("zero", 0))
+                            .foregroundStyle(.tertiary)
+                            .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [3]))
+                    }
+                    .frame(height: 180)
+                    Text("Полная переоценка тем же прайсером в \(ladder.rows.count) точках; P&L против базового значения \(ladder.baseValue.map { Fmt.number($0, digits: 2) } ?? "—").")
+                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                } else {
+                    Text("Выберите параметр (спот, вола, ставка, корреляция…) и постройте P&L-профиль полной переоценкой.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 120)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Desk risk: scenario simulation
+
+/// The named historical macro-scenario library revalued through the pricer.
+private struct ScenarioCard: View {
+    @Bindable var vm: WorkstationViewModel
+
+    var body: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s3) {
+                HStack {
+                    BlockTitle("Scenario simulation", icon: "waveform.path.ecg")
+                    Spacer()
+                    Button {
+                        Task { await vm.runScenarios() }
+                    } label: {
+                        if vm.isRunningScenarios {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("Run")
+                        }
+                    }
+                    .disabled(vm.isRunningScenarios)
+                }
+                if let scenarios = vm.scenarios {
+                    let rows = scenarios.rows.sorted { ($0.pnl ?? 0) < ($1.pnl ?? 0) }
+                    VStack(spacing: 3) {
+                        ForEach(rows) { row in
+                            HStack(spacing: Theme.s2) {
+                                Text(row.scenario)
+                                    .font(.system(size: 11)).lineLimit(1)
+                                Spacer()
+                                Text(shockLine(row))
+                                    .font(.system(size: 9)).foregroundStyle(.tertiary)
+                                Text(row.pnl.map { Fmt.number($0, digits: 2) } ?? "—")
+                                    .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                                    .foregroundStyle(Theme.trendColor(row.pnl ?? 0))
+                                    .frame(width: 86, alignment: .trailing)
+                                Text(row.pnlPct.map { Fmt.signedPercent($0 * 100) } ?? "")
+                                    .font(.system(size: 10)).monospacedDigit()
+                                    .foregroundStyle(Theme.trendColor(row.pnl ?? 0))
+                                    .frame(width: 56, alignment: .trailing)
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                    Text("Исторические макро-шоки (спот/вола относительные, ставка абсолютная) → полная переоценка. База: \(scenarios.baseValue.map { Fmt.number($0, digits: 2) } ?? "—").")
+                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                } else {
+                    Text("14 именованных исторических сценариев — от Black Monday до COVID — через полную переоценку инструмента.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 120)
+                }
+            }
+        }
+    }
+
+    private func shockLine(_ row: WsScenarioRow) -> String {
+        var parts: [String] = []
+        if row.spotShock != 0 { parts.append("S \(Fmt.signedPercent(row.spotShock * 100))") }
+        if row.volShock != 0 { parts.append("σ \(Fmt.signedPercent(row.volShock * 100))") }
+        if row.rateShock != 0 { parts.append("r \(String(format: "%+.0f", row.rateShock * 10000))bp") }
+        return parts.joined(separator: "  ")
     }
 }
 

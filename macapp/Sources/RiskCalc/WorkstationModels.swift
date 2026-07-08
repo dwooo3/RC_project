@@ -103,6 +103,61 @@ struct WsResult: Decodable, Sendable {
     }
 }
 
+// MARK: - Desk risk: ladder + scenarios
+
+struct WsLadderRow: Decodable, Sendable, Hashable {
+    let x: Double
+    let value: Double?
+    let pnl: Double?
+    let error: String?
+}
+
+struct WsLadder: Decodable, Sendable {
+    let product: String
+    let engine: String
+    let bumpKey: String
+    let baseValue: Double?
+    let rows: [WsLadderRow]
+
+    enum CodingKeys: String, CodingKey {
+        case product, engine, rows
+        case bumpKey = "bump_key"
+        case baseValue = "base_value"
+    }
+}
+
+struct WsScenarioRow: Decodable, Sendable, Identifiable, Hashable {
+    let scenario: String
+    let spotShock: Double
+    let volShock: Double
+    let rateShock: Double
+    let value: Double?
+    let pnl: Double?
+    let pnlPct: Double?
+    let error: String?
+    var id: String { scenario }
+
+    enum CodingKeys: String, CodingKey {
+        case scenario, value, pnl, error
+        case spotShock = "spot_shock"
+        case volShock = "vol_shock"
+        case rateShock = "rate_shock"
+        case pnlPct = "pnl_pct"
+    }
+}
+
+struct WsScenarios: Decodable, Sendable {
+    let product: String
+    let engine: String
+    let baseValue: Double?
+    let rows: [WsScenarioRow]
+
+    enum CodingKeys: String, CodingKey {
+        case product, engine, rows
+        case baseValue = "base_value"
+    }
+}
+
 // MARK: - Underlying facts (GET /pricing/underlying/{category}/{secid})
 
 struct UnderlyingFacts: Decodable, Sendable {
@@ -121,6 +176,16 @@ private struct WsPriceBody: Encodable {
     let params: [String: BridgeValue]
 }
 
+private struct WsLadderBody: Encodable {
+    let product: String
+    let engine: String
+    let params: [String: BridgeValue]
+    let bump_key: String
+    let lo: Double
+    let hi: Double
+    let steps: Int
+}
+
 extension BridgeClient {
     func wsCatalogue() async throws -> WsCatalogue { try await get("pricing/catalogue") }
 
@@ -129,6 +194,21 @@ extension BridgeClient {
         let body = try JSONEncoder().encode(
             WsPriceBody(product: product, engine: engine, params: params))
         return try await post("pricing/price", body: body)
+    }
+
+    func wsLadder(product: String, engine: String, params: [String: BridgeValue],
+                  bumpKey: String, lo: Double, hi: Double, steps: Int) async throws -> WsLadder {
+        let body = try JSONEncoder().encode(WsLadderBody(
+            product: product, engine: engine, params: params,
+            bump_key: bumpKey, lo: lo, hi: hi, steps: steps))
+        return try await post("pricing/ladder", body: body)
+    }
+
+    func wsScenarios(product: String, engine: String,
+                     params: [String: BridgeValue]) async throws -> WsScenarios {
+        let body = try JSONEncoder().encode(
+            WsPriceBody(product: product, engine: engine, params: params))
+        return try await post("pricing/scenarios", body: body)
     }
 
     func underlyingFacts(category: String, secid: String) async throws -> UnderlyingFacts {

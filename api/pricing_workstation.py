@@ -1328,3 +1328,88 @@ def price_ws(svc, snapshot, product_id: str, engine_id: str | None,
     normalized["product"] = product_id
     normalized["engine"] = values["engine"]
     return normalized
+
+
+# ── desk risk: ladders + scenario simulation (full revaluation) ──────
+# The same pricers, the same market data — Calypso's revaluation principle.
+_SPOT_KEYS = ("S", "S0", "S1", "S2", "spot", "V0")
+_VOL_KEYS = ("sigma", "vol", "sigma1", "sigma2", "sigma_V", "sigma_chi", "atm",
+             "sig_atm", "sig_put", "sig_call")
+_RATE_KEYS = ("r", "r_d", "forward_rate", "repo_rate", "discount_rate")
+
+
+def ladder_ws(svc, snapshot, product_id: str, engine_id: str | None, params: dict,
+              bump_key: str, lo: float, hi: float, steps: int = 11) -> dict:
+    """Full-revaluation ladder: reprice the instrument over a grid of one input.
+    Returns value + P&L vs the base run per grid point."""
+    steps = max(2, min(int(steps), 81))
+    base = price_ws(svc, snapshot, product_id, engine_id, params)
+    base_value = base.get("value")
+    rows = []
+    for i in range(steps):
+        x = lo + (hi - lo) * i / (steps - 1)
+        shocked = dict(params)
+        shocked[bump_key] = x
+        r = price_ws(svc, snapshot, product_id, engine_id, shocked)
+        value = r.get("value")
+        rows.append({
+            "x": x,
+            "value": value,
+            "pnl": (value - base_value) if (value is not None and base_value is not None)
+                   else None,
+            "error": (r.get("errors") or [None])[0],
+        })
+    return {"product": base["product"], "engine": base["engine"],
+            "bump_key": bump_key, "base_value": base_value, "rows": rows}
+
+
+def _apply_scenario(params: dict, shocks: dict, has_curve: bool) -> dict:
+    """Map a named macro scenario (relative spot/vol, absolute rate) onto
+    whatever inputs this product actually has."""
+    out = dict(params)
+    spot_mult = 1.0 + shocks.get("spot", 0.0)
+    vol_mult = 1.0 + shocks.get("vol", 0.0)
+    rate_add = shocks.get("rate", 0.0)
+    for key in _SPOT_KEYS:
+        if isinstance(out.get(key), (int, float)):
+            out[key] = float(out[key]) * spot_mult
+    for key in _VOL_KEYS:
+        if isinstance(out.get(key), (int, float)):
+            out[key] = max(float(out[key]) * vol_mult, 1e-4)
+    for key in _RATE_KEYS:
+        if isinstance(out.get(key), (int, float)):
+            out[key] = float(out[key]) + rate_add
+    if has_curve:
+        out["shift_bps"] = float(out.get("shift_bps") or 0.0) + rate_add * 10000
+    return out
+
+
+def scenarios_ws(svc, snapshot, product_id: str, engine_id: str | None,
+                 params: dict) -> dict:
+    """Run the historical scenario library through the instrument's own pricer
+    (full revaluation, not a greek approximation)."""
+    from risk.stress import HISTORICAL_SCENARIOS
+
+    product = find_product(product_id)
+    if product is None:
+        raise ValueError(f"unknown product '{product_id}'")
+    base = price_ws(svc, snapshot, product_id, engine_id, params)
+    base_value = base.get("value")
+    rows = []
+    for name, shocks in HISTORICAL_SCENARIOS.items():
+        shocked = _apply_scenario(params, shocks, product.needs_curve)
+        r = price_ws(svc, snapshot, product_id, engine_id, shocked)
+        value = r.get("value")
+        pnl = (value - base_value) if (value is not None and base_value is not None) else None
+        rows.append({
+            "scenario": name,
+            "spot_shock": shocks.get("spot", 0.0),
+            "vol_shock": shocks.get("vol", 0.0),
+            "rate_shock": shocks.get("rate", 0.0),
+            "value": value,
+            "pnl": pnl,
+            "pnl_pct": (pnl / abs(base_value)) if (pnl is not None and base_value) else None,
+            "error": (r.get("errors") or [None])[0],
+        })
+    return {"product": base["product"], "engine": base["engine"],
+            "base_value": base_value, "rows": rows}
