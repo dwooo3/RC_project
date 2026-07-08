@@ -1,16 +1,15 @@
 import SwiftUI
 
-/// Pricing route: an instrument-category switch over the per-category panes.
-/// Options today; Bond (all rate instruments) now; structured / baskets / swaps
-/// slot in here as further cases.
+/// Pricing route: the universal derivatives workstation (every pricer in the
+/// model library, grouped by asset class) plus the dedicated fixed-income pane.
 struct PricingScreen: View {
     enum Category: String, CaseIterable, Identifiable {
-        case options = "Options"
+        case derivatives = "Derivatives"
         case bond = "Bond"
         var id: String { rawValue }
     }
 
-    @State private var category: Category = .options
+    @State private var category: Category = .derivatives
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,7 +23,7 @@ struct PricingScreen: View {
             .padding(.vertical, Theme.s2)
             Divider()
             switch category {
-            case .options: PricingView()
+            case .derivatives: PricingWorkstationView()
             case .bond: BondPane()
             }
         }

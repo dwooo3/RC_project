@@ -273,7 +273,7 @@ actor BridgeClient {
         return try await post("instruments/bond/price_batch", body: body)
     }
 
-    private func post<T: Decodable>(_ path: String, body: Data) async throws -> T {
+    func post<T: Decodable>(_ path: String, body: Data) async throws -> T {
         var request = URLRequest(url: base.appending(path: path))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

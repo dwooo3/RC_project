@@ -1228,18 +1228,20 @@ def _prettify(key: str) -> str:
     return key.replace("_", " ").strip().capitalize()
 
 
-def normalize_ws_result(result: dict) -> dict:
+def normalize_ws_result(result: dict, input_keys: set[str] | None = None) -> dict:
     """Flatten a governed pricing result into one client-renderable shape:
-    headline value + greeks + scalar measures + chartable series."""
+    headline value + greeks + scalar measures + chartable series. Raw keys that
+    merely echo request inputs (model params) are dropped from the measures."""
     raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
     if not raw and "curve" in result:               # bare engine dicts (futures strips)
         raw = {"curve": result["curve"]}
 
     greeks, measures, series = [], [], []
     value = result.get("value")
+    skip = _SKIP_KEYS | (input_keys or set())
 
     for key, val in raw.items():
-        if key in _SKIP_KEYS:
+        if key in skip:
             continue
         if isinstance(val, bool):
             measures.append({"key": key, "label": _prettify(key),
@@ -1321,7 +1323,8 @@ def price_ws(svc, snapshot, product_id: str, engine_id: str | None,
     values = dict(params)
     values["engine"] = engine_id if engine_id in engine_ids else engine_ids[0]
     result = product.invoke(svc, values, snapshot)
-    normalized = normalize_ws_result(result if isinstance(result, dict) else {})
+    normalized = normalize_ws_result(result if isinstance(result, dict) else {},
+                                     input_keys=set(params.keys()))
     normalized["product"] = product_id
     normalized["engine"] = values["engine"]
     return normalized
