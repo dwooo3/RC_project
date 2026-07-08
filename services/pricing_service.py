@@ -1795,6 +1795,60 @@ class PricingService:
                     "vol_surface_id": vol_surface_id},
             snapshot=snapshot, user_action="Price FX option with smile")
 
+    def price_variance_swap(self, S, T, r, sigma, q=0.0, skew=0.0,
+                            vega_notional=100_000, n_strikes=25, width=0.5,
+                            snapshot=None) -> dict:
+        """Variance swap fair strike via Demeterfi log-contract replication.
+
+        The OTM option strip is synthesized from a quadratic smile
+        σ(K) = σ·(1 + skew·ln(K/F)) so a flat smile (skew=0) recovers σ²
+        exactly; skew≠0 shows the replication picking up the smile premium.
+        """
+        import numpy as np
+        from instruments.variance_swaps import variance_swap_fair_strike
+        from models.black_scholes import bsm
+
+        def engine():
+            F = S * np.exp((r - q) * T)
+            Ks = np.linspace(F * (1 - width), F * (1 + width), int(n_strikes) * 2 + 1)
+            puts, calls = [], []
+            for K in Ks:
+                sig_k = max(sigma * (1.0 + skew * np.log(K / F)), 1e-4)
+                if K < F:
+                    puts.append((float(K), float(bsm(S, K, T, r, sig_k, q, "put").price)))
+                elif K > F:
+                    calls.append((float(K), float(bsm(S, K, T, r, sig_k, q, "call").price)))
+            raw = variance_swap_fair_strike(r, q, T, puts, calls, S, F)
+            raw["price"] = raw["vol_strike"] * 100          # headline in vol points
+            raw["vega_notional"] = vega_notional
+            raw["strip_strikes"] = len(puts) + len(calls)
+            return raw
+
+        return self._priced(
+            model_id="variance_swap", calculation_type="variance_swap_pricing",
+            engine=engine,
+            inputs={"S": S, "T": T, "r": r, "sigma": sigma, "q": q, "skew": skew,
+                    "n_strikes": n_strikes, "width": width},
+            snapshot=snapshot, user_action="Price variance swap")
+
+    def price_rainbow_option(self, assets, T, r, sigmas, corr, style="best_of_cash",
+                             cash=0.0, q_list=None, snapshot=None) -> dict:
+        """Rainbow (best-of / worst-of) option: Stulz exact for 2 assets, MC for n>2."""
+        import numpy as np
+        from instruments.multi_asset import best_of_assets_cash, worst_of_assets
+        corr_m = np.array(corr, dtype=float)
+        if style == "worst_of":
+            engine = lambda: worst_of_assets(list(assets), T, r, list(sigmas), corr_m, q_list)
+        else:
+            engine = lambda: best_of_assets_cash(list(assets), cash, T, r, list(sigmas),
+                                                 corr_m, q_list)
+        return self._priced(
+            model_id="multi_asset", calculation_type="rainbow_option_pricing",
+            engine=engine,
+            inputs={"assets": assets, "T": T, "r": r, "sigmas": sigmas,
+                    "style": style, "cash": cash},
+            snapshot=snapshot, user_action="Price rainbow option")
+
     def shock_curve(self, curve, shock: ScenarioShock):
         """Apply supported scenario curve shocks to a yield curve."""
         from curves.yield_curve import YieldCurve

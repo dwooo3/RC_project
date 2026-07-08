@@ -41,6 +41,7 @@ from api import (
     timeseries,
     volsurface,
 )
+from api import pricing_workstation, underlying
 from api.catalogue import build_catalogue, find_pricer
 from api.context import CONTEXT
 from api.serialization import jsonable
@@ -59,6 +60,12 @@ _svc = PricingService(allow_analytics_lab=True)
 
 class PriceRequest(BaseModel):
     pricer: str
+    params: dict[str, float | int | str | None] = {}
+
+
+class WsPriceRequest(BaseModel):
+    product: str
+    engine: str | None = None
     params: dict[str, float | int | str | None] = {}
 
 
@@ -116,6 +123,40 @@ def _vol_surface_ids() -> list[str]:
 @app.get("/catalogue")
 def catalogue() -> dict:
     return {"pricers": build_catalogue(_vol_surface_ids())}
+
+
+# ── universal pricing workstation ────────────────────────
+@app.get("/pricing/catalogue")
+def ws_catalogue() -> dict:
+    try:
+        curve_ids = list(CONTEXT.snapshot.curves.keys())
+    except Exception:
+        curve_ids = []
+    return jsonable(pricing_workstation.build_ws_catalogue(curve_ids, _vol_surface_ids()))
+
+
+@app.post("/pricing/price")
+def ws_price(req: WsPriceRequest) -> dict:
+    try:
+        _svc.market_data = CONTEXT.market
+        result = pricing_workstation.price_ws(
+            _svc, CONTEXT.snapshot, req.product, req.engine, req.params)
+    except KeyError as exc:
+        raise HTTPException(status_code=422, detail=f"missing parameter {exc}")
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if "unknown product" in str(exc) else 400,
+                            detail=str(exc))
+    except TypeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return jsonable(result)
+
+
+@app.get("/pricing/underlying/{category}/{secid}")
+def ws_underlying(category: str, secid: str) -> dict:
+    try:
+        return jsonable(underlying.facts(CONTEXT, category, secid))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 # ── per-screen data endpoints ────────────────────────────
