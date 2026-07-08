@@ -116,6 +116,17 @@ class BackfillJob:
             step("cbr_ruonia",
                  lambda: _cbr("RUONIA", self.cbr_client.get_ruonia))
 
+            # Daily official FX fixings (USD/EUR/CNY) — the fx risk factor for
+            # HypPL/VaR; the only free RUB FX history since exchange trading
+            # of USD/EUR stopped in 2024.
+            def _fx(pair, code):
+                rows = self.cbr_client.get_fx_history(code, from_date, till_date)
+                self.db.save_time_series(f"{pair.replace('/', '')}:fix", "fx", rows)
+                return len(rows)
+
+            for pair, code in getattr(self.cbr_client, "FX_CODES", {}).items():
+                step(f"cbr_fx:{pair}", lambda pair=pair, code=code: _fx(pair, code))
+
         summary["equities"] = equities
         summary["indices"] = indices
         return summary

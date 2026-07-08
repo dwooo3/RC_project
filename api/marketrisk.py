@@ -32,11 +32,13 @@ def factor_shifts(ctx, window: int = 500) -> dict:
     eq = dict(_series(db, "IMOEX:price"))
     kbd = dict(_series(db, "KBD:5Y"))
     rvi = dict(_series(db, "RVI:price"))
+    usd = dict(_series(db, "USDRUB:fix"))
     dates = sorted(set(eq) & set(kbd) & set(rvi))
     if len(dates) < 60:
         raise ValueError("not enough joint factor history (need >= 60 days)")
+    has_fx = len(usd) >= 60
 
-    out_dates, eq_ret, dr, dvol = [], [], [], []
+    out_dates, eq_ret, dr, dvol, fx_ret = [], [], [], [], []
     for prev, cur in zip(dates, dates[1:]):
         if eq[prev] <= 0 or eq[cur] <= 0:
             continue
@@ -44,15 +46,25 @@ def factor_shifts(ctx, window: int = 500) -> dict:
         eq_ret.append(math.log(eq[cur] / eq[prev]))
         dr.append(kbd[cur] - kbd[prev])                 # КБД already decimal
         dvol.append((rvi[cur] - rvi[prev]) / 100.0)      # RVI points -> decimal vol
+        # FX fixings can miss local holidays — carry the last known fix.
+        if has_fx and usd.get(prev, 0) > 0 and usd.get(cur, 0) > 0:
+            fx_ret.append(math.log(usd[cur] / usd[prev]))
+        else:
+            fx_ret.append(0.0)
     if window and len(out_dates) > window:
-        out_dates, eq_ret, dr, dvol = (out_dates[-window:], eq_ret[-window:],
-                                       dr[-window:], dvol[-window:])
+        out_dates, eq_ret, dr, dvol, fx_ret = (
+            out_dates[-window:], eq_ret[-window:], dr[-window:],
+            dvol[-window:], fx_ret[-window:])
+    factors = ["IMOEX (equity, log-return)", "КБД 5Y (rates, abs Δ)",
+               "RVI (vol, Δ points)",
+               "USD/RUB fix (fx, log-return)" if has_fx
+               else "FX (no history — zero)"]
     return {
         "dates": out_dates,
         "eq": np.array(eq_ret), "dr": np.array(dr), "dvol": np.array(dvol),
-        "fx": np.zeros(len(out_dates)),
-        "factors": ["IMOEX (equity, log-return)", "КБД 5Y (rates, abs Δ)",
-                    "RVI (vol, Δ points)", "FX (no history — zero)"],
+        "fx": np.array(fx_ret),
+        "factors": factors,
+        "has_fx": has_fx,
     }
 
 
@@ -138,7 +150,7 @@ def overview(ctx, confidence: float = 0.99, window: int = 500,
 
     val = ctx.portfolio.value()
     quality = []
-    if any("FX" in f and "zero" in f for f in hp["factors"]):
+    if any("no history" in f for f in hp["factors"]):
         quality.append("FX-фактор без истории — валютный риск в HypPL не учтён")
     if hp["reprice_errors"]:
         quality.append(f"{len(hp['reprice_errors'])} позиций не переоценились")

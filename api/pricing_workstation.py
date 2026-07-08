@@ -1379,7 +1379,10 @@ def _apply_scenario(params: dict, shocks: dict, has_curve: bool) -> dict:
     for key in _RATE_KEYS:
         if isinstance(out.get(key), (int, float)):
             out[key] = float(out[key]) + rate_add
-    if has_curve:
+    # Snapshot-curve pricing ignores the flat r field, so the rate shock must
+    # travel through the parallel shift. With the flat-r sentinel the shifted r
+    # already builds the shocked curve — adding shift_bps too would double it.
+    if has_curve and out.get("curve_id") not in (None, "", FLAT_CURVE):
         out["shift_bps"] = float(out.get("shift_bps") or 0.0) + rate_add * 10000
     return out
 

@@ -123,6 +123,22 @@ def test_scenarios_rate_product_uses_curve_shift(svc):
         "IRS must react to a +400bp rate scenario via the curve shift")
 
 
+def test_scenario_rate_shock_not_double_counted(svc):
+    """Flat-curve mode: the rate shock must hit the curve exactly once —
+    via the shifted r field, NOT r + shift_bps together (regression)."""
+    product = find_product("irs")
+    params = _default_params(product, product.engines[0])
+    params["curve_id"] = FLAT_CURVE
+    out = scenarios_ws(svc, None, "irs", "irs", params)
+    hike = next(r for r in out["rows"] if "Rate hike" in r["scenario"])
+
+    manual = dict(params)
+    manual["r"] = float(manual["r"]) + 0.040           # the 2022 scenario shock
+    expected = price_ws(svc, None, "irs", "irs", manual)["value"]
+    assert hike["value"] == pytest.approx(expected, rel=1e-9), (
+        "scenario value must equal a single manual r+400bp repricing")
+
+
 def test_normalizer_extracts_greeks_and_series():
     governed = {
         "value": 5.0, "model_id": "black_scholes", "model_status": "Approximation",
