@@ -76,3 +76,47 @@ final class ContractDecodeTests: XCTestCase {
         XCTAssertFalse(c.curves.isEmpty)
     }
 }
+
+// MARK: - Pricing workstation contracts
+
+extension ContractDecodeTests {
+    func testDecodeWsCatalogue() throws {
+        let cat = try JSONDecoder().decode(WsCatalogue.self, from: load("ws_catalogue"))
+        XCTAssertGreaterThanOrEqual(cat.products.count, 30)
+        XCTAssertEqual(cat.assetClasses.map(\.id).prefix(2), ["equity", "rates"])
+        let euro = cat.products.first { $0.id == "european_option" }
+        XCTAssertNotNil(euro)
+        XCTAssertGreaterThanOrEqual(euro?.engines.count ?? 0, 20)
+        XCTAssertEqual(euro?.underlying?.fill["S"], "spot")
+        // every engine carries params and governance
+        for p in cat.products {
+            XCTAssertFalse(p.engines.isEmpty, "\(p.id) engines empty")
+            for e in p.engines {
+                XCTAssertFalse(e.params.isEmpty, "\(p.id)/\(e.id) params empty")
+                XCTAssertFalse(e.governance.status.isEmpty)
+            }
+        }
+    }
+
+    func testDecodeWsPriceIRS() throws {
+        let r = try JSONDecoder().decode(WsResult.self, from: load("ws_price_irs"))
+        XCTAssertNotNil(r.value)
+        XCTAssertTrue(r.errors.isEmpty)
+        XCTAssertEqual(r.product, "irs")
+        XCTAssertTrue(r.measures.contains { $0.key == "fair_rate" })
+    }
+
+    func testDecodeWsPriceSeries() throws {
+        let r = try JSONDecoder().decode(WsResult.self, from: load("ws_price_curve"))
+        XCTAssertFalse(r.series.isEmpty)
+        XCTAssertGreaterThanOrEqual(r.series[0].points.count, 3)
+    }
+
+    func testDecodeUnderlyingFacts() throws {
+        let f = try JSONDecoder().decode(UnderlyingFacts.self, from: load("ws_underlying"))
+        XCTAssertEqual(f.secid, "SBER")
+        XCTAssertNotNil(f.facts["spot"] ?? nil)
+        // null facts (atm_iv) must decode, not throw
+        XCTAssertTrue(f.facts.keys.contains("atm_iv"))
+    }
+}

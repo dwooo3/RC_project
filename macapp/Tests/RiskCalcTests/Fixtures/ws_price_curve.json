@@ -1,0 +1,1 @@
+{"value":null,"model_id":"schwartz_smith","model_status":"","greeks":[],"measures":[],"series":[{"key":"curve","label":"Curve","points":[{"x":0.25,"y":101.47596126181715},{"x":0.5,"y":102.54787212364894},{"x":1.0,"y":104.00185855048701},{"x":2.0,"y":105.78736171394857}]}],"warnings":[],"errors":[],"limitations":[],"product":"commodity_curve","engine":"schwartz_smith"}
