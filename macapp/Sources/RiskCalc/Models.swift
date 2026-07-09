@@ -1,25 +1,5 @@
 import Foundation
 
-// MARK: - Catalogue (GET /catalogue)
-
-struct Catalogue: Decodable {
-    let pricers: [Pricer]
-}
-
-struct Pricer: Decodable, Identifiable, Hashable, Sendable {
-    let id: String
-    let modelID: String
-    let name: String
-    let family: String
-    let governance: Governance
-    let params: [ParamSpec]
-
-    enum CodingKeys: String, CodingKey {
-        case id, name, family, governance, params
-        case modelID = "model_id"
-    }
-}
-
 struct Governance: Decodable, Hashable, Sendable {
     let status: String
     let assetClass: String
@@ -71,38 +51,6 @@ enum ParamDefault: Decodable, Hashable, Sendable {
             self = .string(s)
         } else {
             self = .string("")
-        }
-    }
-}
-
-// MARK: - Price result (POST /price)
-
-struct PriceResult: Decodable, Sendable {
-    let value: Double?
-    let modelID: String
-    let modelStatus: String
-    let modelValidationDate: String?
-    let modelLimitations: [String]?
-    let warnings: [String]
-    let errors: [String]
-    let marketDataSource: String?
-    let raw: [String: JSONValue]?
-
-    enum CodingKeys: String, CodingKey {
-        case value, warnings, errors, raw
-        case modelID = "model_id"
-        case modelStatus = "model_status"
-        case modelValidationDate = "model_validation_date"
-        case modelLimitations = "model_limitations"
-        case marketDataSource = "market_data_source"
-    }
-
-    /// Greeks present in `raw`, in a sensible display order.
-    var greeks: [(name: String, value: Double)] {
-        guard let raw else { return [] }
-        let order = ["delta", "gamma", "vega", "theta", "rho", "vanna", "volga", "charm", "stderr"]
-        return order.compactMap { key in
-            raw[key]?.doubleValue.map { (key, $0) }
         }
     }
 }

@@ -363,14 +363,17 @@ class PricingService:
 
     # ── Rates (curve-based) ───────────────────────────────────────────
     def price_frn(self, face, spread, T, freq, curve=None, snapshot=None,
-                  curve_id="flat_rub") -> dict:
-        """Floating-rate note through the FRN engine (curve from snapshot if not given)."""
+                  curve_id="flat_rub", proj_curve=None, proj_curve_id=None) -> dict:
+        """Floating-rate note: forward-projected coupons (dual-curve when a
+        projection curve is given), discounted on the discount curve."""
         from instruments.fixed_income import frn
         curve, snapshot = self._resolve_curve(curve, snapshot, curve_id)
+        proj_curve, snapshot = self._resolve_proj_curve(proj_curve, proj_curve_id, snapshot)
         return self._priced(
             model_id="frn", calculation_type="frn_pricing",
-            engine=lambda: frn(face, spread, T, freq, curve),
-            inputs={"face": face, "spread": spread, "T": T, "freq": freq, "curve_id": curve_id},
+            engine=lambda: frn(face, spread, T, freq, curve, proj_curve),
+            inputs={"face": face, "spread": spread, "T": T, "freq": freq,
+                    "curve_id": curve_id, "proj_curve_id": proj_curve_id},
             snapshot=snapshot, user_action="Price FRN")
 
     def price_callable_bond(self, face, coupon, T, freq, sigma=0.15, call_price=None,

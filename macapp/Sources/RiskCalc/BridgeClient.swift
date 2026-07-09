@@ -36,11 +36,6 @@ struct BridgeValue: Encodable, Sendable {
     }
 }
 
-private struct PriceRequestBody: Encodable {
-    let pricer: String
-    let params: [String: BridgeValue]
-}
-
 private struct InstrumentRequestBody: Encodable {
     let instrument: String
     let params: [String: BridgeValue]
@@ -83,10 +78,6 @@ actor BridgeClient {
         let (data, response) = try await session.data(from: base.appending(path: path))
         try Self.check(response, data)
         return try JSONDecoder().decode(T.self, from: data)
-    }
-
-    func catalogue() async throws -> [Pricer] {
-        try await get("catalogue", as: Catalogue.self).pricers
     }
 
     func dashboard() async throws -> DashboardData { try await get("dashboard") }
@@ -234,11 +225,6 @@ actor BridgeClient {
 
     func startIngest() async throws -> IngestStatus { try await post("ingest/refresh", body: Data("{}".utf8)) }
     func ingestStatus() async throws -> IngestStatus { try await get("ingest/status") }
-
-    func price(pricer: String, params: [String: BridgeValue]) async throws -> PriceResult {
-        let body = try JSONEncoder().encode(PriceRequestBody(pricer: pricer, params: params))
-        return try await post("price", body: body)
-    }
 
     func bondCatalogue() async throws -> BondCatalogue { try await get("instruments/bond") }
 

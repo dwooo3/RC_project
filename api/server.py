@@ -5,9 +5,9 @@ Run from the project root:
     /usr/local/bin/python3.14 -m api.server         # serves on 127.0.0.1:8765
 
 Endpoints
-    GET  /health      liveness + version
-    GET  /catalogue   the vanilla pricer catalogue (governance + param specs)
-    POST /price       {"pricer": "<id>", "params": {...}} -> governed result
+    GET  /health             liveness + version
+    GET  /pricing/catalogue  the universal pricer catalogue (products x engines)
+    POST /pricing/price      {"product","engine","params"} -> normalized result
 
 The engine runs with `allow_analytics_lab=True` so research models (Heston, Merton)
 return a governed result with their lab-status warnings rather than a hard block —
@@ -41,8 +41,7 @@ from api import (
     timeseries,
     volsurface,
 )
-from api import marketrisk, pricing_workstation, underlying
-from api.catalogue import build_catalogue, find_pricer
+from api import credit, marketrisk, pricing_workstation, underlying
 from api.context import CONTEXT
 from api.serialization import jsonable
 from services.pricing_service import PricingService
@@ -56,11 +55,6 @@ app.add_middleware(
 )
 
 _svc = PricingService(allow_analytics_lab=True)
-
-
-class PriceRequest(BaseModel):
-    pricer: str
-    params: dict[str, float | int | str | None] = {}
 
 
 class WsPriceRequest(BaseModel):
@@ -138,11 +132,6 @@ def _vol_surface_ids() -> list[str]:
     return sorted(ids, key=lambda s: (not s.endswith("_FORTS"), s))
 
 
-@app.get("/catalogue")
-def catalogue() -> dict:
-    return {"pricers": build_catalogue(_vol_surface_ids())}
-
-
 # ── universal pricing workstation ────────────────────────
 @app.get("/pricing/catalogue")
 def ws_catalogue() -> dict:
@@ -211,6 +200,20 @@ def marketrisk_incremental(req: WsCaptureRequest, confidence: float = 0.99,
             confidence, window))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ── issuer credit: ratings + z-spread hazard curves ──────
+@app.get("/credit/ratings")
+def credit_ratings() -> dict:
+    return jsonable(credit.ratings_table(CONTEXT))
+
+
+@app.get("/credit/hazard/{query}")
+def credit_hazard(query: str) -> dict:
+    try:
+        return jsonable(credit.issuer_hazard(CONTEXT, query))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @app.get("/pnl/explain")
@@ -522,21 +525,6 @@ def md_volsurface_plot(underlying: str) -> Response:
     if not png:
         raise HTTPException(status_code=404, detail="no surface to plot")
     return Response(content=png, media_type="image/png")
-
-
-@app.post("/price")
-def price(req: PriceRequest) -> dict:
-    pricer = find_pricer(req.pricer)
-    if pricer is None:
-        raise HTTPException(status_code=404, detail=f"unknown pricer '{req.pricer}'")
-    try:
-        _svc.market_data = CONTEXT.market          # live surfaces for surface-aware pricing
-        result = pricer.invoke(_svc, req.params, CONTEXT.snapshot)
-    except KeyError as exc:
-        raise HTTPException(status_code=422, detail=f"missing parameter {exc}")
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    return jsonable(result)
 
 
 def main() -> None:

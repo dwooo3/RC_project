@@ -10,7 +10,6 @@ import math
 
 import numpy as np
 
-from api.catalogue import build_catalogue, find_pricer
 from api.serialization import jsonable
 from services.pricing_service import PricingService
 
@@ -50,55 +49,6 @@ def test_jsonable_drops_audit_objects():
     assert out == {"value": 1.0}
 
 
-# ── catalogue ────────────────────────────────────────────
-def test_catalogue_is_complete_and_well_formed():
-    cat = build_catalogue()
-    assert len(cat) >= 10
-    for entry in cat:
-        assert entry["id"] and entry["model_id"] and entry["name"]
-        assert entry["governance"]["status"]
-        assert entry["params"], f"{entry['id']} has no params"
-        # every entry carries the base contract/market inputs
-        keys = {p["key"] for p in entry["params"]}
-        assert {"S", "K", "T", "r", "opt"} <= keys
-    json.dumps(cat)  # the whole catalogue is JSON-serialisable
-
-
-def test_heston_exposes_model_params():
-    heston = next(e for e in build_catalogue() if e["id"] == "heston_cf")
-    model_keys = {p["key"] for p in heston["params"] if p["group"] == "model"}
-    assert {"v0", "kappa", "theta", "xi", "rho"} <= model_keys
-
-
-# ── price dispatch ───────────────────────────────────────
-def test_bsm_pricer_matches_known_atm_value():
-    svc = PricingService(allow_analytics_lab=True)
-    pricer = find_pricer("bsm")
-    result = pricer.invoke(svc, {"S": 100, "K": 100, "T": 1, "r": 0.05,
-                                 "q": 0.0, "sigma": 0.2, "opt": "call"})
-    out = jsonable(result)
-    json.dumps(out)
-    assert math.isclose(out["value"], 10.4506, abs_tol=1e-3)
-    assert out["model_id"] == "black_scholes"
-    assert "delta" in out["raw"]
-
-
-def test_heston_pricer_prices_and_serialises():
-    svc = PricingService(allow_analytics_lab=True)
-    pricer = find_pricer("heston_cf")
-    result = pricer.invoke(svc, {"S": 100, "K": 100, "T": 1, "r": 0.05, "q": 0.0,
-                                 "opt": "call", "v0": 0.04, "kappa": 1.5,
-                                 "theta": 0.04, "xi": 0.5, "rho": -0.6})
-    out = jsonable(result)
-    json.dumps(out)
-    assert out["value"] is not None and out["value"] > 0
-
-
-def test_unknown_pricer_returns_none():
-    assert find_pricer("does_not_exist") is None
-
-
-# ── bond (fixed income) instrument layer ─────────────────
 def test_bond_catalogue_well_formed():
     from api.instruments import build_bond_catalogue
 

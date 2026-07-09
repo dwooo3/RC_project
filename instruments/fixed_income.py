@@ -363,31 +363,53 @@ def price_ofz(face: float, coupon_rate: float, maturity: float,
 # Floating-rate note
 # ─────────────────────────────────────────────────────────
 
-def frn(face: float, spread: float, T: float, freq: int, curve: YieldCurve) -> dict:
+def frn(face: float, spread: float, T: float, freq: int, curve: YieldCurve,
+        proj_curve: YieldCurve | None = None) -> dict:
     """
-    FRN priced at par + spread PV (ignoring reset timing).
-    spread: annual spread over LIBOR/SOFR.
-    For simple pricing: FRN ≈ face * disc(T_reset) + spread cashflows.
+    Floating-rate note with explicit forward-coupon projection (dual-curve).
+
+    Coupons c_i = (F_i + spread)·face·τ where F_i is the simple forward for
+    [t_{i-1}, t_i] off the projection curve; redemption at T; everything
+    discounted on `curve`. With proj == disc the floating leg telescopes to
+    par, so the price collapses to the par-reset identity face + spread_pv —
+    while a projection basis now moves the coupons the way a real reset
+    forecast does. Valued at a reset date (accrued = 0); no fixing lag / stub
+    conventions.
     """
-    dt      = 1.0 / freq
+    proj = proj_curve or curve
+    dt = 1.0 / freq
     periods = int(round(T * freq))
-    spread_pv = sum(face * spread / freq * curve.discount(i*dt) for i in range(1, periods+1))
-    # Par-reset identity: the floating leg (index coupons + redemption) replicates
-    # a par bond, so at a reset date its PV is the face. Adding the fixed spread
-    # coupons gives FRN = face + spread_pv. (Previously only face*disc(T) was used,
-    # omitting the floating coupon PVs, which underpriced the note towards a ZCB.)
-    price = face + spread_pv
-    annuity = sum(dt * curve.discount(i*dt) for i in range(1, periods+1))
-    accrued = 0.0                                    # valued at a reset date
-    clean = price - accrued
-    ir_dv01 = face * dt * curve.discount(dt) / 10000     # rate risk ~ next reset only
-    spread_dv01 = face * annuity / 10000                 # sensitivity to the quoted spread
-    discount_margin = spread                              # par discount margin under par-reset
-    return dict(price=price, clean_price=clean, dirty_price=price,
-                accrued_interest=accrued, spread_pv=spread_pv,
-                dv01=ir_dv01, ir_dv01=ir_dv01, spread_dv01=spread_dv01,
-                discount_margin=discount_margin, yield_=None,
-                duration=dt, annuity=annuity)
+    cashflows, float_pv, spread_pv = [], 0.0, 0.0
+    for i in range(1, periods + 1):
+        t0, t1 = (i - 1) * dt, i * dt
+        df0p, df1p = proj.discount(t0), proj.discount(t1)
+        fwd = (df0p / df1p - 1.0) / dt if dt > 0 else 0.0
+        df = curve.discount(t1)
+        cpn_float = face * fwd * dt
+        cpn_spread = face * spread * dt
+        float_pv += cpn_float * df
+        spread_pv += cpn_spread * df
+        cashflows.append((t1, cpn_float + cpn_spread + (face if i == periods else 0.0)))
+    redemption_pv = face * curve.discount(T)
+    price = float_pv + spread_pv + redemption_pv
+    annuity = sum(dt * curve.discount(i * dt) for i in range(1, periods + 1))
+
+    # rate DV01 by full reprice on a bumped DISCOUNT curve (projection held:
+    # the index reset absorbs parallel moves; what remains is the discounting
+    # of the spread leg plus the projection/discount basis)
+    bumped = curve.parallel_shift(1.0)
+    price_up = sum(cf * bumped.discount(t) for t, cf in cashflows)
+    ir_dv01 = abs(price - price_up)
+
+    accrued = 0.0                                       # valued at a reset date
+    return dict(price=price, clean_price=price - accrued, dirty_price=price,
+                accrued_interest=accrued, float_pv=float_pv, spread_pv=spread_pv,
+                redemption_pv=redemption_pv,
+                dv01=ir_dv01, ir_dv01=ir_dv01,
+                spread_dv01=face * annuity / 10000,
+                discount_margin=spread, yield_=None,
+                duration=dt, annuity=annuity,
+                cashflows=cashflows)
 
 
 def fra(notional: float, K: float, T1: float, T2: float, curve: YieldCurve,

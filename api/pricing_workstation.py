@@ -718,7 +718,8 @@ PRODUCTS: list[WsProduct] = [
         [E("capfloor", "Black-76 caplet strip"),
          E("lmm", params=[P("vol", "LMM forward vol", 0.20, "model",
                             minimum=1e-3, maximum=2.0)])],
-        _capfloor, needs_curve=True, needs_proj=True),
+        _capfloor, needs_curve=True, needs_proj=True,
+        note="⚠️ IRVOL: рыночного источника вол ставок нет — vol вводится вручную. НЕ для прод-оценки. Коррекция: ATM-матрица swaption vols (ручная загрузка/платный источник) или калибровка HW к историческим переоценкам ОФЗ."),
     WsProduct(
         "swaption", "European Swaption", "rates", "Options",
         [_notional(), P("K", "Strike rate", 0.10, "contract", minimum=-1.0, maximum=2.0),
@@ -730,7 +731,7 @@ PRODUCTS: list[WsProduct] = [
          E("swap_market_model", params=[
              P("sigma", "SMM vol", 0.20, "model", minimum=1e-3, maximum=2.0),
              P("shift", "Displacement", 0.0, "model", minimum=0.0, maximum=0.5)])],
-        _swaption, needs_curve=True),
+        _swaption, needs_curve=True, note="⚠️ IRVOL: рыночного источника вол ставок нет — vol вводится вручную. НЕ для прод-оценки. Коррекция: ATM-матрица swaption vols (ручная загрузка/платный источник) или калибровка HW к историческим переоценкам ОФЗ."),
     WsProduct(
         "bermudan_swaption", "Bermudan Swaption", "rates", "Options",
         [_notional(), P("K", "Strike rate", 0.10, "contract", minimum=-1.0, maximum=2.0),
@@ -743,7 +744,7 @@ PRODUCTS: list[WsProduct] = [
              P("sigma_r", "HW vol σ", 0.012, "model", minimum=1e-4, maximum=0.5),
              P("n_sims", "MC paths", 20000, "numerical", dtype="int",
                minimum=2000, maximum=200000)])],
-        _bermudan, needs_curve=True),
+        _bermudan, needs_curve=True, note="⚠️ IRVOL: рыночного источника вол ставок нет — vol вводится вручную. НЕ для прод-оценки. Коррекция: ATM-матрица swaption vols (ручная загрузка/платный источник) или калибровка HW к историческим переоценкам ОФЗ."),
     WsProduct(
         "cms_swap", "CMS Swap", "rates", "Exotic rates",
         [_notional(), P("K", "Fixed rate", 0.10, "contract", minimum=-1.0, maximum=2.0),
@@ -756,7 +757,7 @@ PRODUCTS: list[WsProduct] = [
             int(_num(v, "freq", 4)), _num(v, "swap_tenor", 5), _num(v, "sigma", .25),
             curve=_curve(svc, v, snap), snapshot=snap),
         needs_curve=True,
-        note="Форвардная своп-ставка + convexity adjustment (Hull) + timing adjustment."),
+        note="Форвардная своп-ставка + convexity adjustment (Hull) + timing adjustment. ⚠️ IRVOL: рыночного источника вол ставок нет — vol вводится вручную. НЕ для прод-оценки. Коррекция: ATM-матрица swaption vols (ручная загрузка/платный источник) или калибровка HW к историческим переоценкам ОФЗ."),
     WsProduct(
         "stir_future", "STIR Future", "rates", "Futures",
         [P("forward_rate", "Forward rate", 0.10, "market", minimum=-1.0, maximum=2.0),

@@ -387,10 +387,18 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "frn": {
         "name": "Floating Rate Note",
-        "status": ModelStatus.PROTOTYPE,
+        "status": ModelStatus.APPROXIMATION,
         "domain": "Pricing",
-        "tests": [],
-        "notes": "No par-reset logic. No forward coupon. No projection curve. Replace before production use.",
+        "tests": ["single_curve_collapses_to_par_reset", "dual_curve_basis_moves_coupons",
+                  "spread_dv01_is_annuity"],
+        "notes": (
+            "2026-07: forward-projected coupons off a projection curve "
+            "(dual-curve), discounted on the discount curve; single-curve "
+            "telescopes exactly to the par-reset identity face + spread_pv. "
+            "DV01 by bumped-discount full reprice. Valued at a reset date — "
+            "no fixing lag, no stub/day-count conventions, no cap/floor "
+            "features on the coupon."
+        ),
     },
     "irs": {
         "name": "Interest Rate Swap",

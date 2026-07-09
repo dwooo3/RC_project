@@ -22,17 +22,6 @@ final class ContractDecodeTests: XCTestCase {
         try JSONDecoder().decode(T.self, from: load(name))
     }
 
-    func testDecodeCatalogue() throws {
-        let cat = try decode(Catalogue.self, "catalogue")
-        XCTAssertFalse(cat.pricers.isEmpty)
-        let bsm = cat.pricers.first { $0.id == "bsm" }
-        XCTAssertNotNil(bsm, "expected a bsm pricer")
-        // the vol-surface selector must be present with a manual-σ + at least one surface
-        let surfaceParam = bsm?.params.first { $0.key == "vol_surface_id" }
-        XCTAssertNotNil(surfaceParam, "bsm should expose vol_surface_id")
-        XCTAssertGreaterThanOrEqual(surfaceParam?.choices?.count ?? 0, 2)
-    }
-
     func testDecodeMDListBonds() throws {
         let list = try decode(MDListResponse.self, "md_list_bonds")
         XCTAssertEqual(list.category, "bonds")

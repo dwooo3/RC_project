@@ -202,7 +202,7 @@ final class AppModel {
         case .analytics:
             if force || analytics.value == nil { await loadAnalytics() }
         case .pricing:
-            break   // PricingView manages its own state
+            break   // PricingWorkstationView manages its own state
         case .dataControls:
             break   // DataControlsScreen manages its own state
         }
