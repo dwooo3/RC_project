@@ -159,6 +159,29 @@ struct WsScenarios: Decodable, Sendable {
     }
 }
 
+struct WsGridCell: Decodable, Sendable, Hashable {
+    let x: Double
+    let y: Double
+    let value: Double?
+    let pnl: Double?
+}
+
+struct WsGrid2D: Decodable, Sendable {
+    let xKey: String
+    let yKey: String
+    let baseValue: Double?
+    let nx: Int
+    let ny: Int
+    let cells: [WsGridCell]
+
+    enum CodingKeys: String, CodingKey {
+        case nx, ny, cells
+        case xKey = "x_key"
+        case yKey = "y_key"
+        case baseValue = "base_value"
+    }
+}
+
 struct WsPayoff: Decodable, Sendable {
     let spot: Double
     let spotKey: String
@@ -268,6 +291,26 @@ extension BridgeClient {
 
     func underlyingFacts(category: String, secid: String) async throws -> UnderlyingFacts {
         try await get("pricing/underlying/\(category)/\(secid)")
+    }
+
+    func grid2d(product: String, engine: String, params: [String: BridgeValue],
+                xKey: String, yKey: String, xLo: Double, xHi: Double,
+                yLo: Double, yHi: Double) async throws -> WsGrid2D {
+        struct Body: Encodable {
+            let product: String
+            let engine: String
+            let params: [String: BridgeValue]
+            let x_key: String
+            let y_key: String
+            let x_lo: Double
+            let x_hi: Double
+            let y_lo: Double
+            let y_hi: Double
+        }
+        let body = try JSONEncoder().encode(Body(
+            product: product, engine: engine, params: params,
+            x_key: xKey, y_key: yKey, x_lo: xLo, x_hi: xHi, y_lo: yLo, y_hi: yHi))
+        return try await post("pricing/grid2d", body: body)
     }
 
     func payoff(product: String, engine: String,

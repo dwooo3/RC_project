@@ -166,6 +166,32 @@ def ws_underlying(category: str, secid: str) -> dict:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+class WsGrid2DRequest(BaseModel):
+    product: str
+    engine: str | None = None
+    params: dict[str, float | int | str | None] = {}
+    x_key: str
+    y_key: str
+    x_lo: float
+    x_hi: float
+    y_lo: float
+    y_hi: float
+    nx: int = 9
+    ny: int = 7
+
+
+@app.post("/pricing/grid2d")
+def ws_grid2d(req: WsGrid2DRequest) -> dict:
+    try:
+        _svc.market_data = CONTEXT.market
+        return jsonable(pricing_workstation.grid2d_ws(
+            _svc, CONTEXT.snapshot, req.product, req.engine, req.params,
+            req.x_key, req.y_key, req.x_lo, req.x_hi, req.y_lo, req.y_hi,
+            req.nx, req.ny))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.post("/pricing/payoff")
 def ws_payoff(req: WsPriceRequest) -> dict:
     try:

@@ -81,7 +81,7 @@ def test_promotion_rule():
     assert not R.can_promote_to_validated("cln_ftd")
     cands = R.validation_candidates()          # NOT-yet-promoted candidates only
     assert "barrier" not in cands and "lookback" not in cands
-    assert "tarn" in cands            # оставшийся Approximation-кандидат (batch-4)
+    assert "tarn" not in cands        # batch-4 (2026-07) закрыл последних кандидатов
     assert "cln_ftd" not in cands
 
 

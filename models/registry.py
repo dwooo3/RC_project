@@ -703,16 +703,16 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "tarn": {
         "name": "TARN (target accrual redemption note)",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
-        "tests": ["monotone_in_target", "redeems_at_zero_target"],
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
+        "tests": ['monotone_in_target', 'redeems_at_zero_target', 'uncapped_is_put_strip', 'capped_below_uncapped_and_target'],
         "notes": ("Gap batch 4: GBM Monte-Carlo; accrues per-period coupons and "
                   "redeems early at the cumulative target. Value rises with the "
                   "target. Single-name underlying; no TARN-forward leverage tiers."),
     },
     "accumulator": {
         "name": "Accumulator (up-and-out, double-below-strike)",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
-        "tests": ["monotone_in_barrier"],
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
+        "tests": ['monotone_in_barrier', 'no_barrier_is_forwards_minus_puts', 'knockout_cheapens'],
         "notes": ("Gap batch 4: GBM MC; buys qty (2·qty below strike) each fixing, "
                   "knocks out above the barrier. Value rises as the barrier moves "
                   "away (less knock-out)."),
@@ -1045,9 +1045,9 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "asian": {
         "name": "Asian Options",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
-        "tests": ['geometric_n1_equals_bsm', 'geometric_matches_closed_form', 'averaging_cheaper_than_vanilla'],
+        "tests": ['geometric_n1_equals_bsm', 'geometric_matches_closed_form', 'averaging_cheaper_than_vanilla', 'arithmetic_matches_turnbull_wakeman', 'arithmetic_geq_geometric'],
         "notes": "Arithmetic approximation + MC. No geometric exact formula comparison.",
     },
     "digital": {

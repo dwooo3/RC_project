@@ -1377,6 +1377,34 @@ _PAYOFF_SPOT_KEY = {p.id: k for p in PRODUCTS
                     for s in p.base_params)}
 
 
+def grid2d_ws(svc, snapshot, product_id: str, engine_id: str | None,
+              params: dict, x_key: str, y_key: str,
+              x_lo: float, x_hi: float, y_lo: float, y_hi: float,
+              nx: int = 9, ny: int = 7) -> dict:
+    """2-D what-if grid (Desk Risk): full revaluation over a mesh of two
+    inputs (обычно spot × vol) — P&L vs the base run per cell."""
+    nx, ny = max(3, min(int(nx), 15)), max(3, min(int(ny), 15))
+    base = price_ws(svc, snapshot, product_id, engine_id, params)
+    base_value = base.get("value")
+    cells = []
+    for j in range(ny):
+        y = y_lo + (y_hi - y_lo) * j / (ny - 1)
+        for i in range(nx):
+            x = x_lo + (x_hi - x_lo) * i / (nx - 1)
+            shocked = dict(params)
+            shocked[x_key], shocked[y_key] = x, y
+            r = price_ws(svc, snapshot, product_id, engine_id, shocked)
+            value = r.get("value")
+            cells.append({
+                "x": x, "y": y, "value": value,
+                "pnl": (value - base_value)
+                       if (value is not None and base_value is not None) else None,
+            })
+    return {"product": base["product"], "engine": base["engine"],
+            "x_key": x_key, "y_key": y_key, "base_value": base_value,
+            "nx": nx, "ny": ny, "cells": cells}
+
+
 def payoff_ws(svc, snapshot, product_id: str, engine_id: str | None,
               params: dict, steps: int = 41) -> dict:
     """Payoff diagram: value profile over spot today (T как есть) и на

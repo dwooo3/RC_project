@@ -64,7 +64,29 @@ TEST_MAP: dict[str, list[str]] = {
     "afv_convertible": ["tests/test_m8_niche.py"],
     "mbs": ["tests/test_m8_niche.py"],
     "var_full_reprice": ["tests/test_marketrisk_api.py"],
+    # batch-3/4 coverage
+    "black76": ["tests/test_batch3_benchmarks.py"],
+    "bachelier": ["tests/test_batch3_benchmarks.py"],
+    "binomial_lr": ["tests/test_batch3_benchmarks.py"],
+    "trinomial": ["tests/test_batch3_benchmarks.py"],
+    "binomial_tian": ["tests/test_batch3_benchmarks.py"],
+    "mc_heston_qe": ["tests/test_batch3_benchmarks.py"],
+    "sabr": ["tests/test_batch3_benchmarks.py"],
+    "digital": ["tests/test_batch3_benchmarks.py"],
+    "fx_forward": ["tests/test_batch3_benchmarks.py"],
+    "discrete_div_bsm": ["tests/test_batch3_benchmarks.py"],
+    "commodity_seasonal": ["tests/test_batch3_benchmarks.py"],
+    "swap_market_model": ["tests/test_batch3_benchmarks.py"],
+    "evt_var": ["tests/test_batch3_benchmarks.py"],
+    "var_mc": ["tests/test_batch3_benchmarks.py"],
+    "tarn": ["tests/test_batch4_benchmarks.py"],
+    "accumulator": ["tests/test_batch4_benchmarks.py"],
+    "asian": ["tests/test_batch4_benchmarks.py"],
 }
+
+# Batch 4 (2026-07): платёжные разложения (tests/test_batch4_benchmarks.py) —
+# TARN == стрип путов, accumulator == форварды−путы, asian == Turnbull-Wakeman.
+PROMOTED_BATCH_4 = ["tarn", "accumulator", "asian"]
 
 # Batch 3 (2026-07): бенчмарки ДОПИСАНЫ (tests/test_batch3_benchmarks.py) —
 # известные значения, точные тождества, симметрии, GPD-квантили.
@@ -114,7 +136,7 @@ def check_consistency() -> list[str]:
         if entry["status"] == ModelStatus.VALIDATED and not entry.get("tests"):
             problems.append(f"{mid}: Validated без зарегистрированных тестов")
     for batch, ids in (("batch-1", PROMOTED_BATCH_1), ("batch-2", PROMOTED_BATCH_2),
-                       ("batch-3", PROMOTED_BATCH_3)):
+                       ("batch-3", PROMOTED_BATCH_3), ("batch-4", PROMOTED_BATCH_4)):
         for mid in ids:
             if MODEL_REGISTRY[mid]["status"] != ModelStatus.VALIDATED:
                 problems.append(f"{mid}: в {batch}, но статус "
@@ -151,7 +173,8 @@ def main() -> None:
     print("Согласованность реестра: ok")
 
     if "--run" in sys.argv:
-        promoted = PROMOTED_BATCH_1 + PROMOTED_BATCH_2 + PROMOTED_BATCH_3
+        promoted = (PROMOTED_BATCH_1 + PROMOTED_BATCH_2 + PROMOTED_BATCH_3
+                    + PROMOTED_BATCH_4)
         print(f"\nПрогон бенчмарков промоутнутых моделей ({len(promoted)}):")
         results = run_tests(promoted)
         bad = [m for m, ok in results.items() if ok is False]

@@ -118,6 +118,9 @@ struct PricingWorkstationView: View {
                             ScenarioCard(vm: vm)
                         }
                         PayoffCard(vm: vm)
+                        if vm.gridKeys != nil {
+                            Grid2DCard(vm: vm)
+                        }
                     }
                 }
                 .padding(Theme.s5)
@@ -172,33 +175,72 @@ struct PricingWorkstationView: View {
         "model": "slider.horizontal.3", "numerical": "number",
     ]
 
+    // advanced-группы: model раскрыта (параметры движка — суть выбора),
+    // numerical свёрнута (griды/пути редко трогают)
+    @State private var expandedGroups: Set<String> = ["model"]
+
     @ViewBuilder
     private func paramGroup(_ engine: WsEngineModel, group: String) -> some View {
         let specs = engine.params.filter { $0.group == group }
         if !specs.isEmpty {
+            let advanced = specs.allSatisfy(\.advanced)
             GlassCard {
                 VStack(alignment: .leading, spacing: Theme.s3) {
-                    BlockTitle(groupTitles[group] ?? group,
-                               icon: groupIcons[group] ?? "circle")
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: Theme.s3)],
-                              alignment: .leading, spacing: Theme.s3) {
-                        ForEach(specs) { spec in
-                            VStack(alignment: .leading, spacing: 2) {
-                                if spec.dtype == "float" || spec.dtype == "int" {
-                                    ParamFieldView(spec: spec,
-                                                   numeric: vm.numericBinding(spec.key),
-                                                   string: nil)
+                    if advanced {
+                        Button {
+                            withAnimation(.snappy(duration: 0.15)) {
+                                if expandedGroups.contains(group) {
+                                    expandedGroups.remove(group)
                                 } else {
-                                    ParamFieldView(spec: spec, numeric: nil,
-                                                   string: vm.choiceBinding(spec.key))
-                                }
-                                if vm.autofilledKeys.contains(spec.key) {
-                                    Label("из маркет даты", systemImage: "arrow.down.circle.fill")
-                                        .font(.system(size: 9))
-                                        .foregroundStyle(Theme.accent)
+                                    expandedGroups.insert(group)
                                 }
                             }
+                        } label: {
+                            HStack(spacing: Theme.s2) {
+                                BlockTitle(groupTitles[group] ?? group,
+                                           icon: groupIcons[group] ?? "circle")
+                                Text("\(specs.count)")
+                                    .font(.system(size: 9, weight: .semibold)).monospacedDigit()
+                                    .foregroundStyle(.tertiary)
+                                Spacer()
+                                Image(systemName: expandedGroups.contains(group)
+                                      ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                    } else {
+                        BlockTitle(groupTitles[group] ?? group,
+                                   icon: groupIcons[group] ?? "circle")
+                    }
+                    if !advanced || expandedGroups.contains(group) {
+                        paramFields(specs)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func paramFields(_ specs: [ParamSpec]) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: Theme.s3)],
+                  alignment: .leading, spacing: Theme.s3) {
+            ForEach(specs) { spec in
+                VStack(alignment: .leading, spacing: 2) {
+                    if spec.dtype == "float" || spec.dtype == "int" {
+                        ParamFieldView(spec: spec,
+                                       numeric: vm.numericBinding(spec.key),
+                                       string: nil)
+                    } else {
+                        ParamFieldView(spec: spec, numeric: nil,
+                                       string: vm.choiceBinding(spec.key))
+                    }
+                    if vm.autofilledKeys.contains(spec.key) {
+                        Label("из маркет даты", systemImage: "arrow.down.circle.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Theme.accent)
                     }
                 }
             }
@@ -446,6 +488,66 @@ private struct ScenarioCard: View {
         if row.volShock != 0 { parts.append("σ \(Fmt.signedPercent(row.volShock * 100))") }
         if row.rateShock != 0 { parts.append("r \(String(format: "%+.0f", row.rateShock * 10000))bp") }
         return parts.joined(separator: "  ")
+    }
+}
+
+// MARK: - 2D what-if grid (spot × vol)
+
+/// Full-revaluation P&L mesh over spot ±20% × vol ±10pt — the instrument-level
+/// аналог портфельного what-if хитмапа.
+private struct Grid2DCard: View {
+    @Bindable var vm: WorkstationViewModel
+
+    var body: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s3) {
+                HStack {
+                    BlockTitle("What-if grid · spot × vol", icon: "square.grid.3x3.fill")
+                    Spacer()
+                    Button {
+                        Task { await vm.loadGrid2d() }
+                    } label: {
+                        if vm.isLoadingGrid {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text(vm.grid2d == nil ? "Построить" : "Обновить")
+                        }
+                    }
+                    .disabled(vm.isLoadingGrid)
+                }
+                if let g = vm.grid2d {
+                    let maxAbs = max(1e-9, g.cells.compactMap { $0.pnl.map(abs) }.max() ?? 1)
+                    Chart(g.cells, id: \.self) { c in
+                        RectangleMark(
+                            x: .value(g.xKey, xLabel(c.x)),
+                            y: .value(g.yKey, yLabel(c.y))
+                        )
+                        .foregroundStyle(heatColor(c.pnl ?? 0, maxAbs: maxAbs))
+                        .annotation(position: .overlay) {
+                            Text(Fmt.number(c.pnl ?? 0, digits: 1))
+                                .font(.system(size: 8, weight: .medium)).monospacedDigit()
+                        }
+                    }
+                    .chartXAxisLabel("\(g.xKey) (спот)")
+                    .chartYAxisLabel("\(g.yKey) (вола)")
+                    .frame(height: 260)
+                    Text("P&L против базы \(g.baseValue.map { Fmt.number($0, digits: 2) } ?? "—"); полная переоценка в \(g.nx)×\(g.ny) точках.")
+                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                } else if !vm.isLoadingGrid {
+                    Text("Сетка P&L: спот ±20% × вола ±10 пунктов, полная переоценка выбранным движком.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                }
+            }
+        }
+    }
+
+    private func xLabel(_ v: Double) -> String { Fmt.number(v, digits: 1) }
+    private func yLabel(_ v: Double) -> String { Fmt.number(v, digits: 3) }
+
+    private func heatColor(_ pnl: Double, maxAbs: Double) -> Color {
+        let t = max(-1, min(1, pnl / maxAbs))
+        return (t >= 0 ? Theme.positive : Theme.negative).opacity(0.15 + 0.7 * abs(t))
     }
 }
 

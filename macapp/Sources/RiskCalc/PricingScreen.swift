@@ -54,6 +54,21 @@ struct ParamFieldView: View {
         )
     }
 
+    /// Server-declared bounds check (spec.minimum / maximum) — the value stays
+    /// editable, the field just flags it before the server would 400.
+    private var outOfBounds: Bool {
+        guard let v = numeric?.wrappedValue else { return false }
+        if let lo = spec.minimum, v < lo { return true }
+        if let hi = spec.maximum, v > hi { return true }
+        return false
+    }
+
+    private var boundsHint: String {
+        let lo = spec.minimum.map { Fmt.number($0, digits: 4) } ?? "−∞"
+        let hi = spec.maximum.map { Fmt.number($0, digits: 4) } ?? "∞"
+        return "допустимо \(lo) … \(hi)"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 4) {
@@ -65,6 +80,14 @@ struct ParamFieldView: View {
                 }
             }
             field
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(Theme.negative.opacity(outOfBounds ? 0.8 : 0), lineWidth: 1)
+                )
+            if outOfBounds {
+                Text(boundsHint)
+                    .font(.system(size: 9)).foregroundStyle(Theme.negative)
+            }
         }
         .help(spec.help)
     }

@@ -85,6 +85,7 @@ final class WorkstationViewModel {
         scenarios = nil
         ladderKey = nil
         payoff = nil
+        grid2d = nil
         errorMessage = nil
         captureMessage = nil
         impliedVolResult = nil
@@ -235,6 +236,33 @@ final class WorkstationViewModel {
     // payoff diagram
     var payoff: WsPayoff?
     var isLoadingPayoff = false
+
+    // 2D what-if grid (spot × vol)
+    var grid2d: WsGrid2D?
+    var isLoadingGrid = false
+
+    /// (spot-like, vol-like) numeric keys present on the current engine form.
+    var gridKeys: (x: String, y: String)? {
+        let keys = Set((selectedEngine?.params ?? []).map(\.key))
+        let x = ["S", "S0", "spot"].first { keys.contains($0) }
+        let y = ["sigma", "vol"].first { keys.contains($0) }
+        if let x, let y { return (x, y) }
+        return nil
+    }
+
+    func loadGrid2d() async {
+        guard let product = selectedProduct, let engine = selectedEngine,
+              let keys = gridKeys else { return }
+        isLoadingGrid = true
+        let s0 = numericValues[keys.x] ?? 100
+        let v0 = numericValues[keys.y] ?? 0.2
+        grid2d = try? await client.grid2d(
+            product: product.id, engine: engine.id, params: bridgeParams(),
+            xKey: keys.x, yKey: keys.y,
+            xLo: s0 * 0.8, xHi: s0 * 1.2,
+            yLo: max(v0 - 0.1, 0.01), yHi: v0 + 0.1)
+        isLoadingGrid = false
+    }
 
     func loadPayoff() async {
         guard let product = selectedProduct, let engine = selectedEngine else { return }
