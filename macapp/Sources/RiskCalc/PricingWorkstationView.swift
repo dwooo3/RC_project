@@ -117,6 +117,7 @@ struct PricingWorkstationView: View {
                             LadderCard(vm: vm)
                             ScenarioCard(vm: vm)
                         }
+                        PayoffCard(vm: vm)
                     }
                 }
                 .padding(Theme.s5)
@@ -448,6 +449,76 @@ private struct ScenarioCard: View {
     }
 }
 
+// MARK: - Payoff diagram
+
+/// Value today vs intrinsic at expiry over a ±50% spot range — the same
+/// pricer, two ladders (T as-is / T→0).
+private struct PayoffCard: View {
+    @Bindable var vm: WorkstationViewModel
+
+    var body: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s3) {
+                HStack {
+                    BlockTitle("Payoff diagram", icon: "chart.line.flattrend.xyaxis")
+                    Spacer()
+                    Button {
+                        Task { await vm.loadPayoff() }
+                    } label: {
+                        if vm.isLoadingPayoff {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text(vm.payoff == nil ? "Построить" : "Обновить")
+                        }
+                    }
+                    .disabled(vm.isLoadingPayoff)
+                }
+                if let p = vm.payoff {
+                    Chart {
+                        ForEach(p.payoff, id: \.x) { pt in
+                            LineMark(x: .value("Spot", pt.x), y: .value("Payoff", pt.y),
+                                     series: .value("s", "At expiry"))
+                                .foregroundStyle(Theme.negative.opacity(0.8))
+                                .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [5, 3]))
+                        }
+                        ForEach(p.value, id: \.x) { pt in
+                            LineMark(x: .value("Spot", pt.x), y: .value("Value", pt.y),
+                                     series: .value("s", "Today"))
+                                .foregroundStyle(Theme.accent)
+                                .interpolationMethod(.monotone)
+                        }
+                        RuleMark(x: .value("Spot", p.spot))
+                            .foregroundStyle(.tertiary)
+                            .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [3]))
+                            .annotation(position: .top, alignment: .leading) {
+                                Text("spot").font(.system(size: 9)).foregroundStyle(.tertiary)
+                            }
+                    }
+                    .frame(height: 200)
+                    HStack(spacing: Theme.s3) {
+                        legendLine(Theme.accent, "Стоимость сегодня")
+                        legendLine(Theme.negative.opacity(0.8), "Payoff на экспирации")
+                        Spacer()
+                        Text("Временная стоимость = зазор между линиями")
+                            .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    }
+                } else if !vm.isLoadingPayoff {
+                    Text("Профиль стоимости по споту ±50%: сегодня и на экспирации (тем же прайсером).")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 60)
+                }
+            }
+        }
+    }
+
+    private func legendLine(_ color: Color, _ text: String) -> some View {
+        HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 14, height: 3)
+            Text(text).font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+    }
+}
+
 // MARK: - Result panel
 
 private struct WorkstationResultPanel: View {
@@ -467,7 +538,19 @@ private struct WorkstationResultPanel: View {
                         .font(.system(size: 30, weight: .bold)).monospacedDigit()
                         .foregroundStyle(r.value == nil ? Color.secondary : Theme.accent)
                         .lineLimit(1).minimumScaleFactor(0.5)
-                    Text(r.modelID).font(.caption).foregroundStyle(.tertiary)
+                    HStack {
+                        Text(r.modelID).font(.caption).foregroundStyle(.tertiary)
+                        Spacer()
+                        Button {
+                            vm.exportCSV()
+                        } label: {
+                            Label("CSV", systemImage: "square.and.arrow.up")
+                                .font(.system(size: 10))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Экспорт параметров и результата в CSV")
+                    }
 
                     if !r.greeks.isEmpty {
                         Divider()

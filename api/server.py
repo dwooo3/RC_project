@@ -166,6 +166,16 @@ def ws_underlying(category: str, secid: str) -> dict:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+@app.post("/pricing/payoff")
+def ws_payoff(req: WsPriceRequest) -> dict:
+    try:
+        _svc.market_data = CONTEXT.market
+        return jsonable(pricing_workstation.payoff_ws(
+            _svc, CONTEXT.snapshot, req.product, req.engine, req.params))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 class WsImpliedVolRequest(BaseModel):
     product: str
     params: dict[str, float | int | str | None] = {}

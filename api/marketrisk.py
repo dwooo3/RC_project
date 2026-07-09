@@ -47,8 +47,17 @@ def factor_shifts(ctx, window: int = 500, frm: str | None = None,
     db = ctx.market_db
     eq = dict(_series(db, "IMOEX:price"))
     kbd = dict(_series(db, "KBD:5Y"))
-    rvi = dict(_series(db, "RVI:price"))
     usd = dict(_series(db, "USDRUB:fix"))
+    # vega factor: собственная ATM-IV история (индексные андерлаинги FORTS),
+    # когда накопится >=60 точек; до тех пор — RVI-прокси. IV уже в decimal.
+    rvi, vol_label, vol_scale = {}, "RVI (vol, Δ points)", 1.0 / 100.0
+    for iv_id in ("IV:MIX", "IV:MXI", "IV:RTS"):
+        s = dict(_series(db, iv_id))
+        if len(s) >= 60:
+            rvi, vol_label, vol_scale = s, f"{iv_id} (vol, ΔIV own history)", 1.0
+            break
+    if not rvi:
+        rvi = dict(_series(db, "RVI:price"))
     dates = sorted(set(eq) & set(kbd) & set(rvi))
     if frm or till:
         dates = [d for d in dates if (not frm or d >= frm) and (not till or d <= till)]
@@ -64,7 +73,7 @@ def factor_shifts(ctx, window: int = 500, frm: str | None = None,
         out_dates.append(cur)
         eq_ret.append(math.log(eq[cur] / eq[prev]))
         dr.append(kbd[cur] - kbd[prev])                 # КБД already decimal
-        dvol.append((rvi[cur] - rvi[prev]) / 100.0)      # RVI points -> decimal vol
+        dvol.append((rvi[cur] - rvi[prev]) * vol_scale)  # points/100 или own IV
         # FX fixings can miss local holidays — carry the last known fix.
         if has_fx and usd.get(prev, 0) > 0 and usd.get(cur, 0) > 0:
             fx_ret.append(math.log(usd[cur] / usd[prev]))
@@ -75,7 +84,7 @@ def factor_shifts(ctx, window: int = 500, frm: str | None = None,
             out_dates[-window:], eq_ret[-window:], dr[-window:],
             dvol[-window:], fx_ret[-window:])
     factors = ["IMOEX (equity, log-return)", "КБД 5Y (rates, abs Δ)",
-               "RVI (vol, Δ points)",
+               vol_label,
                "USD/RUB fix (fx, log-return)" if has_fx
                else "FX (no history — zero)"]
     return {

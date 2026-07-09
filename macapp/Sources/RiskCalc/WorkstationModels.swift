@@ -159,6 +159,20 @@ struct WsScenarios: Decodable, Sendable {
     }
 }
 
+struct WsPayoff: Decodable, Sendable {
+    let spot: Double
+    let spotKey: String
+    let baseValue: Double?
+    let value: [WsPoint]
+    let payoff: [WsPoint]
+
+    enum CodingKeys: String, CodingKey {
+        case spot, value, payoff
+        case spotKey = "spot_key"
+        case baseValue = "base_value"
+    }
+}
+
 // MARK: - Underlying facts (GET /pricing/underlying/{category}/{secid})
 
 struct UnderlyingFacts: Decodable, Sendable {
@@ -254,6 +268,13 @@ extension BridgeClient {
 
     func underlyingFacts(category: String, secid: String) async throws -> UnderlyingFacts {
         try await get("pricing/underlying/\(category)/\(secid)")
+    }
+
+    func payoff(product: String, engine: String,
+                params: [String: BridgeValue]) async throws -> WsPayoff {
+        let body = try JSONEncoder().encode(
+            WsPriceBody(product: product, engine: engine, params: params))
+        return try await post("pricing/payoff", body: body)
     }
 
     func impliedVol(product: String, params: [String: BridgeValue],

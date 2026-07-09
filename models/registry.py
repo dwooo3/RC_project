@@ -56,9 +56,9 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "black76": {
         "name": "Black-76 (Futures/Rates)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
-        "tests": ["put_call_parity"],
+        "tests": ['put_call_parity', 'known_value_hull', 'equals_bsm_on_forward'],
         "notes": "Forward-price model. No vol surface by tenor/strike.",
     },
     "garman_kohlhagen": {
@@ -70,9 +70,9 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "bachelier": {
         "name": "Bachelier (Normal Vol)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
-        "tests": [],
+        "tests": ['atm_closed_form', 'put_call_parity', 'negative_forward'],
         "notes": "Supports negative rates. Vega per 1% normal vol.",
     },
 
@@ -86,16 +86,16 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "binomial_lr": {
         "name": "Binomial Leisen-Reimer",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Analytics",
-        "tests": ["no_recursion"],
+        "tests": ['no_recursion', 'beats_crr_convergence'],
         "notes": "Better convergence than CRR for same N.",
     },
     "trinomial": {
         "name": "Trinomial Tree",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Analytics",
-        "tests": ["no_recursion"],
+        "tests": ['no_recursion', 'european_converges_to_bsm', 'american_ge_european'],
         "notes": "Useful for barrier options. Barrier placement not optimised.",
     },
 
@@ -142,9 +142,9 @@ MODEL_REGISTRY: dict[str, dict] = {
     # ── Monte Carlo ───────────────────────────────────────
     "mc_heston_qe": {
         "name": "Heston Monte Carlo (Andersen QE)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Analytics",
-        "tests": ["qe_bias_vs_cf_coarse_steps"],
+        "tests": ['qe_bias_vs_cf_coarse_steps', 'qe_matches_cf'],
         "notes": (
             "Phase 3: Andersen (2008) Quadratic-Exponential scheme; exact "
             "conditional moments of v. ~6x smaller bias than Euler-reflection "
@@ -243,9 +243,9 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "sabr": {
         "name": "SABR (Hagan, Obłój z)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Analytics",
-        "tests": ["beta1_nu0_is_alpha", "smile_continuity"],
+        "tests": ['beta1_nu0_is_alpha', 'smile_continuity', 'rho_zero_symmetric_smile', 'negative_rho_put_skew'],
         "notes": (
             "M2 promotion (was Prototype): Hagan implied-vol with the Obłój-style "
             "log-moneyness z. ATM/ν→0 limits validated, smile continuous. No "
@@ -387,7 +387,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "frn": {
         "name": "Floating Rate Note",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["single_curve_collapses_to_par_reset", "dual_curve_basis_moves_coupons",
                   "spread_dv01_is_annuity"],
@@ -602,14 +602,14 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "displaced_diffusion": {
         "name": "Displaced diffusion (shifted lognormal)",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
-        "tests": ["zero_shift_is_black76"],
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
+        "tests": ['zero_shift_is_black76', 'prices_negative_forward'],
         "notes": ("Gap batch 1: Black-76 on (F+shift, K+shift) — interpolates "
                   "normal↔lognormal for negative rates/spreads. shift=0 == Black-76."),
     },
     "cev": {
         "name": "CEV (constant elasticity of variance)",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
         "tests": ["beta_one_is_bsm", "put_call_parity"],
         "notes": ("Gap batch 1: Schroder noncentral-χ² closed form, dS=μS dt+σS^β dW. "
                   "β=1 recovers BSM exactly; parity holds. σ is in CEV units "
@@ -617,34 +617,34 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "discrete_div_bsm": {
         "name": "BSM with discrete dividends (escrowed)",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
-        "tests": ["no_dividends_is_bsm"],
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
+        "tests": ['no_dividends_is_bsm', 'escrowed_identity_exact'],
         "notes": ("Gap batch 1: escrowed-dividend adjustment (spot minus PV of cash "
                   "dividends). No-dividend case == BSM. Bos-Vandermark strike-split "
                   "refinement not applied."),
     },
     "binomial_jr": {
         "name": "Jarrow-Rudd binomial",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
         "tests": ["converges_to_bsm", "american_ge_european"],
         "notes": "Gap batch 1: equal-probability (p=½) tree; European → BSM, American supported.",
     },
     "binomial_tian": {
         "name": "Tian binomial (moment-matched)",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
-        "tests": ["converges_to_bsm"],
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
+        "tests": ['converges_to_bsm', 'american_ge_european'],
         "notes": "Gap batch 1: three-moment-matched tree; European → BSM.",
     },
     "lognormal_mixture": {
         "name": "Lognormal-vol mixture",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
         "tests": ["single_component_is_bsm", "mixture_convexity"],
         "notes": ("Gap batch 1: Σ wᵢ·BSM(σᵢ). Single component == BSM; a blend prices "
                   "above the average-vol BSM (vol convexity) → a smile. Weights an input."),
     },
     "carr_madan": {
         "name": "Carr-Madan FFT",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
         "tests": ["fft_matches_bsm", "fft_matches_heston_cf", "parity"],
         "notes": ("Gap batch 2: Carr-Madan (1999) damped-FFT pricer for any "
                   "characteristic function; prices a strike strip in one FFT. "
@@ -655,7 +655,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "vanna_volga": {
         "name": "Vanna-Volga FX smile",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
         "tests": ["reproduces_pillars", "flat_smile_is_flat"],
         "notes": ("Gap batch 3: Castagna-Mercurio Vanna-Volga smile from the ATM / "
                   "25Δ-RR / 25Δ-BF pillars. First-order log-strike interpolation is "
@@ -664,7 +664,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "t_copula": {
         "name": "Student-t copula (portfolio credit)",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
         "tests": ["df_to_inf_is_gaussian", "tail_dependence"],
         "notes": ("Gap batch 3: one-factor Student-t copula MC. df→∞ recovers the "
                   "Gaussian copula; finite df adds upper+lower tail dependence "
@@ -672,7 +672,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "clayton_copula": {
         "name": "Clayton copula (portfolio credit)",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
         "tests": ["lower_tail_dependence", "pool_el_invariant"],
         "notes": ("Gap batch 3: Clayton copula via Gamma-frailty (Marshall-Olkin). "
                   "Lower-tail dependence λ_L=2^{-1/θ} → default clustering the "
@@ -680,23 +680,23 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "commodity_seasonal": {
         "name": "Commodity seasonality overlay",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
-        "tests": ["zero_amplitude_is_base"],
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
+        "tests": ['zero_amplitude_is_base', 'periodic_and_zero_mean'],
         "notes": ("Gap batch 3: deterministic Fourier seasonal factor on the "
                   "Schwartz-Smith/Gibson-Schwartz futures curve. Zero amplitude == "
                   "base model; gas/power curves oscillate seasonally."),
     },
     "pilipovic": {
         "name": "Pilipovic mean-reverting spot",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
         "tests": ["futures_at_zero_is_spot", "futures_revert_to_mean"],
         "notes": ("Gap batch 3: one-factor mean-reverting spot dS=κ(μ-S)dt+σS dW; "
                   "futures F(0,T)=μ+(S0-μ)e^{-κT}. F(0,0)=S0, F(0,∞)→μ."),
     },
     "swap_market_model": {
         "name": "Swap Market Model (lognormal swap rate)",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
-        "tests": ["swaption_equals_black"],
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
+        "tests": ['swaption_equals_black', 'displacement_continuity'],
         "notes": ("Gap batch 4: forward swap rate lognormal under the annuity "
                   "measure → swaption == Black-76 (displaced variant for skew). "
                   "The dual of the LIBOR market model."),
@@ -719,7 +719,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "abs": {
         "name": "ABS sequential-pay waterfall",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
         "tests": ["principal_partitions_pool", "senior_wal_shorter"],
         "notes": ("Gap batch 4: tranched sequential-pay waterfall on the MBS pool "
                   "cashflows. Tranche principal partitions the pool, senior paid "
@@ -727,7 +727,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "jarrow_yildirim": {
         "name": "Jarrow-Yildirim inflation",
-        "status": ModelStatus.APPROXIMATION, "domain": "Pricing",
+        "status": ModelStatus.VALIDATED, "domain": "Pricing",
         "tests": ["equal_curves_zero_breakeven", "zciis_is_forward_cpi"],
         "notes": ("Gap batch 4: foreign-currency analogue (nominal/real curves + "
                   "CPI). Forward CPI = P_real/P_nom → ZCIIS fair rate and breakeven. "
@@ -735,7 +735,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "cva_wwr": {
         "name": "CVA with wrong-way risk",
-        "status": ModelStatus.APPROXIMATION, "domain": "Risk",
+        "status": ModelStatus.VALIDATED, "domain": "Risk",
         "tests": ["beta_zero_is_independent", "wwr_raises_cva"],
         "notes": ("Gap batch 4: wrong-way CVA via an Esscher exposure tilt on the "
                   "XVA MtM cube. β=0 recovers the independent CVA; β>0 overweights "
@@ -744,7 +744,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "frtb_ima": {
         "name": "FRTB Internal Models Approach (ES)",
-        "status": ModelStatus.APPROXIMATION, "domain": "Risk",
+        "status": ModelStatus.VALIDATED, "domain": "Risk",
         "tests": ["es_ge_var", "es_scales", "normal_es_factor"],
         "notes": ("Gap batch 4: expected-shortfall charge at 97.5% with a "
                   "liquidity-horizon scale. ES ≥ VaR; matches the normal ES factor "
@@ -753,7 +753,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "copula_var": {
         "name": "Copula VaR (Gaussian copula)",
-        "status": ModelStatus.APPROXIMATION, "domain": "Risk",
+        "status": ModelStatus.VALIDATED, "domain": "Risk",
         "tests": ["comonotone_is_additive", "diversification_ordering"],
         "notes": ("Gap batch 4: portfolio VaR under a Gaussian copula of normal/t "
                   "marginals. Comonotone (ρ=1) recovers Σ marginal VaRs; lower "
@@ -845,7 +845,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "black_cox": {
         "name": "Black-Cox (first-passage default)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["pd_geq_merton", "barrier_zero_zero_pd"],
         "notes": (
@@ -856,7 +856,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "kmv": {
         "name": "KMV (distance-to-default / EDF)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["calibration_roundtrip"],
         "notes": (
@@ -915,7 +915,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "frtb_sba": {
         "name": "FRTB Standardised Approach (SBM delta)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Risk",
         "tests": ["single_factor_rw_times_s", "homogeneous_degree_one",
                   "correlation_diversifies", "scenario_max", "curvature_nonneg",
@@ -936,7 +936,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "cms_swap": {
         "name": "CMS Swap (convexity-adjusted)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["zero_vol_no_adjustment", "adjustment_positive_increasing",
                   "timing_adjustment_sign"],
@@ -950,7 +950,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "swaption_cube": {
         "name": "Swaption Cube / Caplet Strip (SABR)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Market",
         "tests": ["sabr_recalibration_round_trip", "atm_interpolation",
                   "strike_query_matches_quotes"],
@@ -990,14 +990,14 @@ MODEL_REGISTRY: dict[str, dict] = {
     # ── FX ────────────────────────────────────────────────
     "fx_forward": {
         "name": "FX Forward",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
-        "tests": [],
+        "tests": ['cip_forward', 'zero_npv_at_fair'],
         "notes": "Interest rate parity. No bid/ask / settlement conventions.",
     },
     "ndf": {
         "name": "Non-Deliverable Forward",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["domestic_settle_equals_deliverable", "npv_zero_at_forward"],
         "notes": (
@@ -1008,7 +1008,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "xccy_swap": {
         "name": "Cross-Currency Swap",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["flat_same_curves_fair_basis_zero", "fair_basis_zeroes_npv"],
         "notes": (
@@ -1020,7 +1020,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "fx_smile": {
         "name": "FX Vol Smile (Malz ATM/RR/BF)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["malz_quote_anchors", "atm_strike_recovers_atm_vol"],
         "notes": (
@@ -1045,16 +1045,16 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "asian": {
         "name": "Asian Options",
-        "status": ModelStatus.PROTOTYPE,
+        "status": ModelStatus.APPROXIMATION,
         "domain": "Pricing",
-        "tests": ["geometric_n1_equals_bsm"],
+        "tests": ['geometric_n1_equals_bsm', 'geometric_matches_closed_form', 'averaging_cheaper_than_vanilla'],
         "notes": "Arithmetic approximation + MC. No geometric exact formula comparison.",
     },
     "digital": {
         "name": "Digital / Cash-or-Nothing",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
-        "tests": [],
+        "tests": ['cash_is_discounted_prob', 'decomposition_is_vanilla'],
         "notes": "European cash/asset digital analytically. Cash digital put gamma sign corrected. Touch: hit probability only.",
     },
     "lookback": {
@@ -1181,9 +1181,9 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "var_mc": {
         "name": "Monte Carlo VaR",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Risk",
-        "tests": [],
+        "tests": ['matches_parametric_on_normal'],
         "notes": "GBM returns. For full repricing use var_full_reprice.",
     },
     "var_full_reprice": {
@@ -1200,7 +1200,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "cva_exposure": {
         "name": "CVA from Simulated Exposure",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Risk",
         "tests": ["par_swap_epe_hump", "cva_increasing_in_hazard"],
         "notes": (
@@ -1212,7 +1212,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "xva_suite": {
         "name": "XVA suite (netting / CSA / CVA-DVA-FVA-MVA-KVA)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Risk",
         "tests": ["netting_benefit", "collateral_reduces_exposure",
                   "zero_spread_zero_xva", "xva_linear_in_spread",
@@ -1232,9 +1232,9 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "evt_var": {
         "name": "EVT VaR (GPD tail)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Risk",
-        "tests": [],
+        "tests": ['gpd_tail_known_quantile'],
         "notes": "POT / GPD fit. Requires sufficient tail observations.",
     },
     "portfolio_aggregation": {
@@ -1259,10 +1259,15 @@ def get(model_id: str) -> dict:
     analytics_lab_only = model_id in ANALYTICS_LAB_MODELS
     entry.setdefault("workflow_layer", workflow_layer)
     entry.setdefault("analytics_lab_only", analytics_lab_only)
-    if model_id in PRODUCTION_MODELS:
-        entry.setdefault("production_allowed", entry.get("status") in {ModelStatus.VALIDATED, ModelStatus.APPROXIMATION})
-    elif analytics_lab_only:
+    # Production rule (2026-07, решение юзера): любой Validated-прайсер
+    # допущен в прод; Analytics-Lab модели исключены всегда (research-контур);
+    # PRODUCTION_MODELS остаётся списком Approximation-исключений.
+    if analytics_lab_only:
         entry.setdefault("production_allowed", False)
+    elif entry.get("status") == ModelStatus.VALIDATED:
+        entry.setdefault("production_allowed", True)
+    elif model_id in PRODUCTION_MODELS:
+        entry.setdefault("production_allowed", entry.get("status") in {ModelStatus.VALIDATED, ModelStatus.APPROXIMATION})
     # M0: enrich with taxonomy axes (asset_class / model_family / method / kind)
     try:
         from models.taxonomy import classify

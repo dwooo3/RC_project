@@ -43,5 +43,6 @@ def test_spread_dv01_is_annuity():
 
 def test_registry_promoted():
     from models.registry import MODEL_REGISTRY, ModelStatus
-    assert MODEL_REGISTRY["frn"]["status"] == ModelStatus.APPROXIMATION
+    # Approximation после переписывания 2026-07-09, Validated с batch-3
+    assert MODEL_REGISTRY["frn"]["status"] == ModelStatus.VALIDATED
     assert MODEL_REGISTRY["frn"]["tests"]

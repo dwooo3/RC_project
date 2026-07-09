@@ -66,6 +66,19 @@ TEST_MAP: dict[str, list[str]] = {
     "var_full_reprice": ["tests/test_marketrisk_api.py"],
 }
 
+# Batch 3 (2026-07): бенчмарки ДОПИСАНЫ (tests/test_batch3_benchmarks.py) —
+# известные значения, точные тождества, симметрии, GPD-квантили.
+PROMOTED_BATCH_3 = [
+    "black76", "bachelier", "binomial_lr", "trinomial", "binomial_jr",
+    "binomial_tian", "mc_heston_qe", "sabr", "frn", "displaced_diffusion",
+    "cev", "discrete_div_bsm", "lognormal_mixture", "carr_madan",
+    "vanna_volga", "t_copula", "clayton_copula", "commodity_seasonal",
+    "pilipovic", "swap_market_model", "abs", "jarrow_yildirim", "cva_wwr",
+    "frtb_ima", "frtb_sba", "copula_var", "swaption_cube", "cms_swap",
+    "ndf", "xccy_swap", "fx_smile", "cva_exposure", "xva_suite",
+    "evt_var", "var_mc", "digital", "fx_forward", "black_cox", "kmv",
+]
+
 # Batch 2 (2026-07): >=2 точных тождества/референса на модель.
 PROMOTED_BATCH_2 = [
     "binomial_crr", "pde_cn", "bates", "kou", "variance_gamma", "nig", "cgmy",
@@ -100,7 +113,8 @@ def check_consistency() -> list[str]:
     for mid, entry in MODEL_REGISTRY.items():
         if entry["status"] == ModelStatus.VALIDATED and not entry.get("tests"):
             problems.append(f"{mid}: Validated без зарегистрированных тестов")
-    for batch, ids in (("batch-1", PROMOTED_BATCH_1), ("batch-2", PROMOTED_BATCH_2)):
+    for batch, ids in (("batch-1", PROMOTED_BATCH_1), ("batch-2", PROMOTED_BATCH_2),
+                       ("batch-3", PROMOTED_BATCH_3)):
         for mid in ids:
             if MODEL_REGISTRY[mid]["status"] != ModelStatus.VALIDATED:
                 problems.append(f"{mid}: в {batch}, но статус "
@@ -137,7 +151,7 @@ def main() -> None:
     print("Согласованность реестра: ok")
 
     if "--run" in sys.argv:
-        promoted = PROMOTED_BATCH_1 + PROMOTED_BATCH_2
+        promoted = PROMOTED_BATCH_1 + PROMOTED_BATCH_2 + PROMOTED_BATCH_3
         print(f"\nПрогон бенчмарков промоутнутых моделей ({len(promoted)}):")
         results = run_tests(promoted)
         bad = [m for m, ok in results.items() if ok is False]

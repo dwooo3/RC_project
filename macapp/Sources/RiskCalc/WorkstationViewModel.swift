@@ -84,8 +84,10 @@ final class WorkstationViewModel {
         ladder = nil
         scenarios = nil
         ladderKey = nil
+        payoff = nil
         errorMessage = nil
         captureMessage = nil
+        impliedVolResult = nil
         clearUnderlying()
         resetForSelection()
     }
@@ -228,6 +230,38 @@ final class WorkstationViewModel {
             captureMessage = error.localizedDescription
         }
         isCapturing = false
+    }
+
+    // payoff diagram
+    var payoff: WsPayoff?
+    var isLoadingPayoff = false
+
+    func loadPayoff() async {
+        guard let product = selectedProduct, let engine = selectedEngine else { return }
+        isLoadingPayoff = true
+        payoff = try? await client.payoff(product: product.id, engine: engine.id,
+                                          params: bridgeParams())
+        isLoadingPayoff = false
+    }
+
+    /// CSV of the current result (params + measures + greeks) via save panel.
+    func exportCSV() {
+        guard let r = result, let product = selectedProduct else { return }
+        var rows: [[String]] = [["product", product.id],
+                                ["engine", r.engine],
+                                ["model", r.modelID],
+                                ["status", r.modelStatus],
+                                ["value", r.value.map { "\($0)" } ?? ""]]
+        for (k, v) in numericValues.sorted(by: { $0.key < $1.key }) {
+            rows.append(["param:\(k)", "\(v)"])
+        }
+        for (k, v) in choiceValues.sorted(by: { $0.key < $1.key }) {
+            rows.append(["param:\(k)", v])
+        }
+        for g in r.greeks { rows.append(["greek:\(g.key)", "\(g.value)"]) }
+        for m in r.measures { rows.append(["measure:\(m.key)", "\(m.value)"]) }
+        CSVExport.save(suggestedName: "\(product.id)_\(r.engine)",
+                       header: ["field", "value"], rows: rows)
     }
 
     // implied vol (european_option / fx_option)

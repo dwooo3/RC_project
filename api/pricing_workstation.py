@@ -1372,6 +1372,37 @@ def _series_points(val) -> list[dict]:
     return pts
 
 
+_PAYOFF_SPOT_KEY = {p.id: k for p in PRODUCTS
+                    for k in ("S", "S0", "spot") if any(s.key == k
+                    for s in p.base_params)}
+
+
+def payoff_ws(svc, snapshot, product_id: str, engine_id: str | None,
+              params: dict, steps: int = 41) -> dict:
+    """Payoff diagram: value profile over spot today (T как есть) и на
+    экспирации (T→0, интринсик) — тем же прайсером через ladder."""
+    spot_key = _PAYOFF_SPOT_KEY.get(product_id)
+    if spot_key is None:
+        raise ValueError(f"payoff не определён для '{product_id}' (нет спот-входа)")
+    s0 = float(params.get(spot_key) or 100.0)
+    lo, hi = s0 * 0.5, s0 * 1.5
+
+    value = ladder_ws(svc, snapshot, product_id, engine_id, params,
+                      spot_key, lo, hi, steps)
+    at_expiry = dict(params)
+    at_expiry["T"] = 1e-6
+    payoff = ladder_ws(svc, snapshot, product_id, engine_id, at_expiry,
+                       spot_key, lo, hi, steps)
+    return {
+        "product": product_id, "engine": value["engine"], "spot_key": spot_key,
+        "spot": s0, "base_value": value["base_value"],
+        "value": [{"x": r["x"], "y": r["value"]} for r in value["rows"]
+                  if r["value"] is not None],
+        "payoff": [{"x": r["x"], "y": r["value"]} for r in payoff["rows"]
+                   if r["value"] is not None],
+    }
+
+
 def implied_vol_ws(product_id: str, params: dict, market_price: float) -> dict:
     """Implied vol from a market price: BSM for equity options, GK for FX.
     Only vanilla products carry a single well-defined σ to invert."""
