@@ -21,6 +21,11 @@ final class WorkstationViewModel {
     var isSearching = false
     var autofilledKeys: [String] = []
 
+    // trade capture
+    var captureQuantity: Double = 1.0
+    var captureMessage: String?
+    var isCapturing = false
+
     // desk risk
     var ladderKey: String?
     var ladderLo: Double = 0
@@ -78,6 +83,7 @@ final class WorkstationViewModel {
         scenarios = nil
         ladderKey = nil
         errorMessage = nil
+        captureMessage = nil
         clearUnderlying()
         resetForSelection()
     }
@@ -201,6 +207,25 @@ final class WorkstationViewModel {
             errorMessage = error.localizedDescription
         }
         isPricing = false
+    }
+
+    // MARK: trade capture
+
+    func addToPortfolio() async {
+        guard let product = selectedProduct, product.capturable,
+              let engine = selectedEngine else { return }
+        isCapturing = true
+        captureMessage = nil
+        do {
+            let res = try await client.addToPortfolio(product: product.id,
+                                                      engine: engine.id,
+                                                      params: bridgeParams(),
+                                                      quantity: captureQuantity)
+            captureMessage = "✓ \(res.positionID) — в книге \(res.positions) позиций"
+        } catch {
+            captureMessage = error.localizedDescription
+        }
+        isCapturing = false
     }
 
     // MARK: desk risk

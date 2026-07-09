@@ -29,11 +29,12 @@ struct WsProductModel: Decodable, Sendable, Identifiable, Hashable {
     let assetClass: String
     let group: String
     let note: String
+    let capturable: Bool
     let underlying: WsUnderlyingSpec?
     let engines: [WsEngineModel]
 
     enum CodingKeys: String, CodingKey {
-        case id, name, group, note, underlying, engines
+        case id, name, group, note, capturable, underlying, engines
         case assetClass = "asset_class"
     }
 }
@@ -186,6 +187,28 @@ private struct WsLadderBody: Encodable {
     let steps: Int
 }
 
+private struct WsCaptureBody: Encodable {
+    let product: String
+    let engine: String
+    let params: [String: BridgeValue]
+    let quantity: Double
+}
+
+struct WsCaptureResult: Decodable, Sendable {
+    let positionID: String
+    let instrument: String
+    let description: String
+    let quantity: Double
+    let marketValue: Double?
+    let positions: Int
+
+    enum CodingKeys: String, CodingKey {
+        case instrument, description, quantity, positions
+        case positionID = "position_id"
+        case marketValue = "market_value"
+    }
+}
+
 extension BridgeClient {
     func wsCatalogue() async throws -> WsCatalogue { try await get("pricing/catalogue") }
 
@@ -213,5 +236,21 @@ extension BridgeClient {
 
     func underlyingFacts(category: String, secid: String) async throws -> UnderlyingFacts {
         try await get("pricing/underlying/\(category)/\(secid)")
+    }
+
+    func addToPortfolio(product: String, engine: String, params: [String: BridgeValue],
+                        quantity: Double) async throws -> WsCaptureResult {
+        let body = try JSONEncoder().encode(WsCaptureBody(
+            product: product, engine: engine, params: params, quantity: quantity))
+        return try await post("portfolio/add", body: body)
+    }
+
+    func removePosition(_ positionID: String) async throws {
+        try await delete("portfolio/position/\(positionID)")
+    }
+
+    func resetPortfolio() async throws {
+        struct ResetResponse: Decodable { let reset: Bool }
+        let _: ResetResponse = try await post("portfolio/reset", body: Data("{}".utf8))
     }
 }

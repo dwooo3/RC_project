@@ -75,14 +75,69 @@ class AppContext:
         runtime.market_service(refresh=True)
 
     # ── portfolio ────────────────────────────────────────
+    _BOOK_ID = "bridge_book"
+
+    @property
+    def app_db(self):
+        """Application persistence (portfolio book) — data/app.sqlite."""
+        if getattr(self, "_app_db", None) is None:
+            import os
+
+            from infra.db.app_db import AppDB
+            path = os.path.join(os.path.dirname(__file__), "..", "data", "app.sqlite")
+            self._app_db = AppDB(os.path.abspath(path))
+        return self._app_db
+
     @property
     def portfolio(self) -> PortfolioService:
         if self._portfolio is None:
-            ps = PortfolioService()
-            for spec in _DEMO_POSITIONS:
-                ps.add(Position(**spec))
-            self._portfolio = ps
+            try:
+                self._portfolio = PortfolioService.load_from_db(self.app_db, self._BOOK_ID)
+                if not self._portfolio.positions:
+                    raise KeyError("empty book")
+            except Exception:
+                self._portfolio = self._demo_book()
         return self._portfolio
+
+    def _demo_book(self) -> PortfolioService:
+        ps = PortfolioService()
+        ps.portfolio.portfolio_id = self._BOOK_ID
+        ps.portfolio.name = "Bridge book"
+        for spec in _DEMO_POSITIONS:
+            ps.add(Position(**spec))
+        return ps
+
+    def _portfolio_changed(self) -> None:
+        """Persist the book and drop every valuation cache built on it."""
+        self.portfolio.save_to_db(self.app_db)
+        try:
+            from api import marketrisk
+            marketrisk.invalidate_cache()
+        except Exception:
+            pass
+
+    def add_position(self, instrument: str, params: dict, description: str,
+                     quantity: float = 1.0) -> Position:
+        ps = self.portfolio
+        existing = {p.id for p in ps.positions}
+        n = 1
+        while f"ws_{instrument}_{n:03d}" in existing:
+            n += 1
+        pos = Position(id=f"ws_{instrument}_{n:03d}", instrument=instrument,
+                       description=description, quantity=quantity,
+                       currency="RUB", book="Trading", params=params)
+        ps.add(pos)
+        self._portfolio_changed()
+        return pos
+
+    def remove_position(self, position_id: str) -> None:
+        self.portfolio.remove(position_id)
+        self._portfolio_changed()
+
+    def reset_portfolio(self) -> None:
+        """Back to the seeded demo book (and persist that state)."""
+        self._portfolio = self._demo_book()
+        self._portfolio_changed()
 
     # ── parametric VaR/ES (normal) on the portfolio MV ───
     def parametric_var(self, confidence: float = 0.99, horizon: int = 1) -> dict:

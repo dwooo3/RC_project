@@ -283,6 +283,13 @@ actor BridgeClient {
         return try JSONDecoder().decode(T.self, from: data)
     }
 
+    func delete(_ path: String) async throws {
+        var request = URLRequest(url: base.appending(path: path))
+        request.httpMethod = "DELETE"
+        let (data, response) = try await session.data(for: request)
+        try Self.check(response, data)
+    }
+
     private static func check(_ response: URLResponse, _ data: Data) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {

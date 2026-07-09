@@ -62,7 +62,10 @@ class AppDB:
     """Portfolio book + audit trail persistence."""
 
     def __init__(self, path: str = ":memory:"):
-        self.conn = sqlite3.connect(path)
+        # check_same_thread=False: the bridge serves from a uvicorn thread pool
+        # (same gotcha as MarketDataDB — a per-thread connection breaks every
+        # endpoint after the first cross-thread call).
+        self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         for stmt in _SCHEMA:
             self.conn.execute(stmt)

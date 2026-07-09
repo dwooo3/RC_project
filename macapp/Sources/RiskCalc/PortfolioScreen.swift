@@ -2,14 +2,48 @@ import SwiftUI
 
 struct PortfolioScreen: View {
     @Bindable var model: AppModel
+    @State private var actionError: String?
+    private let client = BridgeClient()
 
     var body: some View {
         ScreenScaffold {
-            PageHeader("Portfolio", subtitle: AppSection.portfolio.subtitle)
+            PageHeader("Portfolio", subtitle: AppSection.portfolio.subtitle) {
+                Button {
+                    Task { await resetBook() }
+                } label: {
+                    Label("Демо-книга", systemImage: "arrow.counterclockwise")
+                        .font(.caption)
+                }
+                .help("Сбросить портфель к 4 демо-позициям")
+            }
+            if let actionError {
+                Label(actionError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(Theme.negative)
+            }
             LoadableView(state: model.portfolio,
                          retry: { Task { await model.load(.portfolio, force: true) } }) { d in
                 content(d)
             }
+        }
+    }
+
+    private func removePosition(_ id: String) async {
+        actionError = nil
+        do {
+            try await client.removePosition(id)
+            await model.load(.portfolio, force: true)
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    private func resetBook() async {
+        actionError = nil
+        do {
+            try await client.resetPortfolio()
+            await model.load(.portfolio, force: true)
+        } catch {
+            actionError = error.localizedDescription
         }
     }
 
@@ -46,6 +80,13 @@ struct PortfolioScreen: View {
                 Table(positions.sorted { ($0.marketValue ?? 0) > ($1.marketValue ?? 0) }) {
                     TableColumn("Instrument") { p in
                         Text(p.instrument).font(.system(size: 12, weight: .medium))
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    Task { await removePosition(p.id) }
+                                } label: {
+                                    Label("Удалить позицию", systemImage: "trash")
+                                }
+                            }
                     }
                     TableColumn("Description") { p in
                         Text(p.description).foregroundStyle(.secondary)
@@ -56,6 +97,17 @@ struct PortfolioScreen: View {
                     TableColumn("Delta") { p in num(p.delta, 2) }
                     TableColumn("DV01") { p in num(p.dv01, 2) }
                     TableColumn("Vega") { p in num(p.vega, 2) }
+                    TableColumn("") { p in
+                        Button {
+                            Task { await removePosition(p.id) }
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 10)).foregroundStyle(.tertiary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Удалить \(p.id)")
+                    }
+                    .width(24)
                 }
                 // Size to content (+ header) so the table doesn't pad out with
                 // empty filler rows; cap so a large book still scrolls.

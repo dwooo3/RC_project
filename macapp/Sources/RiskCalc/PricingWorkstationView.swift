@@ -451,7 +451,7 @@ private struct ScenarioCard: View {
 // MARK: - Result panel
 
 private struct WorkstationResultPanel: View {
-    let vm: WorkstationViewModel
+    @Bindable var vm: WorkstationViewModel
 
     var body: some View {
         GlassCard {
@@ -492,6 +492,10 @@ private struct WorkstationResultPanel: View {
                                             in: RoundedRectangle(cornerRadius: 6))
                         }
                     }
+                    if vm.selectedProduct?.capturable == true {
+                        Divider()
+                        captureRow
+                    }
                 }
             } else {
                 VStack(spacing: Theme.s3) {
@@ -501,6 +505,36 @@ private struct WorkstationResultPanel: View {
                     Text("Press Calculate (⌘↵).").font(.caption).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, minHeight: 220)
+            }
+        }
+    }
+
+    /// Trade capture: quantity + "В портфель" — the priced instrument becomes
+    /// a persistent book position revalued by the portfolio layer.
+    @ViewBuilder
+    private var captureRow: some View {
+        VStack(alignment: .leading, spacing: Theme.s2) {
+            HStack(spacing: Theme.s2) {
+                Text("Qty")
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                TextField("", value: $vm.captureQuantity, format: .number)
+                    .textFieldStyle(.roundedBorder).frame(width: 90).monospacedDigit()
+                Spacer()
+                Button {
+                    Task { await vm.addToPortfolio() }
+                } label: {
+                    HStack(spacing: 4) {
+                        if vm.isCapturing { ProgressView().controlSize(.mini) }
+                        Image(systemName: "plus.circle.fill").font(.system(size: 11))
+                        Text("В портфель")
+                    }
+                }
+                .disabled(vm.isCapturing)
+            }
+            if let msg = vm.captureMessage {
+                Text(msg)
+                    .font(.system(size: 10))
+                    .foregroundStyle(msg.hasPrefix("✓") ? Theme.positive : Theme.negative)
             }
         }
     }

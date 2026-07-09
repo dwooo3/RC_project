@@ -69,6 +69,14 @@ class WsPriceRequest(BaseModel):
     params: dict[str, float | int | str | None] = {}
 
 
+class WsCaptureRequest(BaseModel):
+    product: str
+    engine: str | None = None
+    params: dict[str, float | int | str | None] = {}
+    quantity: float = 1.0
+    description: str | None = None
+
+
 class WsLadderRequest(BaseModel):
     product: str
     engine: str | None = None
@@ -227,6 +235,41 @@ def market() -> dict:
 @app.get("/portfolio")
 def portfolio() -> dict:
     return jsonable(payloads.portfolio(CONTEXT))
+
+
+# ── trade capture: workstation -> persistent book ────────
+@app.post("/portfolio/add")
+def portfolio_add(req: WsCaptureRequest) -> dict:
+    mapped = pricing_workstation.to_position(req.product, req.params)
+    if mapped is None:
+        raise HTTPException(status_code=400,
+                            detail=f"'{req.product}' не поддерживается портфельной переоценкой")
+    instrument, params, default_desc = mapped
+    pos = CONTEXT.add_position(instrument, params,
+                               req.description or default_desc, req.quantity)
+    try:
+        CONTEXT.portfolio.price_all()
+    except Exception:
+        pass
+    return jsonable({"position_id": pos.id, "instrument": pos.instrument,
+                     "description": pos.description, "quantity": pos.quantity,
+                     "market_value": pos.market_value,
+                     "positions": len(CONTEXT.portfolio.positions)})
+
+
+@app.delete("/portfolio/position/{position_id}")
+def portfolio_remove(position_id: str) -> dict:
+    ids = {p.id for p in CONTEXT.portfolio.positions}
+    if position_id not in ids:
+        raise HTTPException(status_code=404, detail=f"unknown position '{position_id}'")
+    CONTEXT.remove_position(position_id)
+    return {"removed": position_id, "positions": len(CONTEXT.portfolio.positions)}
+
+
+@app.post("/portfolio/reset")
+def portfolio_reset() -> dict:
+    CONTEXT.reset_portfolio()
+    return {"reset": True, "positions": len(CONTEXT.portfolio.positions)}
 
 
 @app.get("/risk")

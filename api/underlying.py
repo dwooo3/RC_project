@@ -25,6 +25,28 @@ def _years_to(date_str: str | None) -> float | None:
     return round(days / 365.0, 4) if days > 0 else None
 
 
+# FORTS month codes (futures): F=Jan G=Feb H=Mar J=Apr K=May M=Jun
+# N=Jul Q=Aug U=Sep V=Oct X=Nov Z=Dec
+_FORTS_MONTH = {"F": 1, "G": 2, "H": 3, "J": 4, "K": 5, "M": 6,
+                "N": 7, "Q": 8, "U": 9, "V": 10, "X": 11, "Z": 12}
+
+
+def _expiry_from_ticker(secid: str) -> float | None:
+    """Fallback expiry from a FORTS futures code (SiU6 -> Sep 2026): month
+    letter + single year digit; expiry approximated as the 15th (FORTS
+    futures expire mid-month). Deterministic when last_trade_date is absent."""
+    if len(secid) < 3:
+        return None
+    month = _FORTS_MONTH.get(secid[-2].upper())
+    if month is None or not secid[-1].isdigit():
+        return None
+    today = _dt.date.today()
+    year = (today.year // 10) * 10 + int(secid[-1])
+    # FORTS lists ~2 years ahead; a mid-month date in the past means the
+    # contract has expired — do NOT wrap a decade forward.
+    return _years_to(_dt.date(year, month, 15).isoformat())
+
+
 def _atm_iv(ctx, asset_code: str | None, spot: float | None) -> float | None:
     """ATM implied vol (decimal) from the snapshot's calibrated FORTS surface."""
     if not asset_code:
@@ -83,6 +105,8 @@ def facts(ctx, category: str, secid: str) -> dict:
                 if str(f.get("name", "")).upper() in ("LSTTRADE", "LASTTRADEDATE"):
                     expiry_t = _years_to(f.get("value"))
                     break
+        if expiry_t is None and category == "futures":
+            expiry_t = _expiry_from_ticker(secid)
 
     iv = _atm_iv(ctx, asset_code or (secid if category == "options" else None),
                  float(spot) if spot else None)

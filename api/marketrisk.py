@@ -21,6 +21,11 @@ import numpy as np
 _CACHE: dict = {}
 
 
+def invalidate_cache() -> None:
+    """Drop cached HypPL series — called on any portfolio mutation."""
+    _CACHE.clear()
+
+
 def _series(db, factor_id: str) -> list[tuple[str, float]]:
     rows = db.get_time_series(factor_id) or []
     return [(r["dt"], float(r["value"])) for r in rows if r.get("value") is not None]

@@ -1170,6 +1170,7 @@ def build_ws_catalogue(curve_ids: list[str] | None = None,
             "asset_class": p.asset_class,
             "group": p.group,
             "note": p.note,
+            "capturable": p.id in TO_POSITION,
             "underlying": p.underlying,
             "engines": [
                 {
@@ -1328,6 +1329,115 @@ def price_ws(svc, snapshot, product_id: str, engine_id: str | None,
     normalized["product"] = product_id
     normalized["engine"] = values["engine"]
     return normalized
+
+
+# ── trade capture: workstation values -> portfolio Position ─────────
+# Only products PortfolioService can revalue are capturable; engine-specific
+# model params are dropped — the book reprices positions with its own default
+# engines (the workstation engine choice is a pricing view, not a trade term).
+def _n(v, key, default=0.0):
+    return _num(v, key, default)
+
+
+TO_POSITION: dict[str, Callable[[dict], tuple[str, dict, str]]] = {
+    "european_option": lambda v: ("option", {
+        "S": _n(v, "S", 100), "K": _n(v, "K", 100), "T": _n(v, "T", 1),
+        "r": _n(v, "r", .05), "sigma": _n(v, "sigma", .2), "q": _n(v, "q", 0),
+        "opt": v.get("opt", "call")}, "European option"),
+    "barrier_option": lambda v: ("barrier", {
+        "S": _n(v, "S", 100), "K": _n(v, "K", 100), "H": _n(v, "H", 90),
+        "T": _n(v, "T", 1), "r": _n(v, "r", .05), "sigma": _n(v, "sigma", .2),
+        "q": _n(v, "q", 0), "opt": v.get("opt", "call"),
+        "barrier_type": v.get("barrier_type", "down-out")}, "Barrier option"),
+    "asian_option": lambda v: ("asian", {
+        "S": _n(v, "S", 100), "K": _n(v, "K", 100), "T": _n(v, "T", 1),
+        "r": _n(v, "r", .05), "sigma": _n(v, "sigma", .2), "q": _n(v, "q", 0),
+        "opt": v.get("opt", "call"), "averaging": v.get("averaging", "arithmetic"),
+        "n": int(_n(v, "n", 12))}, "Asian option"),
+    "digital_option": lambda v: ("digital", {
+        "S": _n(v, "S", 100), "K": _n(v, "K", 100), "T": _n(v, "T", .5),
+        "r": _n(v, "r", .04), "sigma": _n(v, "sigma", .2), "q": _n(v, "q", 0),
+        "opt": v.get("opt", "call"), "style": v.get("style", "cash"),
+        "cash": _n(v, "cash", 1.0)}, "Digital option"),
+    "lookback_option": lambda v: ("lookback", {
+        "S": _n(v, "S", 100), "T": _n(v, "T", 1), "r": _n(v, "r", .05),
+        "sigma": _n(v, "sigma", .2), "q": _n(v, "q", 0), "opt": v.get("opt", "call"),
+        "strike_type": v.get("strike_type", "floating"),
+        "K": _n(v, "K", 100)}, "Lookback option"),
+    "spread_option": lambda v: ("spread", {
+        "S1": _n(v, "S1", 100), "S2": _n(v, "S2", 100), "K": _n(v, "K", 5),
+        "T": _n(v, "T", 1), "r": _n(v, "r", .05), "sigma1": _n(v, "sigma1", .2),
+        "sigma2": _n(v, "sigma2", .25), "rho": _n(v, "rho", .4),
+        "q1": _n(v, "q1", 0), "q2": _n(v, "q2", 0)}, "Spread option"),
+    "basket_option": lambda v: ("basket", {
+        "assets": _floats(v.get("spots", "100,100,100")),
+        "weights": _floats(v.get("weights", "0.4,0.3,0.3")),
+        "K": _n(v, "K", 100), "T": _n(v, "T", 1), "r": _n(v, "r", .05),
+        "sigmas": _floats(v.get("sigmas", "0.2,0.25,0.3")),
+        "corr": _corr_matrix(_n(v, "rho", .4),
+                             len(_floats(v.get("spots", "100,100,100")))),
+        "opt": v.get("opt", "call")}, "Basket option"),
+    "autocall": lambda v: ("autocall", {
+        "S0": _n(v, "S0", 100), "r": _n(v, "r", .05), "q": _n(v, "q", 0),
+        "sigma": _n(v, "sigma", .2), "T": _n(v, "T", 3),
+        "obs_dates": _floats(v.get("obs_dates", "")) or
+                     [float(i) for i in range(1, max(int(round(_n(v, "T", 3))), 1) + 1)],
+        "autocall_barrier": _n(v, "autocall_barrier", 1.0),
+        "coupon_barrier": _n(v, "coupon_barrier", .7),
+        "ki_barrier": _n(v, "ki_barrier", .65),
+        "coupon_rate": _n(v, "coupon_rate", .1),
+        "n_sims": int(_n(v, "n_sims", 20000))}, "Autocall / Phoenix"),
+    "fra": lambda v: ("fra", {
+        "notional": _n(v, "notional", 1e6), "K": _n(v, "K", .1),
+        "T1": _n(v, "T1", 1), "T2": _n(v, "T2", 1.5), "r": _n(v, "r", .1)}, "FRA"),
+    "irs": lambda v: ("irs", {
+        "notional": _n(v, "notional", 1e6), "fixed_rate": _n(v, "fixed_rate", .1),
+        "T": _n(v, "T", 5), "freq": int(_n(v, "freq", 4)), "r": _n(v, "r", .1),
+        "pay_fixed": v.get("side", "pay fixed") == "pay fixed"}, "IRS"),
+    "cap_floor": lambda v: ("cap_floor", {
+        "notional": _n(v, "notional", 1e6), "K": _n(v, "K", .1), "T": _n(v, "T", 3),
+        "freq": int(_n(v, "freq", 2)), "vol": _n(v, "vol", .2), "r": _n(v, "r", .1),
+        "opt": v.get("opt", "cap")}, "Cap/Floor"),
+    "swaption": lambda v: ("swaption", {
+        "notional": _n(v, "notional", 1e6), "K": _n(v, "K", .1),
+        "T_option": _n(v, "T_option", 1), "T_swap": _n(v, "T_swap", 5),
+        "freq": int(_n(v, "freq", 2)), "sigma": _n(v, "sigma", .2),
+        "r": _n(v, "r", .1), "opt": v.get("opt", "payer")}, "European swaption"),
+    "stir_future": lambda v: ("stir_future", {
+        "forward_rate": _n(v, "forward_rate", .1), "notional": _n(v, "notional", 1e6),
+        "tenor": _n(v, "tenor", .25)}, "STIR future"),
+    "bond_future": lambda v: ("bond_future", {
+        "clean_price": _n(v, "clean_price", 98), "accrued": _n(v, "accrued", 1),
+        "conversion_factor": _n(v, "conversion_factor", .9),
+        "coupon_income": _n(v, "coupon_income", 0), "ctd_dv01": _n(v, "ctd_dv01", .08),
+        "futures_price": _n(v, "futures_price", 108), "repo_rate": _n(v, "repo_rate", .08),
+        "T_delivery": _n(v, "T_delivery", .25),
+        "target_bpv": _n(v, "target_bpv", 1000)}, "Bond future (CTD)"),
+    "cds": lambda v: ("cds", {
+        "notional": _n(v, "notional", 1e6), "spread": _n(v, "spread", .01),
+        "T": _n(v, "T", 5), "freq": int(_n(v, "freq", 4)),
+        "hazard": _n(v, "hazard", .02), "r": _n(v, "r", .05),
+        "recovery": _n(v, "recovery", .4)}, "CDS"),
+    "fx_forward": lambda v: ("fx_forward", {
+        "S": _n(v, "S", 90), "K": _n(v, "forward_agreed", 0) or None,
+        "r_d": _n(v, "r_d", .16), "r_f": _n(v, "r_f", .05), "T": _n(v, "T", 1),
+        "ccy_pair": "USD/RUB"}, "FX forward"),
+}
+
+
+def to_position(product_id: str, values: dict) -> tuple[str, dict, str] | None:
+    """Map workstation form values onto a portfolio position; None if the
+    product has no portfolio revaluation route yet."""
+    fn = TO_POSITION.get(product_id)
+    if fn is None:
+        return None
+    inst, params, desc = fn(values)
+    # fx_forward: an unset agreed rate means "strike at today's fair forward"
+    if inst == "fx_forward" and params.get("K") is None:
+        import math as _math
+        params["K"] = params["S"] * _math.exp(
+            (params["r_d"] - params["r_f"]) * params["T"])
+    return inst, params, desc
 
 
 # ── desk risk: ladders + scenario simulation (full revaluation) ──────
