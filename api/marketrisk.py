@@ -31,14 +31,28 @@ def _series(db, factor_id: str) -> list[tuple[str, float]]:
     return [(r["dt"], float(r["value"])) for r in rows if r.get("value") is not None]
 
 
-def factor_shifts(ctx, window: int = 500) -> dict:
-    """Step 1 — shifts generation: aligned joint daily factor changes."""
+# Named stress windows for Stress VaR (Calypso §2.3): a fixed historical
+# period whose shifts are applied to the CURRENT portfolio.
+STRESS_WINDOWS = {
+    "2022": ("2022-01-01", "2022-12-30"),          # мобилизация/санкции
+    "2024h2": ("2024-09-01", "2025-03-31"),        # цикл КС 21%
+}
+
+
+def factor_shifts(ctx, window: int = 500, frm: str | None = None,
+                  till: str | None = None) -> dict:
+    """Step 1 — shifts generation: aligned joint daily factor changes.
+    ``frm``/``till`` clip to a fixed period (stress window) — then ``window``
+    is ignored."""
     db = ctx.market_db
     eq = dict(_series(db, "IMOEX:price"))
     kbd = dict(_series(db, "KBD:5Y"))
     rvi = dict(_series(db, "RVI:price"))
     usd = dict(_series(db, "USDRUB:fix"))
     dates = sorted(set(eq) & set(kbd) & set(rvi))
+    if frm or till:
+        dates = [d for d in dates if (not frm or d >= frm) and (not till or d <= till)]
+        window = 0
     if len(dates) < 60:
         raise ValueError("not enough joint factor history (need >= 60 days)")
     has_fx = len(usd) >= 60
@@ -73,14 +87,7 @@ def factor_shifts(ctx, window: int = 500) -> dict:
     }
 
 
-def hyppl(ctx, window: int = 500) -> dict:
-    """Step 2 — Hypothetical P&L: full revaluation of the current book on every
-    historical joint scenario. Cached per (snapshot, window)."""
-    key = (getattr(ctx.snapshot, "snapshot_id", "?"), int(window))
-    if key in _CACHE:
-        return _CACHE[key]
-    shifts = factor_shifts(ctx, window)
-    ps = ctx.portfolio
+def _reprice_series(ps, shifts: dict) -> tuple[np.ndarray, set[str]]:
     pnl = np.empty(len(shifts["dates"]))
     errors: set[str] = set()
     for i in range(len(pnl)):
@@ -88,9 +95,24 @@ def hyppl(ctx, window: int = 500) -> dict:
                                   dvol=float(shifts["dvol"][i]), dfx=float(shifts["fx"][i]))
         pnl[i] = res["pnl"]
         errors.update(res["errors"])
+    return pnl, errors
+
+
+def hyppl(ctx, window: int = 500, frm: str | None = None,
+          till: str | None = None, portfolio=None) -> dict:
+    """Step 2 — Hypothetical P&L: full revaluation of the book on every
+    historical joint scenario. Cached per (snapshot, window/stress period) for
+    the MAIN book; ad-hoc books (what-if) are never cached."""
+    key = (getattr(ctx.snapshot, "snapshot_id", "?"), int(window), frm, till)
+    if portfolio is None and key in _CACHE:
+        return _CACHE[key]
+    shifts = factor_shifts(ctx, window, frm, till)
+    ps = portfolio if portfolio is not None else ctx.portfolio
+    pnl, errors = _reprice_series(ps, shifts)
     out = {"dates": shifts["dates"], "pnl": pnl, "factors": shifts["factors"],
            "reprice_errors": sorted(errors)}
-    _CACHE[key] = out
+    if portfolio is None:
+        _CACHE[key] = out
     return out
 
 
@@ -107,11 +129,13 @@ def _var_es(losses: np.ndarray, confidence: float) -> tuple[float, float]:
 
 
 def overview(ctx, confidence: float = 0.99, window: int = 500,
-             horizon: int = 1) -> dict:
-    """VaR analysis report: HypPL distribution + metrics by method + drill-down."""
+             horizon: int = 1, stress: str | None = None) -> dict:
+    """VaR analysis report: HypPL distribution + metrics by method + drill-down.
+    ``stress`` selects a named fixed historical period (Stress VaR)."""
     from risk.var import evt_var, montecarlo_var, parametric_var
 
-    hp = hyppl(ctx, window)
+    frm, till = STRESS_WINDOWS.get(stress or "", (None, None))
+    hp = hyppl(ctx, window, frm, till)
     pnl = hp["pnl"] * math.sqrt(max(horizon, 1))     # sqrt-time to the horizon
     losses = -pnl
     var_h, es_h = _var_es(losses, confidence)
@@ -162,6 +186,8 @@ def overview(ctx, confidence: float = 0.99, window: int = 500,
 
     return {
         "confidence": confidence, "window": window, "horizon": horizon,
+        "stress": stress or "",
+        "stress_period": f"{frm} … {till}" if frm else "",
         "n_scenarios": len(pnl),
         "portfolio_value": float(val.total_market_value),
         "positions": len(ctx.portfolio.positions),
@@ -174,6 +200,94 @@ def overview(ctx, confidence: float = 0.99, window: int = 500,
         "factors": hp["factors"],
         "data_quality": quality,
         "pnl_mean": float(pnl.mean()), "pnl_std": float(pnl.std()),
+    }
+
+
+def incremental(ctx, product: str, engine: str | None, params: dict,
+                quantity: float = 1.0, confidence: float = 0.99,
+                window: int = 500) -> dict:
+    """Incremental VaR (Calypso §2.3): VaR(book + hypothetical trade) −
+    VaR(book), full revaluation on the same historical scenarios. The trade is
+    NOT persisted — pure what-if."""
+    import copy
+
+    from api.pricing_workstation import to_position
+    from domain.portfolio import Position
+    from services.portfolio_service import PortfolioService
+
+    mapped = to_position(product, params)
+    if mapped is None:
+        raise ValueError(f"'{product}' не поддерживается портфельной переоценкой")
+    instrument, pos_params, desc = mapped
+
+    base_hp = hyppl(ctx, window)
+    losses = -base_hp["pnl"]
+    var_base, _ = _var_es(losses, confidence)
+
+    trade = Position(id="whatif_trade", instrument=instrument, quantity=quantity,
+                     description=desc, params=pos_params)
+
+    what_if = PortfolioService()
+    for pos in ctx.portfolio.positions:
+        what_if.add(copy.deepcopy(pos))
+    what_if.add(copy.deepcopy(trade))
+    hp_new = hyppl(ctx, window, portfolio=what_if)
+    var_new, _ = _var_es(-hp_new["pnl"], confidence)
+
+    solo = PortfolioService()
+    solo.add(copy.deepcopy(trade))
+    hp_solo = hyppl(ctx, window, portfolio=solo)
+    var_solo, _ = _var_es(-hp_solo["pnl"], confidence)
+
+    incr = var_new - var_base
+    return {
+        "product": product, "instrument": instrument, "quantity": quantity,
+        "confidence": confidence, "window": window,
+        "var_base": var_base, "var_with_trade": var_new,
+        "incremental_var": incr,
+        "standalone_var": var_solo,
+        "diversification_benefit": var_solo - incr,
+    }
+
+
+def pnl_explain(ctx, theta_days: float = 1.0) -> dict:
+    """P&L Explained (Calypso §2.4): the latest day's ACTUAL factor moves →
+    full-reprice total P&L, attributed via greeks into market-data effects
+    (delta/gamma/vega/rho) + time effect (theta); the unexplained remainder is
+    the residual (higher-order + FX + cross terms)."""
+    shifts = factor_shifts(ctx, window=30)
+    dS, dr = float(shifts["eq"][-1]), float(shifts["dr"][-1])
+    dvol, dfx = float(shifts["dvol"][-1]), float(shifts["fx"][-1])
+    as_of = shifts["dates"][-1]
+
+    ps = ctx.portfolio
+    actual = ps.full_reprice_pnl(dS=dS, dr=dr, dvol=dvol, dfx=dfx)
+    result = ps.explain_pnl(total_pnl=actual["pnl"], dS=dS, dVol=dvol, dr=dr,
+                            theta_days=theta_days)
+
+    labels = {"delta_pnl": "Delta (equity)", "gamma_pnl": "Gamma",
+              "vega_pnl": "Vega (vol)", "theta_pnl": "Theta (time)",
+              "rate_pnl": "Rates", "rho_pnl": "Rates (rho)",
+              "fx_pnl": "FX", "spread_pnl": "Credit spread"}
+    comp = dict(result.components or {})
+    effects = [{"key": k, "label": labels.get(k, k.replace("_pnl", "").capitalize()),
+                "value": float(v)} for k, v in comp.items()]
+    return {
+        "as_of": as_of,
+        "moves": {"equity": dS, "rates_bp": dr * 10000, "vol_pts": dvol * 100,
+                  "fx": dfx},
+        "total_pnl": float(actual["pnl"]),
+        "explained": float(sum(comp.values())),
+        "residual": float(result.residual),
+        "effects": effects,
+        "by_factor": [{"factor": k, "pnl": float(v)}
+                      for k, v in (result.factor_pnl or {}).items()],
+        "by_position": [{"position": k, "pnl": float(v)}
+                        for k, v in (result.position_pnl or {}).items()],
+        "note": ("Market-data effect по грикам, time effect = theta; residual — "
+                 "нелинейность/кросс-эффекты/FX (FX-атрибуция по грикам пока не "
+                 "разложена)."),
+        "warnings": list(result.warnings or []),
     }
 
 

@@ -194,6 +194,24 @@ private struct WsCaptureBody: Encodable {
     let quantity: Double
 }
 
+struct WsIncrementalVaR: Decodable, Sendable {
+    let varBase: Double
+    let varWithTrade: Double
+    let incrementalVaR: Double
+    let standaloneVaR: Double
+    let diversificationBenefit: Double
+    let confidence: Double
+
+    enum CodingKeys: String, CodingKey {
+        case confidence
+        case varBase = "var_base"
+        case varWithTrade = "var_with_trade"
+        case incrementalVaR = "incremental_var"
+        case standaloneVaR = "standalone_var"
+        case diversificationBenefit = "diversification_benefit"
+    }
+}
+
 struct WsCaptureResult: Decodable, Sendable {
     let positionID: String
     let instrument: String
@@ -243,6 +261,19 @@ extension BridgeClient {
         let body = try JSONEncoder().encode(WsCaptureBody(
             product: product, engine: engine, params: params, quantity: quantity))
         return try await post("portfolio/add", body: body)
+    }
+
+    func incrementalVaR(product: String, engine: String, params: [String: BridgeValue],
+                        quantity: Double) async throws -> WsIncrementalVaR {
+        let body = try JSONEncoder().encode(WsCaptureBody(
+            product: product, engine: engine, params: params, quantity: quantity))
+        return try await post("marketrisk/incremental", body: body)
+    }
+
+    func addMarketToPortfolio(category: String, secid: String,
+                              quantity: Double) async throws -> WsCaptureResult {
+        try await post("portfolio/add_market?category=\(category)&secid=\(secid)&quantity=\(quantity)",
+                       body: Data("{}".utf8))
     }
 
     func removePosition(_ positionID: String) async throws {

@@ -536,6 +536,31 @@ private struct WorkstationResultPanel: View {
                     .font(.system(size: 10))
                     .foregroundStyle(msg.hasPrefix("✓") ? Theme.positive : Theme.negative)
             }
+            HStack(spacing: Theme.s2) {
+                Button {
+                    Task { await vm.runIncrementalVaR() }
+                } label: {
+                    HStack(spacing: 4) {
+                        if vm.isRunningIncremental { ProgressView().controlSize(.mini) }
+                        Image(systemName: "plus.forwardslash.minus").font(.system(size: 10))
+                        Text("What-if VaR").font(.system(size: 11))
+                    }
+                }
+                .disabled(vm.isRunningIncremental)
+                .help("Incremental VaR: VaR(книга + сделка) − VaR(книга), без записи в портфель")
+                Spacer()
+            }
+            if let ivar = vm.incrementalVaR {
+                VStack(alignment: .leading, spacing: 2) {
+                    KeyValueRow(key: "Incremental VaR \(Int(ivar.confidence * 100))%",
+                                value: Fmt.money(ivar.incrementalVaR),
+                                valueColor: ivar.incrementalVaR > 0 ? Theme.negative : Theme.positive)
+                    KeyValueRow(key: "Standalone VaR", value: Fmt.money(ivar.standaloneVaR))
+                    KeyValueRow(key: "Diversification",
+                                value: Fmt.money(ivar.diversificationBenefit),
+                                valueColor: Theme.positive)
+                }
+            }
         }
     }
 

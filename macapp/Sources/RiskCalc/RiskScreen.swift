@@ -6,6 +6,7 @@ struct RiskScreen: View {
 
     enum Mode: String, CaseIterable, Identifiable {
         case marketRisk = "Market Risk"
+        case pnlExplain = "P&L Explain"
         case parametric = "Parametric"
         var id: String { rawValue }
     }
@@ -26,6 +27,8 @@ struct RiskScreen: View {
             switch mode {
             case .marketRisk:
                 MarketRiskPane()
+            case .pnlExplain:
+                PnlExplainPane()
             case .parametric:
                 parametricBody
             }

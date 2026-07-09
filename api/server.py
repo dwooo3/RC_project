@@ -193,11 +193,49 @@ def ws_ladder(req: WsLadderRequest) -> dict:
 # ── Market Risk workstation (ERS-style: HypPL / VaR / backtesting) ──
 @app.get("/marketrisk")
 def marketrisk_overview(confidence: float = 0.99, window: int = 500,
-                        horizon: int = 1) -> dict:
+                        horizon: int = 1, stress: str | None = None) -> dict:
     try:
-        return jsonable(marketrisk.overview(CONTEXT, confidence, window, horizon))
+        return jsonable(marketrisk.overview(CONTEXT, confidence, window, horizon,
+                                            stress=stress))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/marketrisk/incremental")
+def marketrisk_incremental(req: WsCaptureRequest, confidence: float = 0.99,
+                           window: int = 500) -> dict:
+    try:
+        _svc.market_data = CONTEXT.market
+        return jsonable(marketrisk.incremental(
+            CONTEXT, req.product, req.engine, req.params, req.quantity,
+            confidence, window))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/pnl/explain")
+def pnl_explain(theta_days: float = 1.0) -> dict:
+    try:
+        return jsonable(marketrisk.pnl_explain(CONTEXT, theta_days))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/portfolio/add_market")
+def portfolio_add_market(category: str, secid: str, quantity: float = 1.0) -> dict:
+    try:
+        instrument, params, desc = underlying.market_position(CONTEXT, category, secid)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    pos = CONTEXT.add_position(instrument, params, desc, quantity)
+    try:
+        CONTEXT.portfolio.price_all()
+    except Exception:
+        pass
+    return jsonable({"position_id": pos.id, "instrument": pos.instrument,
+                     "description": pos.description, "quantity": pos.quantity,
+                     "market_value": pos.market_value,
+                     "positions": len(CONTEXT.portfolio.positions)})
 
 
 @app.get("/marketrisk/backtest")

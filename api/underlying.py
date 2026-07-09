@@ -80,6 +80,45 @@ def _r_zero(ctx, tenor: float = 1.0) -> float | None:
     return None
 
 
+def market_position(ctx, category: str, secid: str) -> tuple[str, dict, str]:
+    """Map a REAL market-data instrument onto a portfolio position.
+
+    bonds -> the fixed-bond template from the reference (face / coupon /
+    maturity / frequency; the flat r seeds from YTM so the mark starts near
+    the market); equities -> spot position; futures -> mark-to-market future.
+    """
+    inst = market_entity.instrument(ctx, category, secid)
+    label = inst.get("issuer_ru") or inst.get("name_ru") or secid
+
+    if category == "bonds":
+        ref = ctx.market_db.get_bond_ref(secid) or {}
+        mat_t = _years_to(ref.get("mat_date"))
+        if not mat_t:
+            raise ValueError(f"{secid}: нет даты погашения — не могу построить позицию")
+        period = ref.get("coupon_period") or 182
+        ytm = inst.get("ytm")
+        params = {
+            "face": float(ref.get("facevalue") or 1000.0),
+            "coupon": float(ref.get("coupon_percent") or 0.0) / 100.0,
+            "T": mat_t,
+            "freq": max(1, round(365.0 / float(period))) if period else 2,
+            "r": round(ytm / 100.0, 6) if ytm else 0.14,
+            "secid": secid,
+        }
+        return "bond", params, f"{secid} · {label}"
+
+    last = inst.get("last") or (inst.get("day") or {}).get("close")
+    if last is None:
+        raise ValueError(f"{secid}: нет последней цены")
+
+    if category == "futures":
+        return "future", {"F": float(last), "multiplier": 1.0, "secid": secid}, \
+            f"{secid} · {label}"
+    if category in ("equities", "indices"):
+        return "equity", {"S": float(last), "secid": secid}, f"{secid} · {label}"
+    raise ValueError(f"категория '{category}' не поддерживается портфелем")
+
+
 def facts(ctx, category: str, secid: str) -> dict:
     """Market facts for one instrument, shaped for form autofill."""
     inst = market_entity.instrument(ctx, category, secid)

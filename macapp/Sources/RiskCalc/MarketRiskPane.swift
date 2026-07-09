@@ -33,6 +33,8 @@ struct MROverview: Decodable, Sendable {
     let confidence: Double
     let window: Int
     let horizon: Int
+    let stress: String
+    let stressPeriod: String
     let nScenarios: Int
     let portfolioValue: Double
     let positions: Int
@@ -48,7 +50,8 @@ struct MROverview: Decodable, Sendable {
     let dataQuality: [String]
 
     enum CodingKeys: String, CodingKey {
-        case confidence, window, horizon, methods, histogram, hyppl, worst, best, factors
+        case confidence, window, horizon, stress, methods, histogram, hyppl, worst, best, factors
+        case stressPeriod = "stress_period"
         case nScenarios = "n_scenarios"
         case portfolioValue = "portfolio_value"
         case positions
@@ -101,8 +104,11 @@ struct MRBacktest: Decodable, Sendable {
 }
 
 extension BridgeClient {
-    func marketRisk(confidence: Double, window: Int, horizon: Int) async throws -> MROverview {
-        try await get("marketrisk?confidence=\(confidence)&window=\(window)&horizon=\(horizon)")
+    func marketRisk(confidence: Double, window: Int, horizon: Int,
+                    stress: String = "") async throws -> MROverview {
+        var path = "marketrisk?confidence=\(confidence)&window=\(window)&horizon=\(horizon)"
+        if !stress.isEmpty { path += "&stress=\(stress)" }
+        return try await get(path)
     }
 
     func marketRiskBacktest(confidence: Double, window: Int) async throws -> MRBacktest {
@@ -118,6 +124,7 @@ final class MarketRiskViewModel {
     var confidence: Double = 0.99
     var window: Int = 500
     var horizon: Int = 1
+    var stress: String = ""            // "" = rolling window, else named period
 
     var overview: MROverview?
     var backtest: MRBacktest?
@@ -131,7 +138,7 @@ final class MarketRiskViewModel {
         errorMessage = nil
         do {
             async let ov = client.marketRisk(confidence: confidence, window: window,
-                                             horizon: horizon)
+                                             horizon: horizon, stress: stress)
             async let bt = client.marketRiskBacktest(confidence: confidence, window: window)
             overview = try await ov
             backtest = try await bt
@@ -193,6 +200,13 @@ struct MarketRiskPane: View {
                 Text("1000d").tag(1000)
             }
             .pickerStyle(.segmented).fixedSize()
+            .disabled(!vm.stress.isEmpty)
+            Picker("Period", selection: $vm.stress) {
+                Text("Rolling").tag("")
+                Text("Stress 2022").tag("2022")
+                Text("Stress 2024–25").tag("2024h2")
+            }
+            .pickerStyle(.segmented).fixedSize()
             Picker("Horizon", selection: $vm.horizon) {
                 Text("1d").tag(1)
                 Text("10d").tag(10)
@@ -216,8 +230,11 @@ struct MarketRiskPane: View {
     @ViewBuilder
     private func content(_ ov: MROverview) -> some View {
         KPIStrip(items: [
-            KPICard(label: "VaR \(Int(ov.confidence * 100))% · \(ov.horizon)d",
-                    value: Fmt.money(ov.varValue), sub: "historical full reprice",
+            KPICard(label: ov.stress.isEmpty
+                        ? "VaR \(Int(ov.confidence * 100))% · \(ov.horizon)d"
+                        : "Stress VaR \(Int(ov.confidence * 100))%",
+                    value: Fmt.money(ov.varValue),
+                    sub: ov.stress.isEmpty ? "historical full reprice" : ov.stressPeriod,
                     accent: Theme.negative, icon: "shield.lefthalf.filled"),
             KPICard(label: "Expected shortfall", value: Fmt.money(ov.es),
                     sub: "tail mean beyond VaR", accent: Theme.warning,

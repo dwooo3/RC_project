@@ -334,6 +334,7 @@ struct MarketEntityView: View {
     let category: String
     @State private var vm: MarketEntityVM
     @State private var showCard = false
+    @State private var bookMessage: String?
     // collapsible detail sections (E2) — full spec and long lists fold away
     @State private var specExpanded = false
     @State private var couponsExpanded = false
@@ -540,6 +541,9 @@ struct MarketEntityView: View {
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer()
+            if ["bonds", "equities", "futures"].contains(category) {
+                addToBookButton(e)
+            }
             VStack(alignment: .trailing, spacing: 1) {
                 Text(price.map { Fmt.number($0, digits: 2) } ?? "—")
                     .font(.system(size: 20, weight: .bold)).monospacedDigit()
@@ -558,6 +562,34 @@ struct MarketEntityView: View {
                 }
             }
         }
+    }
+
+    /// Trade capture from market data: the REAL instrument (по последнему
+    /// торговому дню) becomes a persistent book position.
+    private func addToBookButton(_ e: MDEntity) -> some View {
+        Button {
+            Task {
+                bookMessage = nil
+                do {
+                    let res = try await BridgeClient().addMarketToPortfolio(
+                        category: category, secid: e.secid, quantity: 1.0)
+                    bookMessage = "✓ \(res.positionID)"
+                } catch {
+                    bookMessage = "Ошибка: \(error.localizedDescription)"
+                }
+            }
+        } label: {
+            VStack(spacing: 1) {
+                Label("В портфель", systemImage: "plus.circle")
+                    .font(.system(size: 11))
+                if let msg = bookMessage {
+                    Text(msg).font(.system(size: 8))
+                        .foregroundStyle(msg.hasPrefix("✓") ? Theme.positive : Theme.negative)
+                }
+            }
+        }
+        .buttonStyle(.bordered)
+        .help("Добавить позицию в книгу (qty 1, изменить можно в Portfolio)")
     }
 
     /// One compact row of dropdown chips: interval · chart mode · period/LIVE.

@@ -25,6 +25,8 @@ final class WorkstationViewModel {
     var captureQuantity: Double = 1.0
     var captureMessage: String?
     var isCapturing = false
+    var incrementalVaR: WsIncrementalVaR?
+    var isRunningIncremental = false
 
     // desk risk
     var ladderKey: String?
@@ -226,6 +228,21 @@ final class WorkstationViewModel {
             captureMessage = error.localizedDescription
         }
         isCapturing = false
+    }
+
+    func runIncrementalVaR() async {
+        guard let product = selectedProduct, product.capturable,
+              let engine = selectedEngine else { return }
+        isRunningIncremental = true
+        incrementalVaR = nil
+        do {
+            incrementalVaR = try await client.incrementalVaR(
+                product: product.id, engine: engine.id,
+                params: bridgeParams(), quantity: captureQuantity)
+        } catch {
+            captureMessage = error.localizedDescription
+        }
+        isRunningIncremental = false
     }
 
     // MARK: desk risk
