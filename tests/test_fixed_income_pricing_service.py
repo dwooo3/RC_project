@@ -70,7 +70,7 @@ def test_price_bond_accepts_request_and_returns_model_metadata():
     result = PricingService().price_bond(request, snapshot=snapshot)
 
     assert result["model_id"] == "fixed_bond"
-    assert result["model_status"] == "Approximation"
+    assert result["model_status"] == "Validated"     # batch-1 promotion 2026-07
     assert result["request"] == request
     assert isinstance(result["bond_result"], BondPricingResult)
     assert result["bond_result"].model_id == "fixed_bond"

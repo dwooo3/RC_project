@@ -41,7 +41,7 @@ from api import (
     timeseries,
     volsurface,
 )
-from api import credit, marketrisk, pricing_workstation, underlying
+from api import credit, marketrisk, pricing_workstation, underlying, xva
 from api.context import CONTEXT
 from api.serialization import jsonable
 from services.pricing_service import PricingService
@@ -202,6 +202,29 @@ def marketrisk_incremental(req: WsCaptureRequest, confidence: float = 0.99,
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+class XvaRequest(BaseModel):
+    cpty_issuer: str | None = None
+    cpty_spread_bps: float = 200.0
+    own_spread_bps: float = 0.0
+    recovery: float = 0.40
+    funding_spread_bps: float = 100.0
+    cost_of_capital: float = 0.10
+    csa_enabled: bool = False
+    threshold: float = 0.0
+    mta: float = 0.0
+    mpor_weeks: float = 2.0
+    n_sims: int = 4000
+    use_book: bool = True
+
+
+@app.post("/xva")
+def xva_run(req: XvaRequest) -> dict:
+    try:
+        return jsonable(xva.run(CONTEXT, CONTEXT.risk, **req.model_dump()))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 # ── issuer credit: ratings + z-spread hazard curves ──────
 @app.get("/credit/ratings")
 def credit_ratings() -> dict:
@@ -239,6 +262,14 @@ def portfolio_add_market(category: str, secid: str, quantity: float = 1.0) -> di
                      "description": pos.description, "quantity": pos.quantity,
                      "market_value": pos.market_value,
                      "positions": len(CONTEXT.portfolio.positions)})
+
+
+@app.get("/marketrisk/pca")
+def marketrisk_pca(confidence: float = 0.99, window: int = 500) -> dict:
+    try:
+        return jsonable(marketrisk.pca_rates(CONTEXT, confidence, window))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @app.get("/marketrisk/backtest")

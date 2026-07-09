@@ -121,7 +121,7 @@ def test_m7_wired():
     from models import registry as R
     for mid in ("cds_isda", "merton_structural", "black_cox", "kmv", "gaussian_copula"):
         assert tax.classify(mid)["asset_class"] == "credit"
-        assert R.MODEL_REGISTRY[mid]["status"].value == "Approximation"
+        assert R.MODEL_REGISTRY[mid]["status"].value in ("Approximation", "Validated")
     assert tax.classify("merton_structural")["model_family"] == "structural"
     assert tax.classify("gaussian_copula")["model_family"] == "copula"
     assert "gaussian_copula" in tax.engines_for("cdo_tranche")

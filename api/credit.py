@@ -24,8 +24,12 @@ def _issuer_bonds(ctx, query: str) -> list[dict]:
             if needle in (r.get("issuer_ru") or "").casefold()][:40]
 
 
-def issuer_hazard(ctx, query: str) -> dict:
-    """Per-issuer default curve: z-spread per bond -> hazard/PD term structure."""
+def issuer_hazard_curve(ctx, query: str):
+    """Build the issuer HazardCurve + metadata; reused by the /credit endpoint,
+    the credit-product pricers and the XVA workstation.
+
+    Returns (HazardCurve, meta) where meta carries issuer/rating/recovery/
+    bond points/errors."""
     bonds = _issuer_bonds(ctx, query)
     if not bonds:
         raise ValueError(f"эмитент '{query}' не найден среди облигаций")
@@ -63,24 +67,33 @@ def issuer_hazard(ctx, query: str) -> dict:
     spreads = [p["z_spread_bps"] / 10000.0 for p in points]
     curve = hazard_curve_from_corp_spreads(tenors, spreads, recovery,
                                            label=f"hazard {issuer}")
-
-    grid = sorted({round(t, 2) for t in tenors} | {1.0, 3.0, 5.0})
-    grid = [t for t in grid if t <= max(tenors) + 1e-9] or tenors
-    return {
+    meta = {
         "issuer": issuer,
         "query": query,
         "rating": {k: rating[k] for k in ("rating", "agency", "outlook",
                                           "rating_date", "stale")} if rating else None,
         "recovery": recovery,
         "recovery_source": recovery_source,
-        "recovery_note": ("базовая шкала по рейтинговой корзине — агентства "
-                          "recovery rate не публикуют" if recovery_source == "baseline"
-                          else ""),
         "bonds": points,
+        "errors": errors,
+    }
+    return curve, meta
+
+
+def issuer_hazard(ctx, query: str) -> dict:
+    """Per-issuer default curve: z-spread per bond -> hazard/PD term structure."""
+    curve, meta = issuer_hazard_curve(ctx, query)
+    tenors = [p["T"] for p in meta["bonds"]]
+    grid = sorted({round(t, 2) for t in tenors} | {1.0, 3.0, 5.0})
+    grid = [t for t in grid if t <= max(tenors) + 1e-9] or tenors
+    return {
+        **meta,
+        "recovery_note": ("базовая шкала по рейтинговой корзине — агентства "
+                          "recovery rate не публикуют"
+                          if meta["recovery_source"] == "baseline" else ""),
         "hazard": [{"T": t, "lambda": round(curve.hazard(t), 6)} for t in grid],
         "pd": [{"T": t, "pd": round(1.0 - curve.survival(t), 6)} for t in grid],
         "method": "credit triangle λ = z/(1−R) по z-спредам облигаций эмитента",
-        "errors": errors,
     }
 
 

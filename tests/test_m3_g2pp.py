@@ -86,7 +86,7 @@ def test_g2pp_wired():
     assert "g2pp" in tax.engines_for("swaption")
     assert tax.classify("g2pp")["asset_class"] == "rates"
     assert {"a", "sigma", "b", "eta", "rho"} <= {s.key for s in P.engine_params("g2pp")}
-    assert R.MODEL_REGISTRY["g2pp"]["status"].value == "Approximation"
+    assert R.MODEL_REGISTRY["g2pp"]["status"].value == "Validated"  # batch-1 2026-07
 
 
 def test_g2pp_service_route():

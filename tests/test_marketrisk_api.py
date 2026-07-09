@@ -106,6 +106,61 @@ def test_market_position_mapping(ctx):
     assert not ps.positions[0].errors
 
 
+def test_pca_rates_coherent(ctx):
+    from api.marketrisk import pca_rates
+    out = pca_rates(ctx, confidence=0.99, window=400)
+    assert 0.9 < out["variance_explained"] <= 1.0, "3 PCs must explain >90% of КБД"
+    assert len(out["components"]) == 3
+    shares = [c["variance_share"] for c in out["components"]]
+    assert shares == sorted(shares, reverse=True), "PC1 must dominate"
+    assert out["pca_var"] > 0
+    total_dv01 = sum(d["dv01"] for d in out["dv01_vector"])
+    assert total_dv01 != 0, "book must carry rate risk"
+
+
+def test_xva_run_coherent(ctx):
+    from api import xva
+    out = xva.run(ctx, ctx.risk, cpty_spread_bps=200.0, n_sims=1500, use_book=True)
+    assert out["errors"] == []
+    metrics = {m["key"]: m["value"] for m in out["metrics"]}
+    assert metrics["cva"] > 0
+    assert metrics["total_xva"] == pytest.approx(
+        metrics["cva"] - metrics["dva"] + metrics["fva"] + metrics["mva"]
+        + metrics["kva"], rel=1e-9)
+    assert len(out["profile"]["times"]) == len(out["profile"]["epe"])
+
+    # a zero-threshold CSA must collateralise the credit exposure away
+    csa = xva.run(ctx, ctx.risk, cpty_spread_bps=200.0, n_sims=1500,
+                  csa_enabled=True, threshold=0.0, mta=0.0)
+    csa_cva = next(m["value"] for m in csa["metrics"] if m["key"] == "cva")
+    assert csa_cva < metrics["cva"] * 0.05
+
+
+def test_issuer_hazard_in_credit_pricing(ctx):
+    from api.pricing_workstation import price_ws
+    from services.pricing_service import PricingService
+    svc = PricingService(allow_analytics_lab=True)
+    svc.market_data = ctx.market
+    try:
+        r = price_ws(svc, ctx.snapshot, "risky_bond", "risky_bond",
+                     {"face": 1000, "coupon": 0.13, "T": 3, "freq": 2,
+                      "issuer": "РЖД"})
+    except ValueError as exc:
+        pytest.skip(f"issuer bonds unavailable: {exc}")
+    assert r["errors"] == []
+    assert any("hazard из z-спредов" in w for w in r["warnings"])
+    # экономический порядок: широкие спреды (Самолет, A) дают цену ниже,
+    # чем узкие (РЖД, AAA) при том же контракте и той же кривой
+    try:
+        weak = price_ws(svc, ctx.snapshot, "risky_bond", "risky_bond",
+                        {"face": 1000, "coupon": 0.13, "T": 3, "freq": 2,
+                         "issuer": "Самолет"})
+    except ValueError as exc:
+        pytest.skip(f"second issuer unavailable: {exc}")
+    assert weak["errors"] == []
+    assert weak["value"] < r["value"]
+
+
 def test_backtest_coherent(ctx):
     from api.marketrisk import backtest
     bt = backtest(ctx, confidence=0.95, window=300, lookback=150)

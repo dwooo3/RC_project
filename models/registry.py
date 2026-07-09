@@ -49,7 +49,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     # ── Equity / FX options ───────────────────────────────
     "black_scholes": {
         "name": "Black-Scholes / Merton",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["put_call_parity", "atm_call_known_value"],
         "notes": "European vanilla only. No discrete dividends. Expiry put delta now -1 when ITM; volga/ultima rescaled to per-1% convention.",
@@ -63,7 +63,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "garman_kohlhagen": {
         "name": "Garman-Kohlhagen (FX Options)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["put_call_parity"],
         "notes": "Continuous dividend = foreign rate. No FX smile.",
@@ -117,7 +117,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     # ── Jump diffusion ────────────────────────────────────
     "merton_jump": {
         "name": "Merton Jump-Diffusion",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["lambda_zero_is_bsm", "put_call_parity", "series_matches_mc"],
         "notes": (
@@ -231,7 +231,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     # ── Stochastic vol ────────────────────────────────────
     "heston_cf": {
         "name": "Heston (Characteristic Function)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Analytics",
         "tests": ["heston_parity", "xi_to_zero_is_bsm", "heston_mc_vs_cf",
                   "cos_engine_cross_check"],
@@ -277,7 +277,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     # ── Fixed income ──────────────────────────────────────
     "fixed_bond": {
         "name": "Fixed-Rate Bond",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": [
             "day_count_act365f",
@@ -402,7 +402,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "irs": {
         "name": "Interest Rate Swap",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["npv_zero_at_fair_rate", "single_curve_telescope"],
         "notes": (
@@ -456,7 +456,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "bermudan_swaption": {
         "name": "Bermudan Swaption (Hull-White tree)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["tree_reprices_curve", "single_exercise_matches_jamshidian",
                   "bermudan_geq_european", "cube_calibration_round_trip"],
@@ -470,7 +470,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "g2pp": {
         "name": "G2++ (two-factor Gaussian short rate)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["curve_reprice", "zcb_option_parity", "eta_zero_is_hw1f",
                   "swaption_mc_vs_hw1f", "analytic_vs_mc", "swaption_surface_calibration"],
@@ -817,7 +817,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "cds_isda": {
         "name": "ISDA CDS Standard Model (upfront)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["par_coupon_zero_upfront", "upfront_spread_roundtrip",
                   "calibrated_par_matches_quote"],
@@ -1033,7 +1033,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     # ── Exotics ───────────────────────────────────────────
     "barrier": {
         "name": "Barrier Options",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["in_out_parity_all_branches", "haug_reference_value", "mc_bgk_cross_check"],
         "notes": (
@@ -1059,7 +1059,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "lookback": {
         "name": "Lookback Options",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["mc_richardson_all_variants", "float_put_fixed_call_identity"],
         "notes": (
@@ -1078,7 +1078,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "variance_swap": {
         "name": "Variance Swap",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["flat_smile_recovers_sigma_squared"],
         "notes": (

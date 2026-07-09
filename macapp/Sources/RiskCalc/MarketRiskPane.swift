@@ -103,7 +103,53 @@ struct MRBacktest: Decodable, Sendable {
     }
 }
 
+struct MRPcaWeight: Decodable, Sendable, Hashable {
+    let tenor: Double
+    let w: Double
+}
+
+struct MRPcaComponent: Decodable, Sendable, Identifiable, Hashable {
+    let component: String
+    let varianceShare: Double
+    let dv01: Double
+    let volAnnualBp: Double
+    let weights: [MRPcaWeight]
+    var id: String { component }
+
+    enum CodingKeys: String, CodingKey {
+        case component, dv01, weights
+        case varianceShare = "variance_share"
+        case volAnnualBp = "vol_annual_bp"
+    }
+}
+
+struct MRPcaDv01: Decodable, Sendable, Hashable {
+    let tenor: Double
+    let dv01: Double
+}
+
+struct MRPca: Decodable, Sendable {
+    let pcaVar: Double
+    let parallelVar: Double
+    let varianceExplained: Double
+    let components: [MRPcaComponent]
+    let dv01Vector: [MRPcaDv01]
+    let note: String
+
+    enum CodingKeys: String, CodingKey {
+        case components, note
+        case pcaVar = "pca_var"
+        case parallelVar = "parallel_var"
+        case varianceExplained = "variance_explained"
+        case dv01Vector = "dv01_vector"
+    }
+}
+
 extension BridgeClient {
+    func marketRiskPca(confidence: Double, window: Int) async throws -> MRPca {
+        try await get("marketrisk/pca?confidence=\(confidence)&window=\(window)")
+    }
+
     func marketRisk(confidence: Double, window: Int, horizon: Int,
                     stress: String = "") async throws -> MROverview {
         var path = "marketrisk?confidence=\(confidence)&window=\(window)&horizon=\(horizon)"
@@ -128,6 +174,7 @@ final class MarketRiskViewModel {
 
     var overview: MROverview?
     var backtest: MRBacktest?
+    var pca: MRPca?
     var isLoading = false
     var errorMessage: String?
 
@@ -142,6 +189,7 @@ final class MarketRiskViewModel {
             async let bt = client.marketRiskBacktest(confidence: confidence, window: window)
             overview = try await ov
             backtest = try await bt
+            pca = try? await client.marketRiskPca(confidence: confidence, window: window)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -256,6 +304,9 @@ struct MarketRiskPane: View {
         HStack(alignment: .top, spacing: Theme.s4) {
             backtestCard
             extremesCard(ov)
+        }
+        if let pca = vm.pca {
+            pcaCard(pca)
         }
         factorsCard(ov)
     }
@@ -409,6 +460,60 @@ struct MarketRiskPane: View {
             }
         }
         .frame(width: 300)
+    }
+
+    /// PCA of the КБД curve: level/slope/curvature loadings + the book's
+    /// bucketed DV01 -> PCA-VaR vs the parallel treatment.
+    private func pcaCard(_ pca: MRPca) -> some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s3) {
+                HStack {
+                    BlockTitle("Rate factors (PCA)", icon: "point.3.connected.trianglepath.dotted")
+                    Spacer()
+                    Text("\(Fmt.percent(pca.varianceExplained * 100, digits: 1)) дисперсии на 3 PC")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                HStack(alignment: .top, spacing: Theme.s4) {
+                    Chart {
+                        ForEach(pca.components) { comp in
+                            ForEach(comp.weights, id: \.tenor) { w in
+                                LineMark(x: .value("Tenor", w.tenor),
+                                         y: .value("Weight", w.w),
+                                         series: .value("PC", comp.component))
+                                    .foregroundStyle(by: .value("PC", comp.component))
+                                PointMark(x: .value("Tenor", w.tenor),
+                                          y: .value("Weight", w.w))
+                                    .foregroundStyle(by: .value("PC", comp.component))
+                                    .symbolSize(20)
+                            }
+                        }
+                        RuleMark(y: .value("zero", 0))
+                            .foregroundStyle(.tertiary)
+                            .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [3]))
+                    }
+                    .chartXAxisLabel("Тенор КБД, лет")
+                    .frame(height: 180)
+
+                    VStack(alignment: .leading, spacing: Theme.s2) {
+                        ForEach(pca.components) { comp in
+                            KeyValueRow(key: comp.component,
+                                        value: "\(Fmt.percent(comp.varianceShare * 100, digits: 1)) · σ \(Fmt.number(comp.volAnnualBp, digits: 0))bp")
+                        }
+                        Divider()
+                        KeyValueRow(key: "PCA-VaR", value: Fmt.money(pca.pcaVar),
+                                    valueColor: Theme.negative)
+                        KeyValueRow(key: "Parallel 5Y VaR", value: Fmt.money(pca.parallelVar))
+                        KeyValueRow(key: "DV01 профиль",
+                                    value: pca.dv01Vector
+                                        .filter { abs($0.dv01) > 1 }
+                                        .map { "\(Fmt.number($0.tenor, digits: 2))y: \(Fmt.number($0.dv01, digits: 0))" }
+                                        .joined(separator: "  "))
+                    }
+                    .frame(width: 300)
+                }
+                Text(pca.note).font(.system(size: 10)).foregroundStyle(.tertiary)
+            }
+        }
     }
 
     private func factorsCard(_ ov: MROverview) -> some View {

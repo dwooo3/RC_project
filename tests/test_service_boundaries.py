@@ -138,6 +138,6 @@ def test_pricing_service_workflow_status_returns_governed_readiness_result():
     _assert_contract(result, "variance_swap")
     assert result["value"] is None
     assert result["model_version"]
-    assert result["model_status"] == "Approximation"
+    assert result["model_status"] == "Validated"  # variance_swap: batch-1 2026-07
     assert result["raw"]["workflow_available"] is False
     assert "wrapper pending" in result["warnings"]

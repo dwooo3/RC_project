@@ -323,7 +323,15 @@ def xva_suite(sim, disc_curve, cpty_hazard, own_hazard=None, *,
                 fca=fva["fca"], fba=fva["fba"], fva=fva["fva"], mva=mva,
                 kva=kva["kva"], peak_capital=kva["peak_capital"],
                 peak_epe=float(prof["epe"].max()), peak_im=float(im.max()),
-                total_xva=total, collateralised=csa is not None)
+                total_xva=total, collateralised=csa is not None,
+                # exposure term structures for charting (post-CSA when csa given)
+                profile=dict(times=list(map(float, times)),
+                             epe=list(map(float, prof["epe"])),
+                             ene=list(map(float, prof["ene"])),
+                             pfe95=list(map(float, prof["pfe95"])),
+                             pfe99=list(map(float, prof["pfe99"])),
+                             epe_uncollateralised=list(map(float, raw["epe"])),
+                             im=list(map(float, im))))
 
 
 # ── wrong-way risk, gap-closing batch 4 ──────────────────────

@@ -75,12 +75,13 @@ def test_by_asset_class_and_family():
 
 
 def test_promotion_rule():
-    # barrier has tests + Approximation -> eligible
+    # barrier/lookback are Validated since batch-1 (2026-07) — still "eligible"
     assert R.can_promote_to_validated("barrier")
     # a Prototype is not eligible
     assert not R.can_promote_to_validated("cln_ftd")
-    cands = R.validation_candidates()
-    assert "barrier" in cands and "lookback" in cands
+    cands = R.validation_candidates()          # NOT-yet-promoted candidates only
+    assert "barrier" not in cands and "lookback" not in cands
+    assert "black76" in cands
     assert "cln_ftd" not in cands
 
 

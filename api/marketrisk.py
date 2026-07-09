@@ -291,6 +291,86 @@ def pnl_explain(ctx, theta_days: float = 1.0) -> dict:
     }
 
 
+_PCA_TENORS = (0.25, 1.0, 2.0, 5.0, 10.0)          # КБД series in the backfill
+
+
+def pca_rates(ctx, confidence: float = 0.99, window: int = 500,
+              n_components: int = 3) -> dict:
+    """PCA of the КБД curve (level/slope/curvature) + PCA-VaR of the book's
+    rate exposure mapped onto the tenor pillars — Calypso's bucketed rate risk
+    against our single-factor (5Y parallel) HypPL treatment."""
+    from risk.historical_var import pca_var
+
+    db = ctx.market_db
+    series = {t: dict(_series(db, f"KBD:{t:g}Y")) for t in _PCA_TENORS}
+    dates = sorted(set.intersection(*(set(s) for s in series.values())))
+    if len(dates) < 60:
+        raise ValueError("not enough КБД tenor history for PCA")
+    dates = dates[-(window + 1):]
+    changes = np.array([[series[t][d1] - series[t][d0] for t in _PCA_TENORS]
+                        for d0, d1 in zip(dates, dates[1:])]) * 10000  # bp units
+
+    # DV01 vector: bond key-rate exposures land on their pillar, everything
+    # else (IRS/swaption DV01) on the nearest pillar to its maturity.
+    ps = ctx.portfolio
+    ps.value()
+    dv01 = np.zeros(len(_PCA_TENORS))
+    for pos in ps.positions:
+        exposures = getattr(pos, "exposures", []) or []
+        krd, headline = [], []
+        for exp in exposures:
+            unit = str(getattr(exp, "unit", "")).lower()
+            if "dv01" not in unit:
+                continue
+            factor = str(getattr(exp, "factor_name", ""))
+            amount = float(getattr(exp, "sensitivity", 0.0) or 0.0)
+            if factor.startswith("kr_"):
+                try:
+                    krd.append((float(factor[3:].rstrip("y")), amount))
+                except ValueError:
+                    continue
+            elif "key rate" not in unit:
+                headline.append(amount)
+        if krd:                                     # bucketed beats the headline
+            rows = krd
+        else:
+            t_pos = float(pos.params.get("T", 5.0)) if pos.params else 5.0
+            rows = [(t_pos, a) for a in headline]
+        for tenor, amount in rows:
+            idx = int(np.argmin([abs(tenor - t) for t in _PCA_TENORS]))
+            dv01[idx] += amount
+
+    res = pca_var(changes, dv01, confidence, n_components)
+    names = ["Level", "Slope", "Curvature"][:n_components]
+    loadings = [
+        {"component": names[i] if i < len(names) else f"PC{i+1}",
+         "variance_share": float(res["eigenvalues"][i] / res["eigenvalues"].sum()
+                                 * res["pct_variance_explained"]),
+         "dv01": float(res["factor_dv01"][i]),
+         "vol_annual_bp": float(res["factor_vol_annual"][i]),
+         "weights": [{"tenor": t, "w": float(res["eigenvectors"][j, i])}
+                     for j, t in enumerate(_PCA_TENORS)]}
+        for i in range(n_components)
+    ]
+    # parallel-only comparison: total DV01 x quantile of the 5Y change
+    par_losses = -changes[:, _PCA_TENORS.index(5.0)] * dv01.sum()
+    var_parallel = float(np.quantile(np.abs(par_losses), confidence))
+    return {
+        "confidence": confidence, "window": len(changes),
+        "tenors": list(_PCA_TENORS),
+        "dv01_vector": [{"tenor": t, "dv01": float(v)}
+                        for t, v in zip(_PCA_TENORS, dv01)],
+        "pca_var": float(res["VaR"]),
+        "parallel_var": var_parallel,
+        "variance_explained": float(res["pct_variance_explained"]),
+        "components": loadings,
+        "note": ("PCA по дневным изменениям КБД (bp); Level/Slope/Curvature. "
+                 "DV01 бондов — по key-rate корзинам, свопов — на ближайший "
+                 "пиллар. HypPL пока использует один 5Y-фактор — PCA-VaR "
+                 "показывает вклад формы кривой."),
+    }
+
+
 def backtest(ctx, confidence: float = 0.99, window: int = 500,
              lookback: int = 250) -> dict:
     """Backtesting analysis: rolling historical VaR vs next-day HypPL —

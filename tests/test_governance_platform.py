@@ -22,7 +22,7 @@ def test_governance_returns_model_registry_entry_fields():
     assert entry.model_id == "fixed_bond"
     assert entry.version
     assert entry.owner
-    assert entry.status == "Approximation"
+    assert entry.status == "Validated"           # fixed_bond: batch-1 2026-07
     assert entry.limitations
     assert entry.documentation_link == ""
     assert entry.validation_date is None

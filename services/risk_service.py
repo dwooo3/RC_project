@@ -250,9 +250,14 @@ class RiskService:
         n_sims: int = 4000,
         n_grid: int = 24,
         snapshot: MarketDataSnapshot | None = None,
+        curve=None,
+        cpty_hazard=None,
+        own_hazard=None,
     ) -> dict:
         """Full XVA on an IRS netting set (M4): CVA/DVA/FVA/MVA/KVA on a shared
-        Hull-White MtM cube, with optional two-way CSA collateral."""
+        Hull-White MtM cube, with optional two-way CSA collateral. Curve and
+        hazard OBJECTS override the snapshot ids — live snapshots carry no demo
+        credit curves, so the bridge passes issuer-implied hazards directly."""
         from risk.xva import simulate_irs_portfolio, xva_suite
 
         model_id = "xva_suite"
@@ -263,10 +268,13 @@ class RiskService:
         try:
             self._enforce_model(model_id)
             snapshot = snapshot or self.market_data.demo_snapshot()
-            curve = self.market_data.get_curve(curve_id, snapshot)
-            cpty = self.market_data.get_hazard_curve(cpty_hazard_id, snapshot)
-            own = (self.market_data.get_hazard_curve(own_hazard_id, snapshot)
-                   if own_hazard_id else None)
+            if curve is None:
+                curve = self.market_data.get_curve(curve_id, snapshot)
+            cpty = cpty_hazard if cpty_hazard is not None else \
+                self.market_data.get_hazard_curve(cpty_hazard_id, snapshot)
+            own = own_hazard if own_hazard is not None else (
+                self.market_data.get_hazard_curve(own_hazard_id, snapshot)
+                if own_hazard_id else None)
             sim = simulate_irs_portfolio(list(trades), curve, kappa, sigma_r,
                                          n_sims, n_grid)
             res = xva_suite(sim, curve, cpty, own, funding_spread=funding_spread,

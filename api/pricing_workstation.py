@@ -406,20 +406,70 @@ def _capfloor(svc, v, snapshot):
                                proj_curve=_proj(svc, v, snapshot), snapshot=snapshot)
 
 
+def _issuer_hazard(issuer: str):
+    """Issuer hazard curve from real bond z-spreads (lazy: bridge context only).
+    Returns (curve, meta) or (None, None) when the issuer field is empty."""
+    issuer = (issuer or "").strip()
+    if not issuer:
+        return None, None
+    from api.context import CONTEXT
+    from api.credit import issuer_hazard_curve
+    return issuer_hazard_curve(CONTEXT, issuer)
+
+
+def _hazard_note(meta: dict) -> str:
+    rating = meta.get("rating") or {}
+    return (f"hazard из z-спредов: {meta['issuer']} · "
+            f"{rating.get('rating', 'без рейтинга')}"
+            f"{' (' + rating['agency'] + ')' if rating.get('agency') else ''} · "
+            f"R={meta['recovery']:.0%} ({meta['recovery_source']}) · "
+            f"{len(meta['bonds'])} бумаг")
+
+
+def _with_note(result: dict, note: str | None) -> dict:
+    if note and isinstance(result, dict):
+        result["warnings"] = list(result.get("warnings") or []) + [note]
+    return result
+
+
 def _cds(svc, v, snapshot):
     eng = v.get("engine", "cds")
     N, sp, T = _num(v, "notional", 1e6), _num(v, "spread", .01), _num(v, "T", 5)
     freq = int(_num(v, "freq", 4))
-    if eng == "cds_curve":
-        return svc.price_cds_curve(N, sp, T, freq,
-                                   hazard_id=v.get("hazard_id", "hazard_1t_demo"),
-                                   recovery=_num(v, "recovery", .4), snapshot=snapshot)
+    hazard_curve, meta = _issuer_hazard(v.get("issuer", ""))
+    if hazard_curve is not None or eng == "cds_curve":
+        res = svc.price_cds_curve(N, sp, T, freq,
+                                  hazard_curve=hazard_curve,
+                                  hazard_id=v.get("hazard_id", "hazard_1t_demo"),
+                                  curve_id=_credit_disc_id(snapshot),
+                                  recovery=(meta["recovery"] if meta
+                                            else _num(v, "recovery", .4)),
+                                  snapshot=snapshot)
+        return _with_note(res, _hazard_note(meta) if meta else None)
     if eng == "cds_isda":
         return svc.price_isda_cds(N, _num(v, "coupon", .01), sp, T, freq,
                                   _num(v, "r", .05), _num(v, "recovery", .4),
                                   snapshot=snapshot)
     return svc.price_cds(N, sp, T, freq, _num(v, "hazard", .02), _num(v, "r", .05),
                          _num(v, "recovery", .4), snapshot=snapshot)
+
+
+def _risky_bond(svc, v, snapshot):
+    hazard_curve, meta = _issuer_hazard(v.get("issuer", ""))
+    res = svc.price_risky_bond(
+        _num(v, "face", 1000), _num(v, "coupon", .13), _num(v, "T", 5),
+        int(_num(v, "freq", 2)), hazard_curve=hazard_curve,
+        hazard_id=v.get("hazard_id", "hazard_1t_demo"),
+        curve_id=_credit_disc_id(snapshot),
+        recovery=(meta["recovery"] if meta else _num(v, "recovery", .4)),
+        snapshot=snapshot)
+    return _with_note(res, _hazard_note(meta) if meta else None)
+
+
+def _credit_disc_id(snapshot) -> str:
+    """Live snapshots carry GCURVE_RUB, the demo one carries ofz_demo."""
+    curves = getattr(snapshot, "curves", None) or {}
+    return "GCURVE_RUB" if "GCURVE_RUB" in curves else "ofz_demo"
 
 
 def _structural(svc, v, snapshot):
@@ -866,29 +916,36 @@ PRODUCTS: list[WsProduct] = [
         "cds", "Credit Default Swap", "credit", "Single name",
         [_notional(), P("spread", "Spread", 0.01, "contract", minimum=0.0, maximum=1.0),
          _mat(5.0), _freq(4),
+         P("issuer", "Эмитент (hazard из z-спредов)", "", "market", dtype="text",
+           help="пусто = движок по своим параметрам; имя эмитента — кривая "
+                "дефолтов из z-спредов его облигаций (движок cds_curve)"),
          P("recovery", "Recovery", 0.4, "market", minimum=0.0, maximum=0.99),
          _rate("r", "Rate r", 0.05)],
         [E("cds", params=[P("hazard", "Hazard rate λ", 0.02, "model",
                             minimum=0.0, maximum=2.0)]),
-         E("cds_curve", params=[P("hazard_id", "Hazard curve", "hazard_1t_demo", "model",
-                                  dtype="choice",
+         E("cds_curve", params=[P("hazard_id", "Hazard curve (демо)", "hazard_1t_demo",
+                                  "model", dtype="choice",
                                   choices=["hazard_1t_demo", "hazard_hy_demo"])]),
          E("cds_isda", params=[P("coupon", "Fixed coupon", 0.01, "model",
                                  minimum=0.0, maximum=0.1)])],
-        _cds),
+        _cds,
+        note="Поле «Эмитент» строит hazard из реальных z-спредов книги облигаций "
+             "+ рейтинг АКРА/Эксперт РА (recovery — baseline-корзина)."),
     WsProduct(
         "risky_bond", "Credit-Risky Bond", "credit", "Single name",
         [P("face", "Face", 1000.0, "contract", minimum=0.0),
          P("coupon", "Coupon", 0.13, "contract", minimum=0.0, maximum=2.0),
          _mat(5.0), _freq(2),
-         P("hazard_id", "Hazard curve", "hazard_1t_demo", "market", dtype="choice",
+         P("issuer", "Эмитент (hazard из z-спредов)", "", "market", dtype="text",
+           help="пусто = демо hazard-кривая; имя эмитента (РЖД, Самолет…) — "
+                "кривая дефолтов из z-спредов его облигаций + рейтинг АКРА/Эксперт РА"),
+         P("hazard_id", "Hazard curve (демо)", "hazard_1t_demo", "market", dtype="choice",
            choices=["hazard_1t_demo", "hazard_hy_demo"]),
          P("recovery", "Recovery", 0.4, "market", minimum=0.0, maximum=0.99)],
         [E("risky_bond")],
-        lambda svc, v, snap: svc.price_risky_bond(
-            _num(v, "face", 1000), _num(v, "coupon", .13), _num(v, "T", 5),
-            int(_num(v, "freq", 2)), hazard_id=v.get("hazard_id", "hazard_1t_demo"),
-            recovery=_num(v, "recovery", .4), snapshot=snap)),
+        _risky_bond,
+        note="Поле «Эмитент» строит hazard-кривую из реальных z-спредов; "
+             "recovery берётся из рейтинговой корзины (baseline)."),
     WsProduct(
         "structural_credit", "Structural Default Model", "credit", "Structural",
         [P("V0", "Firm asset value", 100.0, "market", minimum=0.0),

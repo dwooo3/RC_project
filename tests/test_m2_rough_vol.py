@@ -68,7 +68,8 @@ def test_stoch_vol_promoted():
     from models import registry as R
     for m in ("heston_cf", "sabr", "bates", "rough_bergomi"):
         e = R.MODEL_REGISTRY[m]
-        assert e["status"].value == "Approximation", m
+        # heston_cf promoted to Validated (batch-1 2026-07); the rest stay Approximation
+        assert e["status"].value in ("Approximation", "Validated"), m
         assert len(e["tests"]) > 0, m                      # tests synced (F2)
         assert R.can_promote_to_validated(m)               # eligible for Validated
 

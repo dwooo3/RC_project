@@ -125,7 +125,7 @@ def test_pricing_service_date_aware_bond_result_contains_governance_and_market_m
 
     assert result["errors"] == []
     assert result["model_id"] == "fixed_bond"
-    assert result["model_status"] == "Approximation"
+    assert result["model_status"] == "Validated"  # fixed_bond: batch-1 2026-07
     assert result["market_data_source"] == "MANUAL"
     assert result["dirty_price"] == pytest.approx(result["clean_price"] + result["accrued_interest"])
     assert result["bond_result"].settlement_date == date(2024, 4, 1)

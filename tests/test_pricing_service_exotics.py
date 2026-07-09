@@ -27,10 +27,8 @@ def test_barrier_option_priced_and_governed(svc):
     res = _ok(svc.price_barrier_option(100, 100, 90, 1.0, 0.05, 0.20, opt="call",
                                        barrier_type="down-out"))
     assert res["model_id"] == "barrier"
-    # Approximation since the 2026-06 validation audit; governance still
-    # surfaces the non-Validated status as a warning.
-    assert res["model_status"] == "Approximation"
-    assert any("Approximation" in w for w in res["warnings"])
+    # Validated since batch-1 (2026-07): Haug references + in-out parity.
+    assert res["model_status"] == "Validated"
     # knock-out worth less than vanilla
     vanilla = svc.price_vanilla_option(100, 100, 1.0, 0.05, 0.20, opt="call")["value"]
     assert res["value"] < vanilla
