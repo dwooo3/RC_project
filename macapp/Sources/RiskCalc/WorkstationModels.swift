@@ -256,6 +256,22 @@ extension BridgeClient {
         try await get("pricing/underlying/\(category)/\(secid)")
     }
 
+    func impliedVol(product: String, params: [String: BridgeValue],
+                    marketPrice: Double) async throws -> Double {
+        struct Body: Encodable {
+            let product: String
+            let params: [String: BridgeValue]
+            let market_price: Double
+        }
+        struct Resp: Decodable {
+            let implied_vol: Double
+        }
+        let body = try JSONEncoder().encode(Body(product: product, params: params,
+                                                 market_price: marketPrice))
+        let resp: Resp = try await post("pricing/implied_vol", body: body)
+        return resp.implied_vol
+    }
+
     func addToPortfolio(product: String, engine: String, params: [String: BridgeValue],
                         quantity: Double) async throws -> WsCaptureResult {
         let body = try JSONEncoder().encode(WsCaptureBody(

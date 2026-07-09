@@ -41,7 +41,7 @@ from api import (
     timeseries,
     volsurface,
 )
-from api import credit, marketrisk, pricing_workstation, underlying, xva
+from api import credit, desk, marketrisk, pricing_workstation, underlying, xva
 from api.context import CONTEXT
 from api.serialization import jsonable
 from services.pricing_service import PricingService
@@ -166,6 +166,21 @@ def ws_underlying(category: str, secid: str) -> dict:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+class WsImpliedVolRequest(BaseModel):
+    product: str
+    params: dict[str, float | int | str | None] = {}
+    market_price: float
+
+
+@app.post("/pricing/implied_vol")
+def ws_implied_vol(req: WsImpliedVolRequest) -> dict:
+    try:
+        return jsonable(pricing_workstation.implied_vol_ws(
+            req.product, req.params, req.market_price))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.post("/pricing/ladder")
 def ws_ladder(req: WsLadderRequest) -> dict:
     try:
@@ -200,6 +215,11 @@ def marketrisk_incremental(req: WsCaptureRequest, confidence: float = 0.99,
             confidence, window))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/desk/multisensitivity")
+def desk_multisensitivity() -> dict:
+    return jsonable(desk.multisensitivity(CONTEXT))
 
 
 class XvaRequest(BaseModel):

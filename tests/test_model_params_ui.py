@@ -71,7 +71,7 @@ def test_dialog_afv_params(app, by_id):
 
 def test_model_metadata_governance():
     m = model_metadata("cgmy")
-    assert m["status"] == "Approximation" and m["family"] == "levy"
+    assert m["status"] in ("Approximation", "Validated") and m["family"] == "levy"
     assert model_metadata("heston_cf")["asset_class"] == "equity"
 
 

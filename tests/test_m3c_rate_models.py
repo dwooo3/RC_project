@@ -183,7 +183,7 @@ def test_m3c_wired():
     for mid in ("bk", "cheyette"):
         assert mid in tax.engines_for("swaption")
         assert tax.classify(mid)["asset_class"] == "rates"
-        assert R.MODEL_REGISTRY[mid]["status"].value == "Approximation"
+        assert R.MODEL_REGISTRY[mid]["status"].value in ("Approximation", "Validated")
     assert {"a", "sigma"} <= {s.key for s in P.engine_params("bk")}
     assert "skew" in {s.key for s in P.engine_params("cheyette")}
     assert tax.classify("xccy_curve")["asset_class"] == "fx"

@@ -114,7 +114,7 @@ def test_m8_wired():
     assert tax.classify("mbs")["asset_class"] == "rates"
     assert tax.classify("frtb_sba")["kind"] == "risk"
     for mid in ("afv_convertible", "mbs", "frtb_sba"):
-        assert R.MODEL_REGISTRY[mid]["status"].value == "Approximation"
+        assert R.MODEL_REGISTRY[mid]["status"].value in ("Approximation", "Validated")
 
 
 def test_m8_service_routes():

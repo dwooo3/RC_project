@@ -230,6 +230,28 @@ final class WorkstationViewModel {
         isCapturing = false
     }
 
+    // implied vol (european_option / fx_option)
+    var impliedPrice: Double = 0
+    var impliedVolResult: String?
+
+    var supportsImpliedVol: Bool {
+        productID == "european_option" || productID == "fx_option"
+    }
+
+    func solveImpliedVol() async {
+        guard let product = selectedProduct, impliedPrice > 0 else { return }
+        impliedVolResult = nil
+        do {
+            let iv = try await client.impliedVol(product: product.id,
+                                                 params: bridgeParams(),
+                                                 marketPrice: impliedPrice)
+            numericValues["sigma"] = iv
+            impliedVolResult = String(format: "σ = %.4f (подставлена в форму)", iv)
+        } catch {
+            impliedVolResult = error.localizedDescription
+        }
+    }
+
     func runIncrementalVaR() async {
         guard let product = selectedProduct, product.capturable,
               let engine = selectedEngine else { return }

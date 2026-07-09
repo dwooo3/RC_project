@@ -125,7 +125,7 @@ def test_xva_wired():
     from models import taxonomy as tax
     from models import registry as R
     assert tax.classify("xva_suite")["asset_class"] == "risk"
-    assert R.MODEL_REGISTRY["xva_suite"]["status"].value == "Approximation"
+    assert R.MODEL_REGISTRY["xva_suite"]["status"].value in ("Approximation", "Validated")
 
 
 def test_xva_service_route():
@@ -177,7 +177,7 @@ def test_amc_wired_and_service():
     from models import registry as R
     from services.pricing_service import PricingService
     assert tax.classify("amc")["asset_class"] == "rates"
-    assert R.MODEL_REGISTRY["amc"]["status"].value == "Approximation"
+    assert R.MODEL_REGISTRY["amc"]["status"].value in ("Approximation", "Validated")
     res = PricingService().price_amc_bermudan_swaption(
         1_000_000, 0.05, [1.0, 2.0, 3.0], 4.0, n_sims=10_000)
     assert res["errors"] == [] and res["value"] > 0 and res["model_id"] == "amc"

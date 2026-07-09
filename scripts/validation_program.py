@@ -42,7 +42,40 @@ TEST_MAP: dict[str, list[str]] = {
     "bermudan_swaption": ["tests/test_m3c_rate_models.py", "tests/test_mc_rate_calibration.py"],
     "g2pp": ["tests/test_m3_g2pp.py"],
     "frn": ["tests/test_frn.py"],
+    # batch-2 coverage
+    "kou": ["tests/test_m1_levy_fourier.py"],
+    "variance_gamma": ["tests/test_m1_levy_fourier.py"],
+    "nig": ["tests/test_m1_levy_fourier.py"],
+    "cgmy": ["tests/test_m1_levy_fourier.py"],
+    "rough_bergomi": ["tests/test_m2_rough_vol.py"],
+    "lmm": ["tests/test_m3b_lmm.py"],
+    "bk": ["tests/test_m3c_rate_models.py"],
+    "cheyette": ["tests/test_m3c_rate_models.py"],
+    "xccy_curve": ["tests/test_m3c_rate_models.py"],
+    "amc": ["tests/test_m4_xva.py"],
+    "schwartz_smith": ["tests/test_m5_commodity.py"],
+    "gibson_schwartz": ["tests/test_m5_commodity.py"],
+    "baw": ["tests/test_m6_numerical.py"],
+    "bjerksund_stensland": ["tests/test_m6_numerical.py"],
+    "qmc": ["tests/test_m6_numerical.py"],
+    "adi": ["tests/test_m6_numerical.py"],
+    "merton_structural": ["tests/test_m7_credit.py"],
+    "gaussian_copula": ["tests/test_m7_credit.py"],
+    "afv_convertible": ["tests/test_m8_niche.py"],
+    "mbs": ["tests/test_m8_niche.py"],
+    "var_full_reprice": ["tests/test_marketrisk_api.py"],
 }
+
+# Batch 2 (2026-07): >=2 точных тождества/референса на модель.
+PROMOTED_BATCH_2 = [
+    "binomial_crr", "pde_cn", "bates", "kou", "variance_gamma", "nig", "cgmy",
+    "mc_gbm", "local_vol_mc", "rough_bergomi", "lmm", "bk", "cheyette",
+    "xccy_curve", "amc", "baw", "bjerksund_stensland", "qmc", "adi", "cds",
+    "cds_curve", "risky_bond", "merton_structural", "gaussian_copula",
+    "schwartz_smith", "gibson_schwartz", "convertible_bond", "afv_convertible",
+    "mbs", "inflation_linked_bond", "inflation_swap", "capfloor", "basis_swap",
+    "var_parametric", "var_historical", "var_full_reprice",
+]
 
 # Batch 1 (2026-07): промоутнуты — внешний бенчмарк / точное тождество.
 PROMOTED_BATCH_1 = [
@@ -67,10 +100,11 @@ def check_consistency() -> list[str]:
     for mid, entry in MODEL_REGISTRY.items():
         if entry["status"] == ModelStatus.VALIDATED and not entry.get("tests"):
             problems.append(f"{mid}: Validated без зарегистрированных тестов")
-    for mid in PROMOTED_BATCH_1:
-        if MODEL_REGISTRY[mid]["status"] != ModelStatus.VALIDATED:
-            problems.append(f"{mid}: в batch-1, но статус "
-                            f"{MODEL_REGISTRY[mid]['status'].value}")
+    for batch, ids in (("batch-1", PROMOTED_BATCH_1), ("batch-2", PROMOTED_BATCH_2)):
+        for mid in ids:
+            if MODEL_REGISTRY[mid]["status"] != ModelStatus.VALIDATED:
+                problems.append(f"{mid}: в {batch}, но статус "
+                                f"{MODEL_REGISTRY[mid]['status'].value}")
     return problems
 
 
@@ -103,8 +137,9 @@ def main() -> None:
     print("Согласованность реестра: ok")
 
     if "--run" in sys.argv:
-        print("\nПрогон бенчмарков batch-1:")
-        results = run_tests(PROMOTED_BATCH_1)
+        promoted = PROMOTED_BATCH_1 + PROMOTED_BATCH_2
+        print(f"\nПрогон бенчмарков промоутнутых моделей ({len(promoted)}):")
+        results = run_tests(promoted)
         bad = [m for m, ok in results.items() if ok is False]
         for mid, ok in results.items():
             mark = {True: "✓", False: "✗", None: "—"}[ok]
@@ -113,7 +148,8 @@ def main() -> None:
             print(f"\n✗ {len(bad)} моделей с падающими бенчмарками — статус "
                   f"Validated нужно ОТОЗВАТЬ")
             sys.exit(1)
-        print("\nВсе бенчмарки batch-1 зелёные.")
+        print("\nВсе бенчмарки промоутнутых моделей зелёные "
+              "(«—» = покрыто общим пулом tests/).")
 
     remaining = [m for m in candidates if m not in PROMOTED_BATCH_1]
     print(f"\nСледующие кандидаты ({len(remaining)}): "

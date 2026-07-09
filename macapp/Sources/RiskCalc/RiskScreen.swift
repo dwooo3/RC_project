@@ -6,6 +6,7 @@ struct RiskScreen: View {
 
     enum Mode: String, CaseIterable, Identifiable {
         case marketRisk = "Market Risk"
+        case sensitivities = "Sensitivities"
         case pnlExplain = "P&L Explain"
         case xva = "XVA"
         case parametric = "Parametric"
@@ -28,6 +29,8 @@ struct RiskScreen: View {
             switch mode {
             case .marketRisk:
                 MarketRiskPane()
+            case .sensitivities:
+                MultiSensitivityPane()
             case .pnlExplain:
                 PnlExplainPane()
             case .xva:

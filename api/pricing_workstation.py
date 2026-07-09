@@ -1372,6 +1372,32 @@ def _series_points(val) -> list[dict]:
     return pts
 
 
+def implied_vol_ws(product_id: str, params: dict, market_price: float) -> dict:
+    """Implied vol from a market price: BSM for equity options, GK for FX.
+    Only vanilla products carry a single well-defined σ to invert."""
+    import math
+
+    from models.implied_vol import implied_vol_bsm, implied_vol_gk
+
+    if product_id == "european_option":
+        iv = implied_vol_bsm(market_price, _num(params, "S", 100),
+                             _num(params, "K", 100), _num(params, "T", 1),
+                             _num(params, "r", .05), _num(params, "q", 0),
+                             params.get("opt", "call"))
+    elif product_id == "fx_option":
+        iv = implied_vol_gk(market_price, _num(params, "S", 90),
+                            _num(params, "K", 92), _num(params, "T", 1),
+                            _num(params, "r_d", .16), _num(params, "r_f", .05),
+                            params.get("opt", "call"))
+    else:
+        raise ValueError(f"implied vol не поддержан для '{product_id}' "
+                         "(только european_option / fx_option)")
+    if iv is None or (isinstance(iv, float) and math.isnan(iv)):
+        raise ValueError("цена вне арбитражных границ — σ не существует")
+    return {"product": product_id, "market_price": market_price,
+            "implied_vol": float(iv)}
+
+
 def price_ws(svc, snapshot, product_id: str, engine_id: str | None,
              params: dict) -> dict:
     """Dispatch a workstation pricing request; returns the normalized result."""

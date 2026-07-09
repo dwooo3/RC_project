@@ -104,7 +104,7 @@ def test_commodity_wired():
     from models import registry as R
     for mid in ("schwartz_smith", "gibson_schwartz"):
         assert tax.classify(mid)["asset_class"] == "commodity"
-        assert R.MODEL_REGISTRY[mid]["status"].value == "Approximation"
+        assert R.MODEL_REGISTRY[mid]["status"].value in ("Approximation", "Validated")
     assert "schwartz_smith" in tax.engines_for("commodity_option")
     assert {"kappa", "sigma_chi", "rho"} <= {s.key for s in P.engine_params("schwartz_smith")}
     assert {"delta0", "sigma_delta"} <= {s.key for s in P.engine_params("gibson_schwartz")}

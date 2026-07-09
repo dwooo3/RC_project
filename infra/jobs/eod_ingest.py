@@ -36,6 +36,37 @@ class EodIngestJob:
         self.indices = list(indices if indices is not None else DEFAULT_INDICES)
         self.equities = list(equities if equities is not None else DEFAULT_EQUITIES)
 
+    def _iv_history(self, sid: str, valuation_date: date) -> int:
+        """ATM IV per underlying -> time_series ``IV:{code}`` (kind='vol').
+
+        ATM = медиана IV точек ближайшей экспирации в центральной трети
+        страйков; сырые vol_points уже отфильтрованы ингестором. Через
+        несколько месяцев накопится собственная история вег вместо RVI-прокси.
+        """
+        import statistics
+
+        rows = self.db._query(  # noqa: SLF001 — internal job, same package
+            "SELECT underlying, expiry, strike, iv FROM vol_points "
+            "WHERE snapshot_id = ?", (sid,))
+        by_und: dict[str, list] = {}
+        for r in rows:
+            if r["iv"] and 0.01 < float(r["iv"]) < 3.0:
+                by_und.setdefault(r["underlying"], []).append(r)
+        saved = 0
+        for und, pts in by_und.items():
+            nearest = min(p["expiry"] for p in pts)
+            slice_pts = sorted((p for p in pts if p["expiry"] == nearest),
+                               key=lambda p: p["strike"])
+            if len(slice_pts) < 3:
+                continue
+            third = max(len(slice_pts) // 3, 1)
+            central = slice_pts[third:len(slice_pts) - third] or slice_pts
+            atm_iv = statistics.median(float(p["iv"]) for p in central)
+            self.db.save_time_series(f"IV:{und}", "vol",
+                                     [(valuation_date.isoformat(), atm_iv)])
+            saved += 1
+        return saved
+
     def run(self, valuation_date: date | None = None) -> dict:
         valuation_date = valuation_date or date.today()
         sid = MoexIngestor.snapshot_id_for(valuation_date)
@@ -60,6 +91,9 @@ class EodIngestJob:
         step("equity_quotes", lambda: moex.ingest_equity_quotes(sid, valuation_date))
         # Stage I.5: self-implied option vol surfaces
         step("vol_surface", lambda: moex.ingest_option_vol_surface(sid, valuation_date))
+        # Stage I.5b: accumulate per-underlying ATM IV history (IV:{code}) —
+        # own vega factors for historical VaR (пока в VaR RVI-прокси)
+        step("iv_history", lambda: self._iv_history(sid, valuation_date))
         for idx in self.indices:
             step(f"index:{idx}",
                  lambda idx=idx: moex.ingest_index_history(idx, valuation_date, valuation_date))

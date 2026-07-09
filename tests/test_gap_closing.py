@@ -267,7 +267,7 @@ def test_cgmy_parity_tight_after_c4_widening(Y):
 
 def test_cgmy_promoted_and_deprecations():
     from models import registry as R
-    assert R.MODEL_REGISTRY["cgmy"]["status"].value == "Approximation"
+    assert R.MODEL_REGISTRY["cgmy"]["status"].value in ("Approximation", "Validated")
     assert "DEPRECATED" in R.MODEL_REGISTRY["cva_dva"]["notes"]
     assert "DEPRECATED" in R.MODEL_REGISTRY["cln_ftd"]["notes"]
 

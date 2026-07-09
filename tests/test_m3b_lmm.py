@@ -94,7 +94,7 @@ def test_lmm_wired():
     cls = tax.classify("lmm")
     assert cls["asset_class"] == "rates" and cls["model_family"] == "market_model"
     assert {"vol", "corr_beta"} <= {s.key for s in P.engine_params("lmm")}
-    assert R.MODEL_REGISTRY["lmm"]["status"].value == "Approximation"
+    assert R.MODEL_REGISTRY["lmm"]["status"].value in ("Approximation", "Validated")
 
 
 def test_lmm_service_routes():

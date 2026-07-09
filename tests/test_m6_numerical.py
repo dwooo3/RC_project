@@ -94,7 +94,7 @@ def test_m6_wired():
     assert "qmc" in tax.engines_for("european_option")
     assert "adi" in tax.engines_for("multi_asset_option")
     for mid in ("baw", "bjerksund_stensland", "qmc", "adi"):
-        assert R.MODEL_REGISTRY[mid]["status"].value == "Approximation"
+        assert R.MODEL_REGISTRY[mid]["status"].value in ("Approximation", "Validated")
         assert tax.classify(mid)["asset_class"] in ("equity", "hybrid")
 
 

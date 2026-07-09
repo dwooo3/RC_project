@@ -492,6 +492,10 @@ private struct WorkstationResultPanel: View {
                                             in: RoundedRectangle(cornerRadius: 6))
                         }
                     }
+                    if vm.supportsImpliedVol {
+                        Divider()
+                        impliedVolRow
+                    }
                     if vm.selectedProduct?.capturable == true {
                         Divider()
                         captureRow
@@ -505,6 +509,29 @@ private struct WorkstationResultPanel: View {
                     Text("Press Calculate (⌘↵).").font(.caption).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, minHeight: 220)
+            }
+        }
+    }
+
+    /// Implied vol: invert a market premium into σ (BSM / Garman-Kohlhagen)
+    /// and pour it back into the form.
+    @ViewBuilder
+    private var impliedVolRow: some View {
+        VStack(alignment: .leading, spacing: Theme.s2) {
+            HStack(spacing: Theme.s2) {
+                Text("Рыночная цена")
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                TextField("", value: $vm.impliedPrice, format: .number)
+                    .textFieldStyle(.roundedBorder).frame(width: 90).monospacedDigit()
+                Spacer()
+                Button("Implied vol") {
+                    Task { await vm.solveImpliedVol() }
+                }
+                .disabled(vm.impliedPrice <= 0)
+            }
+            if let msg = vm.impliedVolResult {
+                Text(msg).font(.system(size: 10))
+                    .foregroundStyle(msg.hasPrefix("σ") ? Theme.positive : Theme.negative)
             }
         }
     }

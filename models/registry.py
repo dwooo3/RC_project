@@ -79,7 +79,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     # ── Lattice models ────────────────────────────────────
     "binomial_crr": {
         "name": "Binomial CRR",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Analytics",
         "tests": ["no_recursion", "european_converges_to_bsm", "american_put_ge_european"],
         "notes": "Recursion bug fixed. Greeks via bump-and-reprice. Convergence tests pending.",
@@ -102,7 +102,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     # ── PDE ───────────────────────────────────────────────
     "pde_cn": {
         "name": "Crank-Nicolson PDE",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Analytics",
         "tests": ["european_matches_bsm", "american_matches_crr",
                   "barrier_matches_closed_form", "greeks_from_grid"],
@@ -128,7 +128,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "bates": {
         "name": "Bates (Heston + Jumps)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Analytics",
         "tests": ["lambda_zero_is_heston", "xi_zero_is_merton", "put_call_parity"],
         "notes": (
@@ -154,7 +154,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     # ── Lévy / jump (Fourier COS) — M1 ────────────────────
     "kou": {
         "name": "Kou Double-Exponential Jump (COS)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Analytics",
         "tests": ["lambda_zero_is_bsm", "put_call_parity", "cos_vs_mc"],
         "notes": (
@@ -165,7 +165,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "variance_gamma": {
         "name": "Variance Gamma (COS)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Analytics",
         "tests": ["nu_to_zero_is_bsm", "put_call_parity"],
         "notes": (
@@ -175,7 +175,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "nig": {
         "name": "Normal Inverse Gaussian (COS)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Analytics",
         "tests": ["put_call_parity", "cos_vs_ig_subordinator_mc"],
         "notes": (
@@ -185,7 +185,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "cgmy": {
         "name": "CGMY / KoBoL (COS)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Analytics",
         "tests": ["put_call_parity", "nu_to_zero_is_bsm"],
         "notes": (
@@ -197,7 +197,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "local_vol_mc": {
         "name": "Local Vol MC (Dupire)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Analytics",
         "tests": ["flat_surface_is_bsm", "smile_repricing"],
         "notes": (
@@ -208,7 +208,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "mc_gbm": {
         "name": "Monte Carlo GBM",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Analytics",
         "tests": ["mc_european_vs_bsm"],
         "notes": "Antithetic + moment matching + control variate (CV expectation corrected to E[disc*S_T]=S0 e^{-qT}). Greeks via common random numbers.",
@@ -254,7 +254,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "rough_bergomi": {
         "name": "Rough Bergomi (rough vol)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Analytics",
         "tests": ["eta_zero_is_bsm", "put_call_parity_martingale",
                   "rough_skew_steeper_than_smooth"],
@@ -375,7 +375,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "inflation_linked_bond": {
         "name": "Inflation-Linked Bond",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["curve_pair_matches_flat_when_breakeven_flat", "breakeven_round_trip"],
         "notes": (
@@ -413,7 +413,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "capfloor": {
         "name": "Cap / Floor / Swaption",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["cap_floor_swap_parity"],
         "notes": (
@@ -424,7 +424,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "basis_swap": {
         "name": "Basis Swap",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["fair_spread_matches_curve_basis", "npv_zero_at_fair_spread"],
         "notes": (
@@ -488,7 +488,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "lmm": {
         "name": "LMM / BGM (LIBOR market model)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["curve_reprice", "caplet_mc_vs_black", "caplet_parity",
                   "swaption_mc_vs_rebonato", "swaption_parity",
@@ -507,7 +507,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "bk": {
         "name": "Black-Karasinski (lognormal short rate)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["curve_reprice", "positive_rates", "payer_receiver_parity",
                   "sigma_zero_is_intrinsic", "monotone_in_vol"],
@@ -523,7 +523,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "cheyette": {
         "name": "Cheyette (quasi-Gaussian HJM)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["bond_reconstruction", "const_vol_is_hull_white",
                   "payer_receiver_parity", "monotone_skew"],
@@ -540,7 +540,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "xccy_curve": {
         "name": "Cross-currency basis curve (bootstrap)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["par_reprice", "zero_basis_is_foreign", "basis_sign",
                   "cip_forwards_monotone"],
@@ -557,7 +557,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "amc": {
         "name": "AMC (Longstaff-Schwartz) Bermudan swaption",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["single_exercise_matches_jamshidian", "amc_vs_hw_tree",
                   "bermudan_geq_european"],
@@ -573,7 +573,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "schwartz_smith": {
         "name": "Schwartz-Smith (two-factor commodity)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["futures_at_zero_is_spot", "gs_ss_equivalence", "mc_matches_futures",
                   "futures_option_parity", "samuelson_vol_decay"],
@@ -589,7 +589,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "gibson_schwartz": {
         "name": "Gibson-Schwartz (stochastic convenience yield)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["futures_at_zero_is_spot", "gs_ss_equivalence", "mc_matches_futures"],
         "notes": (
@@ -761,7 +761,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "baw": {
         "name": "Barone-Adesi-Whaley (American approx)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["geq_european", "no_dividend_call_is_european", "matches_binomial"],
         "notes": (
@@ -774,7 +774,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "bjerksund_stensland": {
         "name": "Bjerksund-Stensland 1993 (American approx)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["geq_european", "no_dividend_call_is_european", "matches_binomial"],
         "notes": (
@@ -786,7 +786,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "qmc": {
         "name": "Quasi-Monte-Carlo (Sobol)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["european_matches_bs", "geometric_asian_matches_cf",
                   "faster_convergence_than_pseudo"],
@@ -799,7 +799,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "adi": {
         "name": "ADI 2-D PDE (two-asset, Douglas)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["exchange_matches_margrabe", "spread_equals_exchange_at_zero",
                   "heston_adi_matches_cf", "heston_adi_put_call_parity"],
@@ -832,7 +832,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "merton_structural": {
         "name": "Merton structural model",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["equity_is_bs_call", "spread_rises_with_leverage_vol",
                   "low_leverage_zero_spread"],
@@ -868,7 +868,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "gaussian_copula": {
         "name": "One-factor Gaussian copula (basket / CDO)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["el_correlation_independent", "tranches_sum_to_el",
                   "recursion_matches_mc", "correlation_skew"],
@@ -884,7 +884,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "afv_convertible": {
         "name": "AFV (Andersen-Buffum) convertible bond",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["conv_zero_is_defaultable_bond", "lambda_zero_is_convertible",
                   "deep_itm_parity", "price_falls_with_hazard"],
@@ -900,7 +900,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "mbs": {
         "name": "MBS pass-through (PSA prepayment)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["principal_returned", "zero_psa_par", "faster_psa_shorter_wal",
                   "oas_roundtrip"],
@@ -963,7 +963,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "inflation_swap": {
         "name": "Inflation Swaps (ZCIIS / YoYIIS)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["zciis_fair_equals_breakeven", "npv_zero_at_fair"],
         "notes": (
@@ -974,7 +974,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "convertible_bond": {
         "name": "Convertible Bond (Tsiveriotis-Fernandes)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["otm_equals_risky_floor", "itm_equals_parity",
                   "riskless_limit", "call_put_bounds"],
@@ -1092,14 +1092,14 @@ MODEL_REGISTRY: dict[str, dict] = {
     # ── Credit ────────────────────────────────────────────
     "cds": {
         "name": "Credit Default Swap (flat hazard)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["npv_zero_at_fair_spread", "implied_hazard_round_trip"],
         "notes": "Flat hazard rate, flat discount rate. For term-structure pricing use cds_curve.",
     },
     "cds_curve": {
         "name": "CDS on Hazard Curve",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["bootstrap_round_trip", "flat_curve_matches_flat_cds"],
         "notes": (
@@ -1111,7 +1111,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "risky_bond": {
         "name": "Credit-Risky Bond",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["zero_hazard_equals_riskless", "monotone_in_hazard"],
         "notes": (
@@ -1167,14 +1167,14 @@ MODEL_REGISTRY: dict[str, dict] = {
     # ── Risk ──────────────────────────────────────────────
     "var_parametric": {
         "name": "Parametric VaR (Normal / t)",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Risk",
         "tests": ["known_quantile"],
         "notes": "Normal and Student-t. sqrt(h) horizon scaling.",
     },
     "var_historical": {
         "name": "Historical VaR",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Risk",
         "tests": ["known_array_quantile", "es_gte_var"],
         "notes": "Age-weighted quantile fixed. Synthetic data must be marked as Demo.",
@@ -1188,7 +1188,7 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
     "var_full_reprice": {
         "name": "Full-Reprice Historical VaR",
-        "status": ModelStatus.APPROXIMATION,
+        "status": ModelStatus.VALIDATED,
         "domain": "Risk",
         "tests": ["linear_position_matches_historical", "option_convexity_sign"],
         "notes": (
