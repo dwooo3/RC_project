@@ -32,12 +32,15 @@
 
 ## 3. План реализации (по приоритетам)
 
-### Этап 1 — дефекты и мелочи (быстро, без вопросов)
-- [ ] **D1**: guard в `christoffersen_test` — при `len(exceptions)<2` или нулевых переходах вернуть `{applicable: False, reason: "insufficient_transitions"}`; обновить потребителей (backtest, UI-подпись).
-- [ ] **D2**: починить moment_matching по Levy: `σ_ann = sqrt(ln(m2/m1²)/T)`, цена = дисконтированный Black-76 на `F=m1`; regression-тест против MC (T=2 из отчёта) и `T=1`-инвариантность со старым поведением не требуется — фикс честный.
-- [ ] **D3**: обновить docstring `api/marketrisk.py` (FX-фактор живой, автопереход vega).
-- [ ] **A7**: конвенция FX-фиксингов — сдвиг даты (ЦБ публикует «на завтра») + carry-forward пропусков вместо нулевых движений; цель ≥95% ненулевых дней в окне.
-- [ ] **M6-lite**: в backtest-ответ добавить направление отклонения (консервативна/агрессивна) — сейчас Kupiec reject без знака.
+### Этап 1 — дефекты и мелочи ✅ ВЫПОЛНЕН 2026-07-10
+- [x] **D1**: guard в `christoffersen_test` — `applicable=False` при коротком ряде/без пробоев; кластер-кейс отклоняется; полный пул тестов проходит с `-W error::RuntimeWarning`.
+- [x] **D2**: moment_matching по Levy исправлен (`σ_ann = sqrt(ln(m2/m1²)/T)` + Black-76 на `F=m1`): пример отчёта даёт 15.2865 (референс 15.2865, MC 15.33±0.05; было 21.42); вырождение 1 бумага == Black-76 точно.
+- [x] **D3**: docstring `api/marketrisk.py` актуализирован.
+- [x] **A7**: forward-fill фиксингов на торговую сетку — ненулевых FX-дней 386/500 (было 284), годовая вола 15.0% (было заниженные 10.9%); оставшиеся нули — честные «фиксинг не менялся».
+- [x] **M6-lite**: поле `bias` (conservative/aggressive/in_line) в backtest + строка в UI; christoffersen вызывается всегда (self-guarding).
+
+Тесты: `tests/test_validation_remarks_stage1.py` (8). Полный пул: 1127 passed при `-W error::RuntimeWarning`.
+⚠️ Swift-сборка этапа не проверена: Xcode исчез из системы во время сессии (xcode-select указывает на CommandLineTools без SwiftUI-макросов) — изменение минимально (опциональное поле декодера + 2 UI-строки), проверить сборкой после восстановления Xcode.
 
 ### Этап 2 — методология Market Risk (ядро валидных замечаний)
 - [ ] **M1. Overlapping h-day HypPL**: для `horizon>1` строить перекрывающиеся h-дневные суммы HypPL (логика уже есть в `risk/var._horizon_returns` — переиспользовать); √h оставить только как помеченный fallback при <50 окон. Затронет `api/marketrisk.overview` и `hs_var`/`hs_age_weighted`.

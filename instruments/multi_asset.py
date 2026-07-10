@@ -169,11 +169,16 @@ def basket_option(assets: list, weights: list, K: float, T: float, r: float,
         for i in range(n):
             for j in range(n):
                 v += w[i]*w[j]*F[i]*F[j]*np.exp(cov[i,j]*T)
-        sigma_b = np.sqrt(np.log(v / m1**2))
-        S_b     = m1 * np.exp(-0.5*sigma_b**2*T)
-        from models.black_scholes import bsm
-        g = bsm(S_b, K, T, r, sigma_b, 0, opt)
-        return dict(price=g.price, delta=g.delta, sigma_basket=sigma_b, method="moment_matching")
+        # 2026-07 fix (validation report D2): the total variance ln(m2/m1^2)
+        # must be ANNUALISED before feeding a Black formula (else vol is
+        # double-scaled by sqrt(T)), and the basket forward m1 prices via
+        # Black-76 directly -- the old spot remapping through BSM re-grew the
+        # forward by e^{rT}. For T=2 the note was overstated ~40% vs MC.
+        sigma_ann = np.sqrt(max(np.log(v / m1**2), 1e-16) / T)
+        from models.black_scholes import black76
+        g = black76(m1, K, T, r, sigma_ann, opt)
+        return dict(price=g.price, delta=g.delta, sigma_basket=sigma_ann,
+                    basket_forward=m1, method="moment_matching")
 
 
 # ─────────────────────────────────────────────────────────

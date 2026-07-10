@@ -92,10 +92,11 @@ struct MRBacktest: Decodable, Sendable {
     let expectedExceptions: Double
     let kupiec: MRKupiec?
     let trafficLight: String
+    let bias: String?
     let rows: [MRBacktestRow]
 
     enum CodingKeys: String, CodingKey {
-        case confidence, lookback, kupiec, rows
+        case confidence, lookback, kupiec, rows, bias
         case nObs = "n_obs"
         case nExceptions = "n_exceptions"
         case expectedExceptions = "expected_exceptions"
@@ -316,6 +317,14 @@ struct MarketRiskPane: View {
         return "\(bt.nExceptions) breaches / exp \(String(format: "%.1f", bt.expectedExceptions))"
     }
 
+    private func biasLabel(_ bias: String) -> String {
+        switch bias {
+        case "conservative": return "консервативна (капитал завышен)"
+        case "aggressive": return "агрессивна (риск недооценён)"
+        default: return "в норме"
+        }
+    }
+
     private var zoneColor: Color {
         switch vm.backtest?.trafficLight {
         case "green": return Theme.positive
@@ -422,8 +431,14 @@ struct MarketRiskPane: View {
                                 valueColor: (bt.kupiec?.reject ?? false) ? Theme.warning : Theme.positive)
                     KeyValueRow(key: "Basel traffic light", value: bt.trafficLight.capitalized,
                                 valueColor: zoneColor)
+                    if let bias = bt.bias {
+                        KeyValueRow(key: "Смещение модели", value: biasLabel(bias),
+                                    valueColor: bias == "aggressive" ? Theme.negative
+                                                : bias == "conservative" ? Theme.warning
+                                                : Theme.positive)
+                    }
                     KeyValueRow(key: "Rolling lookback", value: "\(bt.lookback)d")
-                    Text("Kupiec reject = частота пробоев статистически не соответствует уровню доверия (в обе стороны — слишком консервативная модель тоже сигнал).")
+                    Text("Kupiec reject = частота пробоев статистически не соответствует уровню доверия; направление показывает, завышает модель риск или занижает.")
                         .font(.system(size: 10)).foregroundStyle(.tertiary)
                 } else {
                     Text("Нет данных").font(.caption).foregroundStyle(.secondary)

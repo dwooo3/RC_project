@@ -354,16 +354,28 @@ def christoffersen_test(exceptions: np.ndarray) -> dict:
     """
     Christoffersen (1998) independence test for VaR exceptions.
     exceptions: binary array (1=exception, 0=no exception).
+
+    Returns ``applicable=False`` (LR not computed) when the series is too
+    short or carries no exceptions — the test needs transition counts, and
+    dividing by their zero sum produced NaN (validation report, defect D1).
     """
-    len(exceptions)
+    exceptions = np.asarray(exceptions)
     T00 = np.sum((exceptions[:-1]==0) & (exceptions[1:]==0))
     T01 = np.sum((exceptions[:-1]==0) & (exceptions[1:]==1))
     T10 = np.sum((exceptions[:-1]==1) & (exceptions[1:]==0))
     T11 = np.sum((exceptions[:-1]==1) & (exceptions[1:]==1))
 
+    total = T00 + T01 + T10 + T11
+    if len(exceptions) < 2 or total == 0 or (T01 + T11) == 0:
+        reason = ("series too short" if len(exceptions) < 2
+                  else "no exceptions — independence test not applicable")
+        return dict(lr_stat=0.0, p_value=None, reject=False,
+                    pi01=0.0, pi11=0.0, pi=0.0,
+                    applicable=False, reason=reason)
+
     pi01 = T01/(T00+T01) if (T00+T01)>0 else 0
     pi11 = T11/(T10+T11) if (T10+T11)>0 else 0
-    pi   = (T01+T11)/(T00+T01+T10+T11)
+    pi   = (T01+T11)/total
 
     def safe_log(x): return np.log(x) if x > 0 else 0
 
@@ -373,7 +385,7 @@ def christoffersen_test(exceptions: np.ndarray) -> dict:
     from scipy.stats import chi2
     p_val = 1 - chi2.cdf(lr, df=1)
     return dict(lr_stat=lr, p_value=p_val, reject=(lr > chi2.ppf(0.95,1)),
-                pi01=pi01, pi11=pi11, pi=pi)
+                pi01=pi01, pi11=pi11, pi=pi, applicable=True)
 
 
 def copula_var(weights, vols, corr, alpha=0.99, marginal="normal", df=5,

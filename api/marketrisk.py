@@ -7,8 +7,11 @@ book is FULL-REPRICED through its actual pricers on every historical scenario
 (PortfolioService.full_reprice_pnl), giving a Hypothetical P&L distribution
 from which VaR / ES / EVT metrics and the backtest are computed.
 
-FX fixings history is too short in the store (12 snapshots), so the FX factor
-is zero for now — flagged in `data_quality`.
+The FX factor runs on 5y of CBR daily fixings (USDRUB:fix, backfilled
+2026-07-09); fixings are forward-filled onto trading dates, so gaps produce a
+carried level rather than a fake zero move. The vol factor auto-switches from
+the RVI proxy to own ATM-IV history (IV:MIX/MXI/RTS) once >=60 points
+accumulate.
 """
 
 from __future__ import annotations
@@ -66,6 +69,18 @@ def factor_shifts(ctx, window: int = 500, frm: str | None = None,
         raise ValueError("not enough joint factor history (need >= 60 days)")
     has_fx = len(usd) >= 60
 
+    # A7 (validation report): forward-fill fixings onto the trading-date grid —
+    # a fixing gap carries the level, and the change lands on the first date it
+    # reappears (close-to-close over holidays), instead of fabricating a chain
+    # of zero moves that damped FX vol (was 284/500 non-zero days).
+    fx_level: dict[str, float] = {}
+    last_fix = None
+    for d in dates:
+        if usd.get(d, 0) > 0:
+            last_fix = usd[d]
+        if last_fix is not None:
+            fx_level[d] = last_fix
+
     out_dates, eq_ret, dr, dvol, fx_ret = [], [], [], [], []
     for prev, cur in zip(dates, dates[1:]):
         if eq[prev] <= 0 or eq[cur] <= 0:
@@ -74,9 +89,8 @@ def factor_shifts(ctx, window: int = 500, frm: str | None = None,
         eq_ret.append(math.log(eq[cur] / eq[prev]))
         dr.append(kbd[cur] - kbd[prev])                 # КБД already decimal
         dvol.append((rvi[cur] - rvi[prev]) * vol_scale)  # points/100 или own IV
-        # FX fixings can miss local holidays — carry the last known fix.
-        if has_fx and usd.get(prev, 0) > 0 and usd.get(cur, 0) > 0:
-            fx_ret.append(math.log(usd[cur] / usd[prev]))
+        if has_fx and fx_level.get(prev) and fx_level.get(cur):
+            fx_ret.append(math.log(fx_level[cur] / fx_level[prev]))
         else:
             fx_ret.append(0.0)
     if window and len(out_dates) > window:
@@ -402,7 +416,17 @@ def backtest(ctx, confidence: float = 0.99, window: int = 500,
     n_obs, n_exc = len(exceptions), int(sum(exceptions))
     expected = n_obs * (1 - confidence)
     kupiec = kupiec_test(n_obs, n_exc, confidence)
-    christ = christoffersen_test(exceptions) if n_exc > 0 else {}
+    christ = christoffersen_test(np.array(exceptions, dtype=int))  # self-guarding (D1)
+
+    # M6-lite: у Kupiec-отклонения есть НАПРАВЛЕНИЕ — слишком мало пробоев
+    # значит модель консервативна (капитал завышен), слишком много — агрессивна
+    # (риск недооценён). Без знака reject читается как «модель занижает риск».
+    if n_exc < expected:
+        bias = "conservative"
+    elif n_exc > expected:
+        bias = "aggressive"
+    else:
+        bias = "in_line"
 
     # Basel traffic light, generalized: the 99%/250d thresholds (5/10 breaches)
     # are exactly 2x/4x the expected count — apply that ratio at any confidence.
@@ -416,5 +440,6 @@ def backtest(ctx, confidence: float = 0.99, window: int = 500,
         "exception_rate": (n_exc / n_obs) if n_obs else 0.0,
         "kupiec": kupiec, "christoffersen": christ,
         "traffic_light": zone,
+        "bias": bias,
         "rows": rows,
     }
