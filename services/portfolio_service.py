@@ -143,16 +143,49 @@ class PortfolioService:
     _RATE_KEYS = ("r", "r_d", "repo_rate", "rate", "discount_rate", "forward_rate")
     _VOL_KEYS = ("sigma", "vol", "sigma1", "sigma2")
 
+    @staticmethod
+    def _position_tenor(params: dict) -> float:
+        """Maturity anchor for the rate shock: T, or expiry+tenor for swaptions."""
+        if not params:
+            return 5.0
+        if isinstance(params.get("T"), (int, float)):
+            return float(params["T"])
+        t_opt = params.get("T_option")
+        t_swap = params.get("T_swap")
+        if isinstance(t_opt, (int, float)) and isinstance(t_swap, (int, float)):
+            return float(t_opt) + float(t_swap)
+        return 5.0
+
     def full_reprice_pnl(self, dS: float = 0.0, dr: float = 0.0,
-                         dvol: float = 0.0, dfx: float = 0.0) -> dict:
+                         dvol: float = 0.0, dfx: float = 0.0,
+                         dr_curve: list | None = None,
+                         dS_by_name: dict | None = None,
+                         dfx_by_pair: dict | None = None) -> dict:
         """
         FULL-REPRICE portfolio P&L under a joint factor shock — every position
         is repriced through its actual pricer with shocked params, no
         delta-gamma approximation. Shocks: dS relative equity/spot move, dr
         absolute rate move, dvol absolute vol move, dfx relative FX move
         (applied to spot-like params of FX instruments).
+
+        Гранулярная факторная карта (validation report M2/M3):
+        * ``dr_curve`` — [(tenor, dr)]: позиция получает сдвиг ставки,
+          интерполированный на ЕЁ срок (bucketed by maturity), а не один
+          параллельный dr;
+        * ``dS_by_name`` — {secid: dS}: акция/бонд с ``params["secid"]``
+          шокируется собственным рядом, прочие — общим dS;
+        * ``dfx_by_pair`` — {"USD/RUB": dfx}: FX-позиция шокируется своим
+          курсом по ``ccy_pair``.
         """
         import copy
+
+        import numpy as _np
+
+        curve_tenors = curve_moves = None
+        if dr_curve:
+            pairs = sorted((float(t), float(v)) for t, v in dr_curve)
+            curve_tenors = _np.array([t for t, _ in pairs])
+            curve_moves = _np.array([v for _, v in pairs])
 
         base_total = 0.0
         shocked_total = 0.0
@@ -161,13 +194,22 @@ class PortfolioService:
             base = copy.deepcopy(pos)
             shocked = copy.deepcopy(pos)
             is_fx = pos.instrument.startswith(("fx", "ndf", "xccy"))
-            spot_shock = dfx if is_fx else dS
+            if is_fx:
+                pair = (pos.params or {}).get("ccy_pair") or pos.ccy_pair
+                spot_shock = (dfx_by_pair or {}).get(pair, dfx)
+            else:
+                secid = (pos.params or {}).get("secid")
+                spot_shock = (dS_by_name or {}).get(secid, dS)
+            dr_pos = dr
+            if curve_tenors is not None:
+                dr_pos = float(_np.interp(self._position_tenor(pos.params),
+                                          curve_tenors, curve_moves))
             for key in self._SPOT_KEYS:
                 if key in shocked.params and isinstance(shocked.params[key], (int, float)):
                     shocked.params[key] = shocked.params[key] * (1.0 + spot_shock)
             for key in self._RATE_KEYS:
                 if key in shocked.params and isinstance(shocked.params[key], (int, float)):
-                    shocked.params[key] = shocked.params[key] + dr
+                    shocked.params[key] = shocked.params[key] + dr_pos
             for key in self._VOL_KEYS:
                 if key in shocked.params and isinstance(shocked.params[key], (int, float)):
                     shocked.params[key] = max(shocked.params[key] + dvol, 1e-4)

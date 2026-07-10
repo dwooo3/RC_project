@@ -320,6 +320,16 @@ def portfolio_add_market(category: str, secid: str, quantity: float = 1.0) -> di
                      "positions": len(CONTEXT.portfolio.positions)})
 
 
+@app.get("/marketrisk/montecarlo")
+def marketrisk_montecarlo(confidence: float = 0.99, window: int = 500,
+                          n_sims: int = 1000) -> dict:
+    try:
+        return jsonable(marketrisk.mc_var_matrix(CONTEXT, confidence, window,
+                                                 min(n_sims, 5000)))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
 @app.get("/marketrisk/pca")
 def marketrisk_pca(confidence: float = 0.99, window: int = 500) -> dict:
     try:

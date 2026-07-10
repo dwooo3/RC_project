@@ -24,19 +24,45 @@ from risk.var import (
 # Basic historical simulation
 # ─────────────────────────────────────────────────────────
 
+MIN_OVERLAPPING_WINDOWS = 50
+
+
+def overlapping_horizon_pnl(pnl: np.ndarray, horizon: int,
+                            min_windows: int = MIN_OVERLAPPING_WINDOWS):
+    """Overlapping h-day P&L sums (Basel-style) for multi-day horizons.
+
+    Returns (pnl_h, method): the overlapping sums and "overlapping" when the
+    series affords >= min_windows windows; otherwise the sqrt-time-scaled
+    daily series and "sqrt_time" — a PARAMETRIC approximation, honest-labelled
+    (validation report M1: непараметрический historical P&L нельзя молча
+    масштабировать sqrt(h))."""
+    pnl = np.asarray(pnl, dtype=float)
+    h = int(round(horizon))
+    if h <= 1:
+        return pnl, "none"
+    n_windows = len(pnl) - h + 1
+    if n_windows >= min_windows:
+        return np.convolve(pnl, np.ones(h), mode="valid"), "overlapping"
+    return pnl * np.sqrt(h), "sqrt_time"
+
+
 def hs_var(pnl: np.ndarray, confidence: float = 0.95,
            horizon: int = 1) -> dict:
     """
     Historical simulation VaR and CVaR.
-    pnl: daily P&L series (negative = loss).
+    pnl: daily P&L series (negative = loss). Multi-day horizons use
+    overlapping h-day windows when history allows (sqrt-time fallback is
+    labelled in ``horizon_method``).
     """
     confidence = _validate_confidence(confidence)
     horizon = _validate_horizon(horizon)
     pnl = _as_finite_1d(pnl, "pnl")
-    losses = -pnl * np.sqrt(horizon)
+    pnl_h, horizon_method = overlapping_horizon_pnl(pnl, horizon)
+    losses = -pnl_h
     var, cvar = _loss_var_es(losses, confidence)
     return dict(VaR=var, CVaR=cvar, ES=cvar,
-                confidence=confidence, horizon=horizon, n_obs=len(pnl),
+                confidence=confidence, horizon=horizon, n_obs=len(pnl_h),
+                horizon_method=horizon_method,
                 method="historical_simulation")
 
 
@@ -55,17 +81,19 @@ def hs_age_weighted(pnl: np.ndarray, confidence: float = 0.95,
     pnl = _as_finite_1d(pnl, "pnl")
     if not 0.0 < decay < 1.0:
         raise ValueError("decay must be between 0 and 1")
-    n = len(pnl)
-    # weights: most recent obs = index n-1 -> weight proportional to decay^0
+    pnl_h, horizon_method = overlapping_horizon_pnl(pnl, horizon)
+    n = len(pnl_h)
+    # weights: most recent WINDOW (по дате конца окна) получает decay^0
     k = np.arange(n-1, -1, -1)  # k=0 is most recent
     w = decay**k * (1-decay) / (1 - decay**n)
     w = w[::-1]  # align with pnl order
 
-    losses = -pnl * np.sqrt(horizon)
+    losses = -pnl_h
     var, cvar = _loss_var_es(losses, confidence, w)
 
     return dict(VaR=var, CVaR=cvar, ES=cvar,
                 confidence=confidence, horizon=horizon,
+                horizon_method=horizon_method,
                 decay=decay, method="age_weighted_hs")
 
 

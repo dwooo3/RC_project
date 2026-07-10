@@ -42,6 +42,46 @@ STRESS_WINDOWS = {
 }
 
 
+_KBD_TENORS = (0.25, 1.0, 2.0, 5.0, 10.0)
+
+
+def _book_secids(ctx) -> list[str]:
+    """Equity-like secids held in the book — candidates for per-name factors."""
+    out = []
+    try:
+        for pos in ctx.portfolio.positions:
+            secid = (pos.params or {}).get("secid")
+            if secid and not pos.instrument.startswith(("fx", "ndf", "xccy")):
+                out.append(str(secid))
+    except Exception:
+        pass
+    return sorted(set(out))
+
+
+def _book_fx_pairs(ctx) -> list[str]:
+    out = []
+    try:
+        for pos in ctx.portfolio.positions:
+            if pos.instrument.startswith(("fx", "ndf", "xccy")):
+                pair = (pos.params or {}).get("ccy_pair") or pos.ccy_pair
+                if pair:
+                    out.append(str(pair))
+    except Exception:
+        pass
+    return sorted(set(out))
+
+
+def _ffill_levels(series: dict, dates: list[str]) -> dict:
+    """Forward-fill a sparse level series onto the trading-date grid."""
+    out, last = {}, None
+    for d in dates:
+        if series.get(d, 0) > 0:
+            last = series[d]
+        if last is not None:
+            out[d] = last
+    return out
+
+
 def factor_shifts(ctx, window: int = 500, frm: str | None = None,
                   till: str | None = None) -> dict:
     """Step 1 — shifts generation: aligned joint daily factor changes.
@@ -50,6 +90,7 @@ def factor_shifts(ctx, window: int = 500, frm: str | None = None,
     db = ctx.market_db
     eq = dict(_series(db, "IMOEX:price"))
     kbd = dict(_series(db, "KBD:5Y"))
+    kbd_tenors = {t: dict(_series(db, f"KBD:{t:g}Y")) for t in _KBD_TENORS}
     usd = dict(_series(db, "USDRUB:fix"))
     # vega factor: собственная ATM-IV история (индексные андерлаинги FORTS),
     # когда накопится >=60 точек; до тех пор — RVI-прокси. IV уже в decimal.
@@ -73,38 +114,72 @@ def factor_shifts(ctx, window: int = 500, frm: str | None = None,
     # a fixing gap carries the level, and the change lands on the first date it
     # reappears (close-to-close over holidays), instead of fabricating a chain
     # of zero moves that damped FX vol (was 284/500 non-zero days).
-    fx_level: dict[str, float] = {}
-    last_fix = None
-    for d in dates:
-        if usd.get(d, 0) > 0:
-            last_fix = usd[d]
-        if last_fix is not None:
-            fx_level[d] = last_fix
+    fx_level = _ffill_levels(usd, dates)
+
+    # M3: per-name equity series for book holdings (fallback: IMOEX move);
+    # per-pair FX for book currencies beyond USD/RUB.
+    name_levels = {}
+    for secid in _book_secids(ctx):
+        s = dict(_series(db, f"{secid}:price"))
+        if len(s) >= 60:
+            name_levels[secid] = s
+    pair_levels = {}
+    for pair in _book_fx_pairs(ctx):
+        s = dict(_series(db, f"{pair.replace('/', '')}:fix"))
+        if len(s) >= 60:
+            pair_levels[pair] = _ffill_levels(s, dates)
 
     out_dates, eq_ret, dr, dvol, fx_ret = [], [], [], [], []
+    dr_tenors: dict[float, list] = {t: [] for t in _KBD_TENORS}
+    eq_names: dict[str, list] = {s: [] for s in name_levels}
+    fx_pairs: dict[str, list] = {p: [] for p in pair_levels}
     for prev, cur in zip(dates, dates[1:]):
         if eq[prev] <= 0 or eq[cur] <= 0:
             continue
         out_dates.append(cur)
-        eq_ret.append(math.log(eq[cur] / eq[prev]))
+        eq_move = math.log(eq[cur] / eq[prev])
+        eq_ret.append(eq_move)
         dr.append(kbd[cur] - kbd[prev])                 # КБД already decimal
+        for t in _KBD_TENORS:
+            s = kbd_tenors[t]
+            dr_tenors[t].append(s[cur] - s[prev]
+                                if (prev in s and cur in s)
+                                else kbd[cur] - kbd[prev])   # fallback 5Y
         dvol.append((rvi[cur] - rvi[prev]) * vol_scale)  # points/100 или own IV
         if has_fx and fx_level.get(prev) and fx_level.get(cur):
             fx_ret.append(math.log(fx_level[cur] / fx_level[prev]))
         else:
             fx_ret.append(0.0)
+        for secid, s in name_levels.items():
+            eq_names[secid].append(math.log(s[cur] / s[prev])
+                                   if (s.get(prev, 0) > 0 and s.get(cur, 0) > 0)
+                                   else eq_move)          # fallback: индекс
+        for pair, s in pair_levels.items():
+            fx_pairs[pair].append(math.log(s[cur] / s[prev])
+                                  if (s.get(prev) and s.get(cur))
+                                  else fx_ret[-1])
     if window and len(out_dates) > window:
+        sl = slice(-window, None)
         out_dates, eq_ret, dr, dvol, fx_ret = (
-            out_dates[-window:], eq_ret[-window:], dr[-window:],
-            dvol[-window:], fx_ret[-window:])
-    factors = ["IMOEX (equity, log-return)", "КБД 5Y (rates, abs Δ)",
+            out_dates[sl], eq_ret[sl], dr[sl], dvol[sl], fx_ret[sl])
+        dr_tenors = {t: v[sl] for t, v in dr_tenors.items()}
+        eq_names = {s: v[sl] for s, v in eq_names.items()}
+        fx_pairs = {p: v[sl] for p, v in fx_pairs.items()}
+    factors = ["IMOEX (equity, log-return)"
+               + (f" + per-name: {', '.join(eq_names)}" if eq_names else ""),
+               f"КБД {len(_KBD_TENORS)} теноров (rates, bucketed by maturity)",
                vol_label,
-               "USD/RUB fix (fx, log-return)" if has_fx
-               else "FX (no history — zero)"]
+               ("USD/RUB fix (fx, log-return)"
+                + (f" + {', '.join(p for p in fx_pairs if p != 'USD/RUB')}"
+                   if any(p != "USD/RUB" for p in fx_pairs) else ""))
+               if has_fx else "FX (no history — zero)"]
     return {
         "dates": out_dates,
         "eq": np.array(eq_ret), "dr": np.array(dr), "dvol": np.array(dvol),
         "fx": np.array(fx_ret),
+        "dr_tenors": {t: np.array(v) for t, v in dr_tenors.items()},
+        "eq_names": {s: np.array(v) for s, v in eq_names.items()},
+        "fx_pairs": {p: np.array(v) for p, v in fx_pairs.items()},
         "factors": factors,
         "has_fx": has_fx,
     }
@@ -113,9 +188,16 @@ def factor_shifts(ctx, window: int = 500, frm: str | None = None,
 def _reprice_series(ps, shifts: dict) -> tuple[np.ndarray, set[str]]:
     pnl = np.empty(len(shifts["dates"]))
     errors: set[str] = set()
+    dr_tenors = shifts.get("dr_tenors") or {}
+    eq_names = shifts.get("eq_names") or {}
+    fx_pairs = shifts.get("fx_pairs") or {}
     for i in range(len(pnl)):
-        res = ps.full_reprice_pnl(dS=float(shifts["eq"][i]), dr=float(shifts["dr"][i]),
-                                  dvol=float(shifts["dvol"][i]), dfx=float(shifts["fx"][i]))
+        res = ps.full_reprice_pnl(
+            dS=float(shifts["eq"][i]), dr=float(shifts["dr"][i]),
+            dvol=float(shifts["dvol"][i]), dfx=float(shifts["fx"][i]),
+            dr_curve=[(t, float(v[i])) for t, v in dr_tenors.items()] or None,
+            dS_by_name={s: float(v[i]) for s, v in eq_names.items()} or None,
+            dfx_by_pair={p: float(v[i]) for p, v in fx_pairs.items()} or None)
         pnl[i] = res["pnl"]
         errors.update(res["errors"])
     return pnl, errors
@@ -159,7 +241,10 @@ def overview(ctx, confidence: float = 0.99, window: int = 500,
 
     frm, till = STRESS_WINDOWS.get(stress or "", (None, None))
     hp = hyppl(ctx, window, frm, till)
-    pnl = hp["pnl"] * math.sqrt(max(horizon, 1))     # sqrt-time to the horizon
+    # M1 (validation report): многодневный горизонт — перекрывающиеся h-дневные
+    # суммы HypPL (Basel-style), sqrt-time только как помеченный fallback.
+    from risk.historical_var import overlapping_horizon_pnl
+    pnl, horizon_method = overlapping_horizon_pnl(hp["pnl"], max(int(horizon), 1))
     losses = -pnl
     var_h, es_h = _var_es(losses, confidence)
 
@@ -206,9 +291,13 @@ def overview(ctx, confidence: float = 0.99, window: int = 500,
         quality.append("FX-фактор без истории — валютный риск в HypPL не учтён")
     if hp["reprice_errors"]:
         quality.append(f"{len(hp['reprice_errors'])} позиций не переоценились")
+    if horizon_method == "sqrt_time":
+        quality.append("горизонт масштабирован sqrt(h) — истории мало для "
+                       "перекрывающихся окон (параметрическое приближение)")
 
     return {
         "confidence": confidence, "window": window, "horizon": horizon,
+        "horizon_method": horizon_method,
         "stress": stress or "",
         "stress_period": f"{frm} … {till}" if frm else "",
         "n_scenarios": len(pnl),
@@ -223,6 +312,72 @@ def overview(ctx, confidence: float = 0.99, window: int = 500,
         "factors": hp["factors"],
         "data_quality": quality,
         "pnl_mean": float(pnl.mean()), "pnl_std": float(pnl.std()),
+    }
+
+
+def mc_var_matrix(ctx, confidence: float = 0.99, window: int = 500,
+                  n_sims: int = 1000, seed: int = 42) -> dict:
+    """M4 (Calypso Matrix Transform): correlated Monte Carlo VaR.
+
+    Ковариация фактор-вектора [equity, КБД×5 теноров, vol, fx] оценивается по
+    истории, Cholesky превращает независимые нормали в согласованные joint-
+    сценарии, книга ПОЛНОСТЬЮ переоценивается на каждом — в отличие от
+    var_mc (fitted normal на готовом P&L), здесь корреляции факторов и
+    нелинейность позиций входят в хвост честно.
+    """
+    shifts = factor_shifts(ctx, window)
+    cols = [shifts["eq"]]
+    col_names = ["equity"]
+    for t in _KBD_TENORS:
+        cols.append(shifts["dr_tenors"][t])
+        col_names.append(f"rates_{t:g}y")
+    cols.append(shifts["dvol"]); col_names.append("vol")
+    cols.append(shifts["fx"]); col_names.append("fx")
+    X = np.column_stack(cols)
+    mu, cov = X.mean(axis=0), np.cov(X.T)
+
+    # Cholesky c джиттером — историческая ковариация бывает полуопределённой
+    jitter = 0.0
+    for _ in range(6):
+        try:
+            L = np.linalg.cholesky(cov + jitter * np.eye(cov.shape[0]))
+            break
+        except np.linalg.LinAlgError:
+            jitter = max(jitter * 10, 1e-12)
+    else:
+        raise ValueError("factor covariance is not positive definite")
+
+    rng = np.random.default_rng(seed)
+    sims = mu + rng.standard_normal((int(n_sims), len(cols))) @ L.T
+
+    ps = ctx.portfolio
+    pnl = np.empty(len(sims))
+    errors: set[str] = set()
+    ti = {t: 1 + k for k, t in enumerate(_KBD_TENORS)}
+    for i, row in enumerate(sims):
+        res = ps.full_reprice_pnl(
+            dS=float(row[0]), dr=float(row[ti[5.0]]),
+            dvol=float(row[-2]), dfx=float(row[-1]),
+            dr_curve=[(t, float(row[ti[t]])) for t in _KBD_TENORS])
+        pnl[i] = res["pnl"]
+        errors.update(res["errors"])
+    var, es = _var_es(-pnl, confidence)
+
+    corr = cov / np.sqrt(np.outer(np.diag(cov), np.diag(cov)))
+    return {
+        "confidence": confidence, "window": window, "n_sims": int(n_sims),
+        "var": var, "es": es,
+        "pnl_mean": float(pnl.mean()), "pnl_std": float(pnl.std()),
+        "histogram": _histogram(pnl),
+        "factors": col_names,
+        "corr_eq_rates5y": float(corr[0, ti[5.0]]),
+        "corr_eq_fx": float(corr[0, -1]),
+        "jitter": jitter,
+        "reprice_errors": sorted(errors),
+        "method": "matrix_transform_full_reprice",
+        "note": ("Гауссовы совместные факторы (Cholesky от исторической "
+                 "ковариации) + полная переоценка; жирные хвосты факторов "
+                 "не моделируются — сравнивайте с historical на том же окне."),
     }
 
 

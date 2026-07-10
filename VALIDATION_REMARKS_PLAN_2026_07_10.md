@@ -42,12 +42,15 @@
 Тесты: `tests/test_validation_remarks_stage1.py` (8). Полный пул: 1127 passed при `-W error::RuntimeWarning`.
 ⚠️ Swift-сборка этапа не проверена: Xcode исчез из системы во время сессии (xcode-select указывает на CommandLineTools без SwiftUI-макросов) — изменение минимально (опциональное поле декодера + 2 UI-строки), проверить сборкой после восстановления Xcode.
 
-### Этап 2 — методология Market Risk (ядро валидных замечаний)
-- [ ] **M1. Overlapping h-day HypPL**: для `horizon>1` строить перекрывающиеся h-дневные суммы HypPL (логика уже есть в `risk/var._horizon_returns` — переиспользовать); √h оставить только как помеченный fallback при <50 окон. Затронет `api/marketrisk.overview` и `hs_var`/`hs_age_weighted`.
-- [ ] **M2. Multi-tenor rate factor в HypPL**: совместные дневные сдвиги КБД по 5 тенорам (история есть) → `full_reprice_pnl` принимает вектор `dr_by_tenor`; бонды переоцениваются через KRD-корзины/сдвинутую кривую, свопы — по ближайшему тенору. Сверка: сумма по тенорам ≈ старый параллельный кейс при равных сдвигах.
-- [ ] **M4. Correlated MC VaR (Calypso Matrix Transform)**: ковариация факторного вектора (equity, 5×rates, vol, fx) → Cholesky → симуляция joint-сценариев → full reprise → VaR/ES; сверка с historical на том же окне. Новый метод в `/marketrisk` methods.
-- [ ] **M3. Factor map позиция→фактор (поэтапно)**: шаг 1 — per-name equity (история 30 имён есть; позиция с `secid` шокируется своим рядом, прочие — IMOEX); шаг 2 — per-pair FX (EUR/CNY истории загружены); шаг 3 — per-underlying vega (ждёт ≥60 точек IV, wiring готов). Требует `params["secid"]` в позициях — уже пишется при capture из Market Data.
-- [ ] **M5. EVT-диагностика**: минимум excesses, стабильность ξ по сетке порогов, предупреждение в payload.
+### Этап 2 — методология Market Risk ✅ ВЫПОЛНЕН 2026-07-10
+- [x] **M1**: `overlapping_horizon_pnl` (общий хелпер) — 10d VaR из 291-391 перекрывающегося окна (9.71M против 9.04M у √h — реальные хвосты толще); √h остался только как помеченный fallback (<50 окон, нота в data_quality + `horizon_method` в payload); hs_var/hs_age_weighted переведены.
+- [x] **M2**: КБД 5 теноров в factor_shifts; `full_reprice_pnl(dr_curve=...)` — сдвиг интерполируется на срок КАЖДОЙ позиции (bucketed by maturity); равные сдвиги == параллельный кейс точно (тест); 2Y-шок бьёт по 2Y-свопу, а не по 5Y-бонду (тест).
+- [x] **M4**: `mc_var_matrix` + GET /marketrisk/montecarlo — Cholesky от исторической ковариации 8 факторов (eq, 5×КБД, vol, fx) → joint-сценарии → полная переоценка; corr(eq, rates5y)=−0.54 из данных; нота о гауссовых хвостах в payload.
+- [x] **M3 (шаги 1-2)**: per-name equity (`dS_by_name`, позиция с `params["secid"]` шокируется своим рядом, fallback IMOEX) и per-pair FX (`dfx_by_pair` по `ccy_pair`); факторные ряды подхватываются из книги автоматически. Шаг 3 (per-underlying vega) ждёт ≥60 IV-точек — wiring готов.
+- [x] **M5**: EVT-диагностика — ξ по сетке порогов (0.7×/1×/1.3×), warnings при <30 превышений, ξ≥0.5/1, нестабильности ξ>0.3.
+
+Тесты: `tests/test_validation_remarks_stage2.py` (12). Полный пул: 1139 passed при `-W error::RuntimeWarning`.
+Примечание: 1d VaR демо-книги вырос 2.12M → 2.86M — короткий конец КБД в окне цикла КС волатильнее 5Y, bucketed-фактор это честно ловит. Swift не менялся (новые ключи payload аддитивны); UI-карточка для matrix-MC — после восстановления Xcode.
 
 ### Этап 3 — архитектура (главное структурное замечание отчёта)
 - [ ] **A1. PricingEnvironment**: явный контракт `{name, purpose(FO/Risk/EOD/VaR/Stress), snapshot_id, curve_map(index/ccy→curve_id), surface_map, pricer_overrides, default_params, measures}`; хранение в AppDB; `PricingService`/workstation/marketrisk принимают `env_id`; дефолтные окружения FO (live snapshot) и Risk (=FO пока). Это скелет — без него замечания про «разные контуры оценки» не закрыть.

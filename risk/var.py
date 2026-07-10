@@ -237,9 +237,33 @@ def evt_var(returns: np.ndarray, position_value: float,
     var_pct  *= np.sqrt(horizon)
     cvar_pct *= np.sqrt(horizon)
 
+    # M5 (validation report): диагностика устойчивости POT-фита —
+    # ξ по сетке порогов вокруг выбранного; предупреждения в payload,
+    # чтобы EVT-VaR не выглядел увереннее, чем позволяет хвост.
+    warnings = []
+    xi_grid = {}
+    for tp in (threshold_pct * 0.7, threshold_pct, threshold_pct * 1.3):
+        u_g = np.percentile(losses, (1 - tp) * 100)
+        exc_g = losses[losses > u_g] - u_g
+        if len(exc_g) >= 20:
+            xi_g, _, _ = genpareto.fit(exc_g, floc=0)
+            xi_grid[round(tp, 4)] = float(xi_g)
+    xi_spread = (max(xi_grid.values()) - min(xi_grid.values())) if len(xi_grid) > 1 else 0.0
+    if Nu < 30:
+        warnings.append(f"мало превышений порога ({Nu} < 30) — оценка хвоста шумная")
+    if xi >= 1:
+        warnings.append("ξ ≥ 1 — бесконечное среднее хвоста, ES не определён")
+    elif xi >= 0.5:
+        warnings.append(f"ξ = {xi:.2f} ≥ 0.5 — бесконечная дисперсия хвоста")
+    if xi_spread > 0.3:
+        warnings.append(f"ξ нестабилен по порогам (разброс {xi_spread:.2f}) — "
+                        "выбор threshold_pct влияет на результат")
+
     return dict(VaR=var_pct*position_value, CVaR=cvar_pct*position_value,
                 VaR_pct=var_pct, CVaR_pct=cvar_pct,
                 xi=xi, beta=beta, threshold=u, n_exceedances=Nu,
+                xi_by_threshold=xi_grid, xi_spread=float(xi_spread),
+                warnings=warnings,
                 method="evt_pot", confidence=confidence)
 
 
