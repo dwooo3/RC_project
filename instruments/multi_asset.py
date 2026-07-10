@@ -109,10 +109,15 @@ def _best_of_2_cash(S1, S2, K, T, r, sig1, sig2, rho, q1=0.0, q2=0.0):
     e2  = (np.log(S2/K) + (r-q2+sig2**2/2)*T)/(sig2*np.sqrt(T))
     f1  = e1 - sig1*np.sqrt(T); f2 = e2 - sig2*np.sqrt(T)
 
-    price = (S1*np.exp(-q1*T)*M(e1, d1, rho1)
+    cmax = (S1*np.exp(-q1*T)*M(e1, d1, rho1)
             +S2*np.exp(-q2*T)*M(e2,-d1+sig*np.sqrt(T), rho2)
             -K*np.exp(-r*T)*(1 - multivariate_normal.cdf([-f1,-f2], cov=[[1,rho],[rho,1]])))
-    return dict(price=max(price,0), model="stulz_exact")
+    # payoff = max(S1, S2, K) = K + (max(S1,S2) - K)+  =>  value = K*df + cmax.
+    # 2026-07 fix: the K*df leg was missing -- the function returned only the
+    # call-on-max and understated best-of-cash by ~K*df (found by the batch-5
+    # MC==Stulz benchmark).
+    price = K*np.exp(-r*T) + max(cmax, 0.0)
+    return dict(price=price, call_on_max=max(cmax, 0.0), model="stulz_exact")
 
 
 def _rainbow_mc(assets, cash, T, r, sigmas, corr, q_list, style, n_sims=100_000, seed=42):

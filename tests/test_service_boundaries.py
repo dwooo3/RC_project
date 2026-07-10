@@ -118,7 +118,7 @@ def test_risk_service_stress_wrapper_matches_direct_worst_pnl():
 
 
 def test_governance_surfaces_prototype_warning():
-    warnings = GovernanceService().warnings_for_model("mc_lsm")
+    warnings = GovernanceService().warnings_for_model("short_rate")
 
     assert any("not production allowed" in warning for warning in warnings)
     assert any("Prototype" in warning for warning in warnings)

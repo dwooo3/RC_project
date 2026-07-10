@@ -82,11 +82,28 @@ TEST_MAP: dict[str, list[str]] = {
     "tarn": ["tests/test_batch4_benchmarks.py"],
     "accumulator": ["tests/test_batch4_benchmarks.py"],
     "asian": ["tests/test_batch4_benchmarks.py"],
+    # batch-5: один файл покрывает весь пул
+    **{m: ["tests/test_batch5_benchmarks.py"] for m in (
+        "custom_bond", "step_bond", "amortizing_bond", "perpetual_bond",
+        "mm_deposit", "treasury_bill", "commercial_paper", "repo",
+        "stir_future", "bond_future", "swaption", "fra", "garch",
+        "mc_lsm", "mc_heston", "multi_asset", "callable_bond",
+        "structured_autocall")},
 }
 
 # Batch 4 (2026-07): платёжные разложения (tests/test_batch4_benchmarks.py) —
 # TARN == стрип путов, accumulator == форварды−путы, asian == Turnbull-Wakeman.
 PROMOTED_BATCH_4 = ["tarn", "accumulator", "asian"]
+
+# Batch 5 (2026-07): DCF-тождества + Prototype-референсы
+# (tests/test_batch5_benchmarks.py). Попутно исправлен Stulz best-of-cash
+# (потерянное слагаемое K·df — найдено бенчмарком MC==Stulz).
+PROMOTED_BATCH_5 = [
+    "custom_bond", "step_bond", "amortizing_bond", "perpetual_bond",
+    "mm_deposit", "treasury_bill", "commercial_paper", "repo", "stir_future",
+    "bond_future", "swaption", "fra", "garch",
+    "mc_lsm", "mc_heston", "multi_asset", "callable_bond", "structured_autocall",
+]
 
 # Batch 3 (2026-07): бенчмарки ДОПИСАНЫ (tests/test_batch3_benchmarks.py) —
 # известные значения, точные тождества, симметрии, GPD-квантили.
@@ -136,7 +153,8 @@ def check_consistency() -> list[str]:
         if entry["status"] == ModelStatus.VALIDATED and not entry.get("tests"):
             problems.append(f"{mid}: Validated без зарегистрированных тестов")
     for batch, ids in (("batch-1", PROMOTED_BATCH_1), ("batch-2", PROMOTED_BATCH_2),
-                       ("batch-3", PROMOTED_BATCH_3), ("batch-4", PROMOTED_BATCH_4)):
+                       ("batch-3", PROMOTED_BATCH_3), ("batch-4", PROMOTED_BATCH_4),
+                       ("batch-5", PROMOTED_BATCH_5)):
         for mid in ids:
             if MODEL_REGISTRY[mid]["status"] != ModelStatus.VALIDATED:
                 problems.append(f"{mid}: в {batch}, но статус "
@@ -174,7 +192,7 @@ def main() -> None:
 
     if "--run" in sys.argv:
         promoted = (PROMOTED_BATCH_1 + PROMOTED_BATCH_2 + PROMOTED_BATCH_3
-                    + PROMOTED_BATCH_4)
+                    + PROMOTED_BATCH_4 + PROMOTED_BATCH_5)
         print(f"\nПрогон бенчмарков промоутнутых моделей ({len(promoted)}):")
         results = run_tests(promoted)
         bad = [m for m, ok in results.items() if ok is False]

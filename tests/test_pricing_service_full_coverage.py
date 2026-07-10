@@ -71,7 +71,7 @@ def test_autocall_phoenix_priced(svc):
         100, 0.05, 0.0, 0.20, 3.0, [1, 2, 3], 1.0, 0.70, 0.65, 0.10,
         n_sims=5_000, steps=50))
     assert res["model_id"] == "structured_autocall" and res["value"] is not None
-    assert any("Prototype" in w or "prototype" in w for w in res["warnings"])
+    assert res["model_status"] == "Validated"   # batch-5: phoenix валидирован
 
 
 def test_all_new_pricers_emit_audit_record(svc):

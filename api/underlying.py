@@ -47,6 +47,27 @@ def _expiry_from_ticker(secid: str) -> float | None:
     return _years_to(_dt.date(year, month, 15).isoformat())
 
 
+# Ликвидные акции -> код опционного андерлаинга FORTS (для IV-подтяжки).
+EQUITY_TO_FORTS = {
+    "SBER": "SBRF", "GAZP": "GAZR", "LKOH": "LKOH", "GMKN": "GMKN",
+    "ROSN": "ROSN", "VTBR": "VTBR", "MGNT": "MGNT", "MTSS": "MTSI",
+    "NVTK": "NOTK", "TATN": "TATN", "ALRS": "ALRS", "CHMF": "CHMF",
+    "MOEX": "MOEX", "PLZL": "PLZL", "YDEX": "YDEX", "T": "TCSI",
+    "IMOEX": "MIX", "RTSI": "RTS",
+}
+
+
+def _iv_history_last(ctx, code: str | None) -> float | None:
+    """Последняя точка накопленной ATM-IV истории (time_series IV:{code})."""
+    if not code:
+        return None
+    try:
+        rows = ctx.market_db.get_time_series(f"IV:{code}", "vol")
+        return round(float(rows[-1]["value"]), 4) if rows else None
+    except Exception:
+        return None
+
+
 def _atm_iv(ctx, asset_code: str | None, spot: float | None) -> float | None:
     """ATM implied vol (decimal) from the snapshot's calibrated FORTS surface."""
     if not asset_code:
@@ -149,7 +170,22 @@ def facts(ctx, category: str, secid: str) -> dict:
 
     iv = _atm_iv(ctx, asset_code or (secid if category == "options" else None),
                  float(spot) if spot else None)
-    vol = iv if iv else (round(rv30 / 100.0, 4) if rv30 else None)
+    if iv is None:
+        # акции/индексы: IV с поверхности фьючерса на этот тикер (маппинг
+        # SBER->SBRF и т.п.), либо последняя точка накопленной IV-истории
+        forts = EQUITY_TO_FORTS.get(secid)
+        iv = _atm_iv(ctx, forts, float(spot) if spot else None) \
+            or _iv_history_last(ctx, forts)
+    # sanity-гейт: неликвидные одиночные опционы дают мусорные калибровки
+    # (SBER "IV" 68%+ при RV30 20%) — принимаем IV только в разумной полосе
+    # вокруг реализованной волы, иначе честный RV30-фолбэк
+    rv = round(rv30 / 100.0, 4) if rv30 else None
+    if iv is not None:
+        if rv and not (0.5 * rv <= iv <= 2.0 * rv):
+            iv = None
+        elif not rv and not (0.03 <= iv <= 1.0):
+            iv = None
+    vol = iv if iv else rv
 
     out = {
         "secid": secid,

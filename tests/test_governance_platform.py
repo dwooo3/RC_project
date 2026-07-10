@@ -39,7 +39,8 @@ def test_governance_service_exposes_workspace_sections():
     limitations = governance.limitations_report()
 
     assert any(model.model_id == "fixed_bond" for model in models)
-    assert counts["Approximation"] > 0
+    # batch-5 (2026-07) промоутнул весь Approximation-пул — теперь ноль
+    assert counts["Validated"] > 0 and counts["Approximation"] == 0
     assert any(row["model_id"] == "fixed_bond" for row in validation)
     assert any(row["quant_review_status"] == "Partially Validated" for row in validation)
     assert audit and audit[0]["status"] == "Pending"
@@ -47,7 +48,8 @@ def test_governance_service_exposes_workspace_sections():
 
 
 def test_prototype_model_generates_governance_warning():
-    warnings = GovernanceService().warnings_for_model("mc_lsm")
+    # mc_lsm вышел в Validated (batch-5); short_rate — оставшийся Prototype
+    warnings = GovernanceService().warnings_for_model("short_rate")
 
     assert any("Prototype" in warning for warning in warnings)
     assert any("not production" in warning for warning in warnings)
