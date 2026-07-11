@@ -55,6 +55,11 @@ _SCHEMA = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_records (ts)",
     "CREATE INDEX IF NOT EXISTS idx_audit_type ON audit_records (calculation_type)",
+    """CREATE TABLE IF NOT EXISTS pricing_environments (
+        env_id TEXT PRIMARY KEY,
+        payload TEXT NOT NULL,
+        updated_at TEXT
+    )""",
 ]
 
 
@@ -133,6 +138,35 @@ class AppDB:
             market_data_snapshot_id=row["market_data_snapshot_id"],
             metadata=json.loads(row["metadata"]),
         )
+
+    # ── Pricing environments (A1) ──────────────────────────
+
+    def save_environment(self, env) -> None:
+        """Upsert a PricingEnvironment (domain object or dict)."""
+        payload = env.to_dict() if hasattr(env, "to_dict") else dict(env)
+        self.conn.execute(
+            """INSERT INTO pricing_environments (env_id, payload, updated_at)
+               VALUES (?,?,?)
+               ON CONFLICT(env_id) DO UPDATE SET
+                 payload=excluded.payload, updated_at=excluded.updated_at""",
+            (payload["env_id"], json.dumps(payload, default=str),
+             datetime.now().isoformat()))
+        self.conn.commit()
+
+    def load_environment(self, env_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT payload FROM pricing_environments WHERE env_id=?",
+            (env_id,)).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def list_environments(self) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT payload FROM pricing_environments ORDER BY env_id").fetchall()
+        return [json.loads(r["payload"]) for r in rows]
+
+    def delete_environment(self, env_id: str) -> None:
+        self.conn.execute("DELETE FROM pricing_environments WHERE env_id=?", (env_id,))
+        self.conn.commit()
 
     def list_portfolios(self) -> list[dict]:
         rows = self.conn.execute(

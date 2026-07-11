@@ -52,10 +52,12 @@
 Тесты: `tests/test_validation_remarks_stage2.py` (12). Полный пул: 1139 passed при `-W error::RuntimeWarning`.
 Примечание: 1d VaR демо-книги вырос 2.12M → 2.86M — короткий конец КБД в окне цикла КС волатильнее 5Y, bucketed-фактор это честно ловит. Swift не менялся (новые ключи payload аддитивны); UI-карточка для matrix-MC — после восстановления Xcode.
 
-### Этап 3 — архитектура (главное структурное замечание отчёта)
-- [ ] **A1. PricingEnvironment**: явный контракт `{name, purpose(FO/Risk/EOD/VaR/Stress), snapshot_id, curve_map(index/ccy→curve_id), surface_map, pricer_overrides, default_params, measures}`; хранение в AppDB; `PricingService`/workstation/marketrisk принимают `env_id`; дефолтные окружения FO (live snapshot) и Risk (=FO пока). Это скелет — без него замечания про «разные контуры оценки» не закрыть.
-- [ ] **D4→A2. Durable audit**: писать `CalculationRecord` в `AppDB.audit_records` (append из AuditService), `GovernanceService.audit_trail()` читает оттуда; ретеншн/лимит; смоук-тест перезапуска.
-- [ ] **A4. Books/trade filters**: поле `book` уже есть у позиций — фильтр по book/инструменту/валюте в `/portfolio` и Market Risk (VaR по срезу книги). После A1.
+### Этап 3 — архитектура ✅ ВЫПОЛНЕН 2026-07-10
+- [x] **A1. PricingEnvironment**: `domain/pricing_environment.py` (env_id/purpose/snapshot_id/curve_map/surface_map/pricer_overrides/default_params/measures), хранение в AppDB (`pricing_environments`), сид FO/RISK/EOD/VAR/STRESS при первом обращении; `price_ws(..., env=)` — контур задаёт дефолты движка (pricer_overrides), кривых по ролям (curve_map: discount/projection) и параметров (запрос всегда побеждает), тег `environment` в результате; REST: GET/PUT/DELETE `/environments`, `env_id` в /pricing/price. Проверено: RISK-контур подставил GCURVE_RUB (30k == прежний расчёт), кастомный контур переключил european_option на heston_cf. Важно: projection-роль в сид НЕ входит (dual-curve — только явным заданием, иначе тихо менялась семантика IRS 30k→10M). Ограничение v1 честно задокументировано: curve_map = дефолты каталога/адаптеров, не полный remapping внутренних вызовов PricingService.
+- [x] **D4→A2. Durable audit**: общий `CONTEXT.audit = AuditService(db=app_db)` прошит в PricingService моста, PortfolioService книги, RiskService и GovernanceService; `audit_trail()` читает из `audit_records` (переживает перезапуск, статус Recorded), in-memory — fallback, placeholder — только для голого сервиса; лимит limit=200 на выдачу.
+- [x] **A4. Books/trade filters**: `ctx.filtered_portfolio(book, instrument, currency)` + `ctx.books()`; `/portfolio?book=&instrument=&currency=` (+ books и filter в payload), `GET /portfolio/books`, `/marketrisk?book=` — VaR по срезу (без кэша); тождество «одна книга ⇒ срез == целое» тестом.
+
+Тесты: `tests/test_validation_remarks_stage3.py` (9). Полный пул: 1148 passed при `-W error::RuntimeWarning`. Swift не менялся (ключи аддитивны); UI контуров/фильтров — после восстановления Xcode.
 
 ### Этап 4 — P&L, UI-допущения, внешний бенчмарк
 - [ ] **A3. P&L Explained → actual vs hypothetical**: импорт actual P&L (ручной ввод/CSV за дату), split APL/HypPL в отчёте; lifecycle-эффекты первого порядка из книги (купоны/фиксинги/экспирации позиций между датами) как «system/time effects»; residual разделить на unexplained vs lifecycle.

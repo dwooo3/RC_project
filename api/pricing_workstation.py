@@ -1458,19 +1458,39 @@ def implied_vol_ws(product_id: str, params: dict, market_price: float) -> dict:
 
 
 def price_ws(svc, snapshot, product_id: str, engine_id: str | None,
-             params: dict) -> dict:
-    """Dispatch a workstation pricing request; returns the normalized result."""
+             params: dict, env=None) -> dict:
+    """Dispatch a workstation pricing request; returns the normalized result.
+
+    ``env`` (PricingEnvironment, A1): контур задаёт ДЕФОЛТЫ — движок
+    (pricer_overrides), кривую discount-роли (curve_map) и численные параметры
+    (default_params); явные значения запроса всегда побеждают.
+    """
     product = find_product(product_id)
     if product is None:
         raise ValueError(f"unknown product '{product_id}'")
     engine_ids = [e.id for e in product.engines]
+    if engine_id not in engine_ids and env is not None:
+        engine_id = (env.pricer_overrides or {}).get(product_id)
     values = dict(params)
+    if env is not None:
+        for key, val in (env.default_params or {}).items():
+            values.setdefault(key, val)
+        if product.needs_curve and not values.get("curve_id"):
+            disc = (env.curve_map or {}).get("discount")
+            if disc:
+                values["curve_id"] = disc
+        if product.needs_proj and not values.get("proj_curve_id"):
+            proj = (env.curve_map or {}).get("projection")
+            if proj:
+                values["proj_curve_id"] = proj
     values["engine"] = engine_id if engine_id in engine_ids else engine_ids[0]
     result = product.invoke(svc, values, snapshot)
     normalized = normalize_ws_result(result if isinstance(result, dict) else {},
                                      input_keys=set(params.keys()))
     normalized["product"] = product_id
     normalized["engine"] = values["engine"]
+    if env is not None:
+        normalized["environment"] = env.env_id
     return normalized
 
 

@@ -211,13 +211,36 @@ class GovernanceService:
                 )
         return rows
 
-    def audit_trail(self) -> list[dict]:
+    def audit_trail(self, limit: int = 200) -> list[dict]:
         """Return calculation audit records.
 
-        Durable persistence is not implemented yet. When an AuditService is
-        provided, return in-memory calculation records; otherwise return an
-        explicit placeholder instead of fabricating calculation history.
+        A2 (validation report): durable-first — when the AuditService carries
+        an AppDB sink, the trail is read back from ``audit_records`` and thus
+        survives restarts. In-memory records are the fallback for services
+        constructed without persistence; the explicit placeholder remains for
+        a bare GovernanceService so history is never fabricated.
         """
+        db = getattr(self.audit, "db", None) if self.audit else None
+        if db is not None:
+            try:
+                rows = db.load_audit_records(limit=limit)
+            except Exception:
+                rows = []
+            if rows:
+                return [
+                    {
+                        "timestamp": r.get("ts", ""),
+                        "event": r.get("user_action", ""),
+                        "model_id": r.get("model_id", ""),
+                        "version": r.get("model_version", ""),
+                        "status": "Recorded",
+                        "calculation_type": r.get("calculation_type", ""),
+                        "snapshot_id": r.get("market_data_snapshot_id", ""),
+                        "inputs_hash": r.get("inputs_hash", ""),
+                        "details": r.get("details", {}),
+                    }
+                    for r in rows
+                ]
         if self.audit and self.audit.records:
             return self.audit.audit_trail()
         return [

@@ -40,8 +40,30 @@ class AppContext:
         self._market = None
         self._snapshot = None
         self._portfolio: PortfolioService | None = None
-        self.governance = GovernanceService()
-        self.risk = RiskService()
+        self._audit = None
+        self._governance = None
+        self._risk = None
+
+    # ── audit / governance (durable: A2 отчёта валидации) ─
+    @property
+    def audit(self):
+        """Shared AuditService persisting every CalculationRecord to AppDB."""
+        if self._audit is None:
+            from services.audit_service import AuditService
+            self._audit = AuditService(db=self.app_db)
+        return self._audit
+
+    @property
+    def governance(self) -> GovernanceService:
+        if self._governance is None:
+            self._governance = GovernanceService(audit=self.audit)
+        return self._governance
+
+    @property
+    def risk(self) -> RiskService:
+        if self._risk is None:
+            self._risk = RiskService(audit=self.audit)
+        return self._risk
 
     # ── market ───────────────────────────────────────────
     @property
@@ -92,7 +114,8 @@ class AppContext:
     def portfolio(self) -> PortfolioService:
         if self._portfolio is None:
             try:
-                self._portfolio = PortfolioService.load_from_db(self.app_db, self._BOOK_ID)
+                self._portfolio = PortfolioService.load_from_db(
+                    self.app_db, self._BOOK_ID, audit=self.audit)
                 if not self._portfolio.positions:
                     raise KeyError("empty book")
             except Exception:
@@ -100,12 +123,69 @@ class AppContext:
         return self._portfolio
 
     def _demo_book(self) -> PortfolioService:
-        ps = PortfolioService()
+        ps = PortfolioService(audit=self.audit)
         ps.portfolio.portfolio_id = self._BOOK_ID
         ps.portfolio.name = "Bridge book"
         for spec in _DEMO_POSITIONS:
             ps.add(Position(**spec))
         return ps
+
+    # ── books / trade filters (A4) ───────────────────────
+    def filtered_portfolio(self, book: str | None = None,
+                           instrument: str | None = None,
+                           currency: str | None = None) -> PortfolioService:
+        """Срез книги по book/инструменту/валюте — отдельный PortfolioService
+        на подмножестве позиций (те же pricing/market/audit), для оценок и
+        VaR по срезу. Пустые фильтры возвращают основную книгу как есть."""
+        ps = self.portfolio
+        if not any((book, instrument, currency)):
+            return ps
+        subset = [p for p in ps.positions
+                  if (not book or p.book == book)
+                  and (not instrument or p.instrument == instrument)
+                  and (not currency or p.currency == currency)]
+        import copy
+        filtered = PortfolioService(market_data=ps.market_data,
+                                    pricing=ps.pricing, audit=self.audit)
+        filtered.portfolio.portfolio_id = (
+            f"{self._BOOK_ID}:{book or '*'}/{instrument or '*'}/{currency or '*'}")
+        filtered.portfolio.name = f"Срез книги ({len(subset)} позиций)"
+        for pos in subset:
+            filtered.add(copy.deepcopy(pos))
+        return filtered
+
+    def books(self) -> list[dict]:
+        counts: dict[str, int] = {}
+        for p in self.portfolio.positions:
+            counts[p.book or "—"] = counts.get(p.book or "—", 0) + 1
+        return [{"book": b, "positions": n} for b, n in sorted(counts.items())]
+
+    # ── pricing environments (A1) ────────────────────────
+    def environment(self, env_id: str | None = None):
+        """Resolve a PricingEnvironment (seeded on first access; default FO)."""
+        from domain.pricing_environment import PricingEnvironment, default_environments
+        db = self.app_db
+        if not db.list_environments():
+            for env in default_environments():
+                db.save_environment(env)
+        payload = db.load_environment((env_id or "FO").upper())
+        if payload is None:
+            raise KeyError(f"unknown pricing environment '{env_id}'")
+        return PricingEnvironment.from_dict(payload)
+
+    def env_snapshot(self, env):
+        """Snapshot контура: закреплённый env.snapshot_id или активный."""
+        if getattr(env, "snapshot_id", None):
+            return self.market.get_snapshot(env.snapshot_id)
+        return self.snapshot
+
+    def save_environment(self, env) -> None:
+        self.app_db.save_environment(env)
+        try:
+            from api import marketrisk
+            marketrisk.invalidate_cache()          # контур влияет на переоценку
+        except Exception:
+            pass
 
     def _portfolio_changed(self) -> None:
         """Persist the book and drop every valuation cache built on it."""

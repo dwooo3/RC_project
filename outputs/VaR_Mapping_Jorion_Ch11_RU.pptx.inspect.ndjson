@@ -1,0 +1,152 @@
+{"kind":"deck","id":"pr/nlbvfz","name":"Deck"}
+{"kind":"layout","layoutId":"47603425-ca9e-46fc-86c4-52179913da1a","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"f82aa38b-f8b6-4340-84f0-ffd9e6e58d1c","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/3k1azg","slide":1,"title":"FRM PART II  /  MARKET RISK","textShapes":6}
+{"kind":"shape","id":"sh/0fu9k3el","slide":1,"name":"cover-glass-panel","bbox":[64,52,792,616]}
+{"kind":"textbox","id":"sh/1g3ad8v6","slide":1,"name":"cover-eyebrow","text":"FRM PART II  /  MARKET RISK","textPreview":"FRM PART II  /  MARKET RISK","textChars":27,"textLines":1,"bbox":[104,98,450,24]}
+{"kind":"textbox","id":"sh/2hcrmdwr","slide":1,"name":"cover-title","text":"VaR Mapping","textPreview":"VaR Mapping","textChars":11,"textLines":1,"bbox":[100,168,650,94]}
+{"kind":"textbox","id":"sh/nilsfidc","slide":1,"name":"cover-subtitle","text":"Как сложный портфель превращается\nв управляемые факторы риска","textPreview":"Как сложный портфель превращается | в управляемые факторы риска","textChars":61,"textLines":2,"bbox":[104,284,620,92]}
+{"kind":"shape","id":"sh/oju9onux","slide":1,"bbox":[104,412,118,0]}
+{"kind":"textbox","id":"sh/pk3ahsvi","slide":1,"name":"cover-source","text":"Jorion · Chapter 11","textPreview":"Jorion · Chapter 11","textChars":19,"textLines":1,"bbox":[104,438,340,30]}
+{"kind":"textbox","id":"sh/il8ra9wn","slide":1,"name":"cover-process","text":"Decompose  →  Map  →  Aggregate","textPreview":"Decompose  →  Map  →  Aggregate","textChars":31,"textLines":1,"bbox":[104,570,520,28]}
+{"kind":"textbox","id":"sh/jmh83ed8","slide":1,"name":"cover-number","text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[778,618,38,18]}
+{"kind":"image","id":"im/6t0nu9sv","slide":1,"name":"","alt":"Abstract cobalt-blue ribbons on a dark blue presentation background","bbox":[0,0,1280,720]}
+{"kind":"notes","id":"nt/3k1azg","slide":1,"text":""}
+{"kind":"slide","id":"sl/j9f9qd","slide":2,"title":"Источник: Jorion, Chapter 11, PDF pp. 3-10","textShapes":22}
+{"kind":"shape","id":"sh/5o7mhszy","slide":2,"name":"slide-2-outer-frame","bbox":[24,24,1232,672]}
+{"kind":"textbox","id":"sh/ilw36xg7","slide":2,"name":"slide-2-source","text":"Источник: Jorion, Chapter 11, PDF pp. 3-10","textPreview":"Источник: Jorion, Chapter 11, PDF pp. 3-10","textChars":42,"textLines":1,"bbox":[56,675,1060,14]}
+{"kind":"textbox","id":"sh/jm54f2hs","slide":2,"name":"slide-2-number","text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[1188,672,36,18]}
+{"kind":"textbox","id":"sh/sry5c7y9","slide":2,"name":"Принцип-eyebrow","text":"ПРИНЦИП","textPreview":"ПРИНЦИП","textChars":7,"textLines":1,"bbox":[58,42,240,20]}
+{"kind":"textbox","id":"sh/ts7m5czu","slide":2,"name":"Принцип-title","text":"Mapping сводит позиции к факторам риска","textPreview":"Mapping сводит позиции к факторам риска","textChars":39,"textLines":1,"bbox":[56,67,1130,58]}
+{"kind":"shape","id":"sh/6pg3axg3","slide":2,"name":"mapping-canvas","bbox":[56,140,764,508]}
+{"kind":"textbox","id":"sh/7qp4j2ho","slide":2,"name":"portfolio-label","text":"ПОЗИЦИИ ПОРТФЕЛЯ","textPreview":"ПОЗИЦИИ ПОРТФЕЛЯ","textChars":16,"textLines":1,"bbox":[84,164,250,20]}
+{"kind":"textbox","id":"sh/gfy5gryl","slide":2,"name":"primitives-label","text":"PRIMITIVES","textPreview":"PRIMITIVES","textChars":10,"textLines":1,"bbox":[84,332,180,20]}
+{"kind":"textbox","id":"sh/hgrm9czq","slide":2,"name":"instrument-1","text":"Облигации","textPreview":"Облигации","textChars":9,"textLines":1,"bbox":[84,202,142,62]}
+{"kind":"textbox","id":"sh/lcna5cr2","slide":2,"name":"instrument-2","text":"Акции","textPreview":"Акции","textChars":5,"textLines":1,"bbox":[252,202,142,62]}
+{"kind":"textbox","id":"sh/kbe9w7qh","slide":2,"name":"instrument-3","text":"FX","textPreview":"FX","textChars":2,"textLines":1,"bbox":[420,202,142,62]}
+{"kind":"textbox","id":"sh/za5s329w","slide":2,"name":"instrument-4","text":"Деривативы","textPreview":"Деривативы","textChars":10,"textLines":1,"bbox":[588,202,142,62]}
+{"kind":"textbox","id":"sh/y9wrux8r","slide":2,"name":"factor-1","text":"Кривая\nставок","textPreview":"Кривая | ставок","textChars":13,"textLines":2,"bbox":[126,370,126,96]}
+{"kind":"textbox","id":"sh/9g7a9cre","slide":2,"name":"factor-2","text":"Рынок\nи FX","textPreview":"Рынок | и FX","textChars":10,"textLines":2,"bbox":[342,370,126,96]}
+{"kind":"textbox","id":"sh/8fy907qt","slide":2,"name":"factor-3","text":"Specific\nrisk","textPreview":"Specific | risk","textChars":13,"textLines":2,"bbox":[558,370,126,96]}
+{"kind":"textbox","id":"sh/7eps7298","slide":2,"name":"risk-aggregation","text":"Σ  +  корреляции  =  VaR","textPreview":"Σ  +  корреляции  =  VaR","textChars":24,"textLines":1,"bbox":[238,530,398,76]}
+{"kind":"shape","id":"sh/mdgryx8n","slide":2,"bbox":[119,300,106,34]}
+{"kind":"shape","id":"sh/pk3qx8ru","slide":2,"bbox":[311,276,106,82]}
+{"kind":"shape","id":"sh/oju9ona9","slide":2,"bbox":[395,274,106,86]}
+{"kind":"shape","id":"sh/g3y9kni5","slide":2,"bbox":[371,82,106,470]}
+{"kind":"shape","id":"sh/ho7adszq","slide":2,"bbox":[587,298,106,38]}
+{"kind":"shape","id":"sh/u1grid0f","slide":2,"bbox":[281,374,64,248]}
+{"kind":"shape","id":"sh/f2psbihk","slide":2,"bbox":[389,482,64,32]}
+{"kind":"shape","id":"sh/4ri98nih","slide":2,"bbox":[497,406,64,184]}
+{"kind":"shape","id":"sh/psrahsz2","slide":2,"name":"mapping-formula-panel","bbox":[846,140,378,508]}
+{"kind":"textbox","id":"sh/2pgr6x0b","slide":2,"name":"factor-exposure-pill","text":"ЭКСПОЗИЦИЯ К ФАКТОРУ j","textPreview":"ЭКСПОЗИЦИЯ К ФАКТОРУ j","textChars":22,"textLines":1,"bbox":[878,170,314,34]}
+{"kind":"textbox","id":"sh/3q9sfihw","slide":2,"name":"exposure-formula","text":"xⱼ = Σᵢ₌₁ᴺ xᵢⱼ","textPreview":"xⱼ = Σᵢ₌₁ᴺ xᵢⱼ","textChars":14,"textLines":1,"bbox":[882,218,306,66]}
+{"kind":"textbox","id":"sh/cvi9c7yd","slide":2,"name":"exposure-explainer","text":"Суммируем вклад каждого инструмента\nв один и тот же фактор риска.","textPreview":"Суммируем вклад каждого инструмента | в один и тот же фактор риска.","textChars":65,"textLines":2,"bbox":[882,294,306,58]}
+{"kind":"shape","id":"sh/dwralczy","slide":2,"bbox":[882,372,306,0]}
+{"kind":"textbox","id":"sh/nqdcb610","slide":2,"name":"risk-layers-header","text":"GENERAL  +  SPECIFIC","textPreview":"GENERAL  +  SPECIFIC","textChars":20,"textLines":1,"bbox":[882,394,306,24]}
+{"kind":"textbox","id":"sh/mpkvi1kv","slide":2,"name":"factor-model-formula","text":"Rᵢ = αᵢ + βᵢRₘ + εᵢ","textPreview":"Rᵢ = αᵢ + βᵢRₘ + εᵢ","textChars":19,"textLines":1,"bbox":[882,426,306,52]}
+{"kind":"shape","id":"sh/9svudgj6","slide":2,"name":"general-risk-band","bbox":[882,500,306,34]}
+{"kind":"shape","id":"sh/8rmdkbil","slide":2,"name":"market-risk-share","bbox":[882,500,220,34]}
+{"kind":"textbox","id":"sh/zmtc7m14","slide":2,"name":"market-label","text":"market","textPreview":"market","textChars":6,"textLines":1,"bbox":[896,505,86,20]}
+{"kind":"textbox","id":"sh/ylkbehkj","slide":2,"name":"residual-label","text":"residual","textPreview":"residual","textChars":8,"textLines":1,"bbox":[1106,505,68,20]}
+{"kind":"textbox","id":"sh/lobu9wja","slide":2,"name":"factor-tradeoff","text":"Больше факторов → меньше остаточного риска,\nно выше стоимость модели.","textPreview":"Больше факторов → меньше остаточного риска, | но выше стоимость модели.","textChars":69,"textLines":2,"bbox":[882,552,306,52]}
+{"kind":"notes","id":"nt/j9f9qd","slide":2,"text":""}
+{"kind":"slide","id":"sl/ap681a","slide":3,"title":"Источник: Jorion, Chapter 11, PDF pp. 11-14","textShapes":29}
+{"kind":"shape","id":"sh/lwfa5gva","slide":3,"name":"slide-3-outer-frame","bbox":[24,24,1232,672]}
+{"kind":"textbox","id":"sh/ytoru1wj","slide":3,"name":"slide-3-source","text":"Источник: Jorion, Chapter 11, PDF pp. 11-14","textPreview":"Источник: Jorion, Chapter 11, PDF pp. 11-14","textChars":43,"textLines":1,"bbox":[56,675,1060,14]}
+{"kind":"textbox","id":"sh/zuxs36d4","slide":3,"name":"slide-3-number","text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[1188,672,36,18]}
+{"kind":"textbox","id":"sh/c7m9sbed","slide":3,"name":"Fixed income-eyebrow","text":"FIXED INCOME","textPreview":"FIXED INCOME","textChars":12,"textLines":1,"bbox":[58,42,240,20]}
+{"kind":"textbox","id":"sh/xsva1gvy","slide":3,"name":"Fixed income-title","text":"Облигации: три уровня точности","textPreview":"Облигации: три уровня точности","textChars":30,"textLines":1,"bbox":[56,67,1130,58]}
+{"kind":"shape","id":"sh/a54rq1wn","slide":3,"name":"method-card-1","bbox":[56,150,354,374]}
+{"kind":"textbox","id":"sh/b6d8z6ds","slide":3,"name":"method-number-1","text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[80,172,54,36]}
+{"kind":"textbox","id":"sh/o3m9oreh","slide":3,"name":"method-title-1","text":"Principal","textPreview":"Principal","textChars":9,"textLines":1,"bbox":[80,228,300,42]}
+{"kind":"textbox","id":"sh/p4vqxwf2","slide":3,"name":"method-subtitle-1","text":"Средний срок погашения","textPreview":"Средний срок погашения","textChars":22,"textLines":1,"bbox":[80,276,300,30]}
+{"kind":"textbox","id":"sh/hozi5wr2","slide":3,"name":"method-body-1","text":"Один vertex. Купоны\nне учитываются.","textPreview":"Один vertex. Купоны | не учитываются.","textChars":35,"textLines":2,"bbox":[80,324,306,58]}
+{"kind":"shape","id":"sh/g361crqh","slide":3,"name":"method-card-2","bbox":[463,150,354,374]}
+{"kind":"textbox","id":"sh/v2x03m9w","slide":3,"name":"method-number-2","text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[487,172,54,36]}
+{"kind":"textbox","id":"sh/u1ojahsb","slide":3,"name":"method-title-2","text":"Duration","textPreview":"Duration","textChars":8,"textLines":1,"bbox":[487,228,300,42]}
+{"kind":"textbox","id":"sh/t0fi1cr6","slide":3,"name":"method-subtitle-2","text":"Macaulay duration","textPreview":"Macaulay duration","textChars":17,"textLines":1,"bbox":[487,276,300,30]}
+{"kind":"textbox","id":"sh/8z6h87al","slide":3,"name":"method-body-2","text":"Один vertex, но купоны\nвстроены через duration.","textPreview":"Один vertex, но купоны | встроены через duration.","textChars":47,"textLines":2,"bbox":[487,324,306,58]}
+{"kind":"shape","id":"sh/7yx0z290","slide":3,"name":"method-card-3","bbox":[870,150,354,374]}
+{"kind":"textbox","id":"sh/6xoz6hsf","slide":3,"name":"method-number-3","text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[894,172,54,36]}
+{"kind":"textbox","id":"sh/lwvixcru","slide":3,"name":"method-title-3","text":"Cash-flow","textPreview":"Cash-flow","textChars":9,"textLines":1,"bbox":[894,228,300,42]}
+{"kind":"textbox","id":"sh/kvmh47a9","slide":3,"name":"method-subtitle-3","text":"Каждый PV cash flow","textPreview":"Каждый PV cash flow","textChars":19,"textLines":1,"bbox":[894,276,300,30]}
+{"kind":"textbox","id":"sh/cfq1k7i5","slide":3,"name":"method-body-3","text":"Несколько vertices +\nматрица корреляций.","textPreview":"Несколько vertices + | матрица корреляций.","textChars":40,"textLines":2,"bbox":[894,324,306,58]}
+{"kind":"textbox","id":"sh/xgzidczq","slide":3,"name":"principal-vertex","text":"3.0Y","textPreview":"3.0Y","textChars":4,"textLines":1,"bbox":[165,414,104,70]}
+{"kind":"textbox","id":"sh/ad8jix0z","slide":3,"name":"duration-vertex","text":"2.733Y","textPreview":"2.733Y","textChars":6,"textLines":1,"bbox":[551,404,150,84]}
+{"kind":"textbox","id":"sh/beh0b2hk","slide":3,"name":"cashflow-vertex-1","text":"1Y","textPreview":"1Y","textChars":2,"textLines":1,"bbox":[892,408,48,48]}
+{"kind":"textbox","id":"sh/obq1g7i9","slide":3,"name":"cashflow-vertex-2","text":"2Y","textPreview":"2Y","textChars":2,"textLines":1,"bbox":[952,414,48,48]}
+{"kind":"textbox","id":"sh/pczi9szu","slide":3,"name":"cashflow-vertex-3","text":"3Y","textPreview":"3Y","textChars":2,"textLines":1,"bbox":[1012,420,48,48]}
+{"kind":"textbox","id":"sh/29ozex03","slide":3,"name":"cashflow-vertex-4","text":"4Y","textPreview":"4Y","textChars":2,"textLines":1,"bbox":[1072,414,48,48]}
+{"kind":"textbox","id":"sh/nah072ho","slide":3,"name":"cashflow-vertex-5","text":"5Y","textPreview":"5Y","textChars":2,"textLines":1,"bbox":[1132,408,48,48]}
+{"kind":"textbox","id":"sh/87a1srid","slide":3,"text":"1 фактор","textPreview":"1 фактор","textChars":8,"textLines":1,"bbox":[149,493,136,22]}
+{"kind":"textbox","id":"sh/98jilwzy","slide":3,"text":"1 фактор","textPreview":"1 фактор","textChars":8,"textLines":1,"bbox":[558,493,136,22]}
+{"kind":"textbox","id":"sh/j254bq10","slide":3,"text":"5 факторов","textPreview":"5 факторов","textChars":10,"textLines":1,"bbox":[967,493,156,22]}
+{"kind":"shape","id":"sh/i1w3ilkf","slide":3,"name":"duration-formula-band","bbox":[56,552,1168,96]}
+{"kind":"textbox","id":"sh/54nmd0j6","slide":3,"name":"duration-approximation","text":"ΔP/P ≈ −Dmod · Δy","textPreview":"ΔP/P ≈ −Dmod · Δy","textChars":17,"textLines":1,"bbox":[86,570,314,54]}
+{"kind":"shape","id":"sh/43elkv2l","slide":3,"bbox":[424,571,0,56]}
+{"kind":"textbox","id":"sh/r654fa1c","slide":3,"name":"duration-var-formula","text":"VaR(ΔP/P) = |D*| · VaR(Δy)","textPreview":"VaR(ΔP/P) = |D*| · VaR(Δy)","textChars":26,"textLines":1,"bbox":[454,570,420,54]}
+{"kind":"shape","id":"sh/65w3m5kr","slide":3,"bbox":[902,571,0,56]}
+{"kind":"textbox","id":"sh/t87mh0j2","slide":3,"name":"five-year-example","text":"5Y zero: 2.426% =\n4.719 × 0.514%","textPreview":"5Y zero: 2.426% = | 4.719 × 0.514%","textChars":32,"textLines":2,"bbox":[930,570,260,54]}
+{"kind":"notes","id":"nt/ap681a","slide":3,"text":""}
+{"kind":"slide","id":"sl/6am808","slide":4,"title":"Источник: Jorion, Chapter 11, PDF pp. 15-27","textShapes":17}
+{"kind":"shape","id":"sh/q98nadgr","slide":4,"name":"slide-4-outer-frame","bbox":[24,24,1232,672]}
+{"kind":"textbox","id":"sh/dcz65sf2","slide":4,"name":"slide-4-source","text":"Источник: Jorion, Chapter 11, PDF pp. 15-27","textPreview":"Источник: Jorion, Chapter 11, PDF pp. 15-27","textChars":43,"textLines":1,"bbox":[56,675,1060,14]}
+{"kind":"textbox","id":"sh/sbqpcneh","slide":4,"name":"slide-4-number","text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[1188,672,36,18]}
+{"kind":"textbox","id":"sh/3mxozix0","slide":4,"name":"Пример · $200m-eyebrow","text":"ПРИМЕР · $200M","textPreview":"ПРИМЕР · $200M","textChars":14,"textLines":1,"bbox":[58,42,240,20]}
+{"kind":"textbox","id":"sh/ilon6dgf","slide":4,"name":"Пример · $200m-title","text":"Диверсификация снижает VaR до $2.57 млн","textPreview":"Диверсификация снижает VaR до $2.57 млн","textChars":39,"textLines":1,"bbox":[56,67,1130,58]}
+{"kind":"shape","id":"sh/58z618f6","slide":4,"name":"var-chart-surface","bbox":[56,148,722,430]}
+{"kind":"textbox","id":"sh/47658nyl","slide":4,"name":"var-chart-label","text":"VaR портфеля, $ млн","textPreview":"VaR портфеля, $ млн","textChars":19,"textLines":1,"bbox":[84,168,300,28]}
+{"kind":"textbox","id":"sh/mhs7ixwz","slide":4,"name":"portfolio-pill","text":"PORTFOLIO","textPreview":"PORTFOLIO","textChars":9,"textLines":1,"bbox":[812,148,160,34]}
+{"kind":"textbox","id":"sh/8va1k3ap","slide":4,"name":"portfolio-composition","text":"$100m  5Y @ 6%\n$100m  1Y @ 4%","textPreview":"$100m  5Y @ 6% | $100m  1Y @ 4%","textChars":29,"textLines":2,"bbox":[812,198,366,70]}
+{"kind":"textbox","id":"sh/9w32d8ba","slide":4,"name":"portfolio-duration","text":"Average maturity 3.0Y\nMacaulay duration 2.733Y","textPreview":"Average maturity 3.0Y | Macaulay duration 2.733Y","textChars":46,"textLines":2,"bbox":[812,275,380,48]}
+{"kind":"shape","id":"sh/mtsjitsj","slide":4,"bbox":[812,335,380,0]}
+{"kind":"textbox","id":"sh/nu1kbyt4","slide":4,"name":"duration-mapping-label","text":"Duration mapping","textPreview":"Duration mapping","textChars":16,"textLines":1,"bbox":[812,356,240,24]}
+{"kind":"textbox","id":"sh/0ra1g3at","slide":4,"name":"interpolated-risk","text":"Risk₂․₇₃₃ ≈ 1.3511%","textPreview":"Risk₂․₇₃₃ ≈ 1.3511%","textChars":19,"textLines":1,"bbox":[812,389,382,46]}
+{"kind":"textbox","id":"sh/lsj29oby","slide":4,"name":"duration-var-result","text":"VaR = $200m × 1.3511% = $2.702m","textPreview":"VaR = $200m × 1.3511% = $2.702m","textChars":31,"textLines":1,"bbox":[812,438,382,34]}
+{"kind":"shape","id":"sh/ypsjetsn","slide":4,"bbox":[812,492,380,0]}
+{"kind":"textbox","id":"sh/zq107yt8","slide":4,"name":"cashflow-mapping-label","text":"Cash-flow mapping","textPreview":"Cash-flow mapping","textChars":17,"textLines":1,"bbox":[812,512,240,24]}
+{"kind":"textbox","id":"sh/cnq1cjah","slide":4,"name":"diversified-var-formula","text":"VaR (div.) = √(v′Rv) = $2.5736m","textPreview":"VaR (div.) = √(v′Rv) = $2.5736m","textChars":31,"textLines":1,"bbox":[812,541,382,42]}
+{"kind":"shape","id":"sh/dozi5ob2","slide":4,"name":"diversification-insight","bbox":[56,603,1168,45]}
+{"kind":"textbox","id":"sh/t8rqtgzu","slide":4,"name":"principal-reduction","text":"−13.3%","textPreview":"−13.3%","textChars":6,"textLines":1,"bbox":[78,610,106,30]}
+{"kind":"textbox","id":"sh/s7ypkbi9","slide":4,"name":"principal-reduction-label","text":"к Principal mapping","textPreview":"к Principal mapping","textChars":19,"textLines":1,"bbox":[190,613,230,26]}
+{"kind":"textbox","id":"sh/76p8r6ho","slide":4,"name":"correlation-benefit","text":"−$0.0603m","textPreview":"−$0.0603m","textChars":9,"textLines":1,"bbox":[658,610,138,30]}
+{"kind":"textbox","id":"sh/65g7i103","slide":4,"name":"correlation-benefit-label","text":"эффект корреляций vs CF undiversified","textPreview":"эффект корреляций vs CF undiversified","textChars":37,"textLines":1,"bbox":[806,613,370,26]}
+{"kind":"chart","id":"ch/3ud0vitc","slide":4,"name":"","chartType":"bar","bbox":[82,205,654,326]}
+{"kind":"notes","id":"nt/6am808","slide":4,"text":""}
+{"kind":"slide","id":"sl/6jxeek","slide":5,"title":"Источник: Jorion, Chapter 11, PDF pp. 29-33","textShapes":29}
+{"kind":"shape","id":"sh/v29sbalo","slide":5,"name":"slide-5-outer-frame","bbox":[24,24,1232,672]}
+{"kind":"textbox","id":"sh/w3itkfm9","slide":5,"name":"slide-5-source","text":"Источник: Jorion, Chapter 11, PDF pp. 29-33","textPreview":"Источник: Jorion, Chapter 11, PDF pp. 29-33","textChars":43,"textLines":1,"bbox":[56,675,1060,14]}
+{"kind":"textbox","id":"sh/h4radk3u","slide":5,"name":"slide-5-number","text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[1188,672,36,18]}
+{"kind":"textbox","id":"sh/ip0bmpkf","slide":5,"name":"Применение-eyebrow","text":"ПРИМЕНЕНИЕ","textPreview":"ПРИМЕНЕНИЕ","textChars":10,"textLines":1,"bbox":[58,42,240,20]}
+{"kind":"textbox","id":"sh/jq9sful0","slide":5,"name":"Применение-title","text":"Сложный инструмент = набор building blocks","textPreview":"Сложный инструмент = набор building blocks","textChars":42,"textLines":1,"bbox":[56,67,1130,58]}
+{"kind":"textbox","id":"sh/4ritof2l","slide":5,"name":"instrument-column-label","text":"ИНСТРУМЕНТ","textPreview":"ИНСТРУМЕНТ","textChars":10,"textLines":1,"bbox":[60,139,190,20]}
+{"kind":"textbox","id":"sh/5sbahk3q","slide":5,"name":"decomposition-column-label","text":"ДЕКОМПОЗИЦИЯ","textPreview":"ДЕКОМПОЗИЦИЯ","textChars":12,"textLines":1,"bbox":[300,139,300,20]}
+{"kind":"textbox","id":"sh/y9gral4b","slide":5,"name":"valuation-column-label","text":"ОЦЕНКА","textPreview":"ОЦЕНКА","textChars":6,"textLines":1,"bbox":[903,139,180,20]}
+{"kind":"shape","id":"sh/zups3qlg","slide":5,"name":"instrument-row-1","bbox":[56,166,1168,84]}
+{"kind":"textbox","id":"sh/radwfe1k","slide":5,"name":"instrument-label-1","text":"FX forward","textPreview":"FX forward","textChars":10,"textLines":1,"bbox":[76,184,188,48]}
+{"kind":"textbox","id":"sh/q94fm90z","slide":5,"name":"instrument-1-block-1","text":"+  FX spot","textPreview":"+  FX spot","textChars":10,"textLines":1,"bbox":[302,187,134,42]}
+{"kind":"textbox","id":"sh/dcfyhojq","slide":5,"name":"instrument-1-block-2","text":"+  foreign bill","textPreview":"+  foreign bill","textChars":15,"textLines":1,"bbox":[450,187,170,42]}
+{"kind":"textbox","id":"sh/sbmxoji5","slide":5,"name":"instrument-1-block-3","text":"−  domestic bill","textPreview":"−  domestic bill","textChars":16,"textLines":1,"bbox":[634,187,184,42]}
+{"kind":"textbox","id":"sh/36dwbu18","slide":5,"name":"instrument-formula-1","text":"fₜ = Sₜe⁻ʸᵀ − Ke⁻ʳᵀ","textPreview":"fₜ = Sₜe⁻ʸᵀ − Ke⁻ʳᵀ","textChars":19,"textLines":1,"bbox":[892,181,306,54]}
+{"kind":"shape","id":"sh/i54fip03","slide":5,"name":"instrument-row-2","bbox":[56,264,1168,84]}
+{"kind":"textbox","id":"sh/58ved4je","slide":5,"name":"instrument-label-2","text":"FRA 6×12","textPreview":"FRA 6×12","textChars":8,"textLines":1,"bbox":[76,282,188,48]}
+{"kind":"textbox","id":"sh/47mxkzit","slide":5,"name":"instrument-2-block-1","text":"+  6M zero","textPreview":"+  6M zero","textChars":10,"textLines":1,"bbox":[302,285,212,42]}
+{"kind":"textbox","id":"sh/v2tw7u1c","slide":5,"name":"instrument-2-block-2","text":"−  12M zero","textPreview":"−  12M zero","textChars":11,"textLines":1,"bbox":[528,285,178,42]}
+{"kind":"textbox","id":"sh/uhkfepkr","slide":5,"name":"instrument-formula-2","text":"long 6M  /  short 12M","textPreview":"long 6M  /  short 12M","textChars":21,"textLines":1,"bbox":[892,279,306,54]}
+{"kind":"shape","id":"sh/ydkfqp4j","slide":5,"name":"instrument-row-3","bbox":[56,362,1168,84]}
+{"kind":"textbox","id":"sh/zetgjul4","slide":5,"name":"instrument-label-3","text":"Pay-fixed swap","textPreview":"Pay-fixed swap","textChars":14,"textLines":1,"bbox":[76,380,188,48]}
+{"kind":"textbox","id":"sh/kf2xszmp","slide":5,"name":"instrument-3-block-1","text":"+  floating-rate note","textPreview":"+  floating-rate note","textChars":21,"textLines":1,"bbox":[302,383,212,42]}
+{"kind":"textbox","id":"sh/l0bylk3a","slide":5,"name":"instrument-3-block-2","text":"−  fixed leg","textPreview":"−  fixed leg","textChars":12,"textLines":1,"bbox":[528,383,178,42]}
+{"kind":"textbox","id":"sh/m1kfup4v","slide":5,"name":"instrument-formula-3","text":"Vswap = Vfloat − Vfixed","textPreview":"Vswap = Vfloat − Vfixed","textChars":23,"textLines":1,"bbox":[892,377,306,54]}
+{"kind":"shape","id":"sh/72tgnulg","slide":5,"name":"instrument-row-4","bbox":[56,460,1168,84]}
+{"kind":"textbox","id":"sh/832hwzml","slide":5,"name":"instrument-label-4","text":"Call option","textPreview":"Call option","textChars":11,"textLines":1,"bbox":[76,478,188,48]}
+{"kind":"textbox","id":"sh/94byp436","slide":5,"name":"instrument-4-block-1","text":"+  Δ shares","textPreview":"+  Δ shares","textChars":11,"textLines":1,"bbox":[302,481,212,42]}
+{"kind":"textbox","id":"sh/u54zy94r","slide":5,"name":"instrument-4-block-2","text":"−  borrowing","textPreview":"−  borrowing","textChars":12,"textLines":1,"bbox":[528,481,178,42]}
+{"kind":"textbox","id":"sh/v6dgrelc","slide":5,"name":"instrument-formula-4","text":"C ≈ ΔS − B;  B = ΔS − C","textPreview":"C ≈ ΔS − B;  B = ΔS − C","textChars":23,"textLines":1,"bbox":[892,475,306,54]}
+{"kind":"shape","id":"sh/50fih8ne","slide":5,"name":"closing-principle","bbox":[56,578,1168,70]}
+{"kind":"textbox","id":"sh/4z61o36t","slide":5,"name":"closing-step-1","text":"ДЕКОМПОЗИРОВАТЬ","textPreview":"ДЕКОМПОЗИРОВАТЬ","textChars":15,"textLines":1,"bbox":[88,599,232,28]}
+{"kind":"textbox","id":"sh/3yx0fy5o","slide":5,"name":"closing-arrow-1","text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[331,591,54,38]}
+{"kind":"textbox","id":"sh/ixojmto3","slide":5,"name":"closing-step-2","text":"СОПОСТАВИТЬ ФАКТОР","textPreview":"СОПОСТАВИТЬ ФАКТОР","textChars":18,"textLines":1,"bbox":[392,599,300,28]}
+{"kind":"textbox","id":"sh/d4zil8nq","slide":5,"name":"closing-arrow-2","text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[708,591,54,38]}
+{"kind":"textbox","id":"sh/s361s365","slide":5,"name":"closing-step-3","text":"АГРЕГИРОВАТЬ  √(v′Rv)","textPreview":"АГРЕГИРОВАТЬ  √(v′Rv)","textChars":21,"textLines":1,"bbox":[770,599,410,28]}
+{"kind":"notes","id":"nt/6jxeek","slide":5,"text":""}

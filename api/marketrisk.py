@@ -234,13 +234,16 @@ def _var_es(losses: np.ndarray, confidence: float) -> tuple[float, float]:
 
 
 def overview(ctx, confidence: float = 0.99, window: int = 500,
-             horizon: int = 1, stress: str | None = None) -> dict:
+             horizon: int = 1, stress: str | None = None,
+             book: str | None = None) -> dict:
     """VaR analysis report: HypPL distribution + metrics by method + drill-down.
-    ``stress`` selects a named fixed historical period (Stress VaR)."""
+    ``stress`` selects a named fixed historical period (Stress VaR);
+    ``book`` (A4) считает VaR по срезу книги (без кэша)."""
     from risk.var import evt_var, montecarlo_var, parametric_var
 
     frm, till = STRESS_WINDOWS.get(stress or "", (None, None))
-    hp = hyppl(ctx, window, frm, till)
+    book_ps = ctx.filtered_portfolio(book=book) if book else None
+    hp = hyppl(ctx, window, frm, till, portfolio=book_ps)
     # M1 (validation report): многодневный горизонт — перекрывающиеся h-дневные
     # суммы HypPL (Basel-style), sqrt-time только как помеченный fallback.
     from risk.historical_var import overlapping_horizon_pnl
@@ -285,7 +288,7 @@ def overview(ctx, confidence: float = 0.99, window: int = 500,
     worst = [{"date": hp["dates"][int(i)], "pnl": float(pnl[int(i)])} for i in order[:5]]
     best = [{"date": hp["dates"][int(i)], "pnl": float(pnl[int(i)])} for i in order[-5:][::-1]]
 
-    val = ctx.portfolio.value()
+    val = (book_ps or ctx.portfolio).value()
     quality = []
     if any("no history" in f for f in hp["factors"]):
         quality.append("FX-фактор без истории — валютный риск в HypPL не учтён")
@@ -298,11 +301,12 @@ def overview(ctx, confidence: float = 0.99, window: int = 500,
     return {
         "confidence": confidence, "window": window, "horizon": horizon,
         "horizon_method": horizon_method,
+        "book": book or "",
         "stress": stress or "",
         "stress_period": f"{frm} … {till}" if frm else "",
         "n_scenarios": len(pnl),
         "portfolio_value": float(val.total_market_value),
-        "positions": len(ctx.portfolio.positions),
+        "positions": len((book_ps or ctx.portfolio).positions),
         "var": var_h, "es": es_h,
         "methods": methods,
         "histogram": _histogram(pnl),

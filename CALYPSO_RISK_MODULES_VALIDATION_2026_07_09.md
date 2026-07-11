@@ -1,9 +1,117 @@
 # Проверка реализации инструкции Calypso risk/pricing
 
-**Дата проверки:** 2026-07-09  
-**Инструкция:** `/Users/dmitriykiselev/Downloads/calypso_risk_modules_models_detailed.md`  
-**Проект:** `/Users/dmitriykiselev/Library/Mobile Documents/com~apple~CloudDocs/Python/RC_project`  
-**Ограничение:** код проекта не изменялся; создан только этот отчет.
+**Дата исходной проверки:** 2026-07-09<br>
+**Дата актуализации:** 2026-07-10<br>
+**Проверенный HEAD:** `10d986a`<br>
+**Инструкция:** `/Users/dmitriykiselev/Downloads/calypso_risk_modules_models_detailed.md`<br>
+**Проект:** `/Users/dmitriykiselev/Library/Mobile Documents/com~apple~CloudDocs/Python/RC_project`<br>
+**Ограничение исходной проверки:** на 2026-07-09 код проекта не изменялся; был создан только этот отчет. При актуализации проверены последующие правки, сам код не менялся.
+
+## Актуализация после правок от 2026-07-10
+
+### Актуальный вывод
+
+Правки заметно продвинули проект: подтвержденные дефекты Christoffersen и basket moment matching исправлены, появился персистентный trade capture, Stress VaR, Incremental VaR, пятиузловой rate factor, per-name/per-pair wiring, overlapping horizons, matrix-transform MC endpoint и EVT diagnostics. Целевой regression-набор этапов 1–2 проходит полностью.
+
+При этом статус «этапы 1–2 выполнены» нельзя трактовать как полное закрытие исходных замечаний. Несколько решений являются рабочими приближениями, а независимая проверка нашла новые дефекты и ряд незавершенных интеграций. Проект стал сильнее как research/risk workstation, но до production-grade Calypso-like контура по-прежнему не хватает явного Pricing Environment, official/actual P&L, сквозного durable audit, book/trade filters, полного risk-factor mapping и независимого model-validation sign-off.
+
+### Проверенный статус правок
+
+| Правка / замечание | Статус после проверки | Оценка |
+|---|---:|---|
+| `christoffersen_test` без пробоев / короткий ряд | **Закрыто** | Guard возвращает `applicable=False`; `NaN` и прежний `RuntimeWarning` устранены, кластерный кейс тестируется. Для вырожденного ряда из одних пробоев отдельного guard пока нет, но основной подтвержденный дефект закрыт. |
+| `basket_option(method="moment_matching")` | **Закрыто** | Волатильность annualized, цена считается Black-76 на basket forward. Пример `T=2` дает `15.2865` и согласуется с MC; одноименное вырождение совпадает с Black-76. |
+| FX forward-fill | **Закрыто для текущего набора данных** | `has_fx=True`, ненулевых движений `386/500` вместо `284/500`; тест на правдоподобную annualized volatility проходит. |
+| Backtest bias | **Закрыто как UI/API-функция** | Добавлены `conservative/aggressive/in_line` и отображение направления смещения. Regulatory traffic-light для произвольных confidence/window все еще является упрощением. |
+| Persistent trade capture | **Частично закрыто** | Книга хранится в `data/app.sqlite`, позиции добавляются из Pricing/Market Data, удаляются и сбрасываются; HypPL cache инвалидируется при API-мутации. Остаются одна bridge-книга, отсутствие book hierarchy/trade filters и portfolio hash для multi-process/external mutation. |
+| Stress VaR | **Закрыто как MVP** | Есть named windows `2022` и `2024h2`, API и UI. Нет настраиваемой/утверждаемой методологии stress period и отдельного governance workflow. |
+| Incremental VaR | **Частично закрыто как MVP** | Реализован what-if `VaR(book + trade) - VaR(book)` с standalone/diversification результатами. Но factor universe строится по исходной книге: новое имя/FX-пара гипотетической сделки молча получают IMOEX/USD-RUB proxy; переданный `engine` также не определяет pricer сохраненной/what-if позиции. |
+| Multi-day Historical/HypPL VaR | **Частично закрыто** | Вместо немого `sqrt(h)` используются overlapping sums, fallback явно маркируется. Но это сумма однодневных P&L текущего портфеля, а не одна full revaluation на агрегированном h-day factor shock; для нелинейной книги методы не эквивалентны. Также даты окон в API сейчас сдвинуты к началу окна. |
+| Rates 5Y -> 5 tenors | **Частично закрыто** | Есть КБД `0.25/1/2/5/10Y`, сдвиг интерполируется по maturity позиции. Это лучше parallel 5Y, но пока один scalar rate shock на позицию, а не переоценка всех cashflows по точным curve/index/CSA nodes. |
+| Per-name equity / per-pair FX | **Частично закрыто** | Historical HypPL умеет `dS_by_name` и `dfx_by_pair`. При отсутствии ряда молча используются IMOEX/USD-RUB proxies; текущая bridge-книга не содержит equity `secid`, а equity-option capture теряет `secid`. Matrix-MC и P&L Explain granular maps не используют; futures с полем `F` и baskets с `assets` вообще не входят в `_SPOT_KEYS`. |
+| Matrix-transform Monte Carlo VaR | **Частично закрыто, backend** | Новый endpoint моделирует коррелированные Gaussian shocks для 8 факторов и делает full reprice. Основной overview/UI продолжает показывать старый fitted-normal MC; отдельной UI-карточки нет, per-name/per-pair/per-surface факторы не входят, convergence/parameter checks минимальны. |
+| EVT diagnostics | **Частично закрыто** | В `evt_var` есть threshold grid, число exceedances, `xi` stability и warnings. `overview()` отбрасывает diagnostics/warnings, UI их не видит; declustering, автоматический threshold selection и корректная multi-day EVT methodology не реализованы. |
+| Model registry `0 Validated` | **Численно закрыто, production sign-off не закрыт** | Реестр теперь содержит `108 Validated / 0 Approximation / 5 Prototype`. Это внутренняя test/identity validation: у всех `113` записей отсутствуют validation date, назначенный owner и внешние references; quant review: `92 Open`, `14 Partially Validated`, `5 Fixed`, `2 False Positive`. |
+| FRN prototype | **Закрыто на уровне текущей модели** | Реализована dual-curve forward projection, модель переведена в `Validated`; production conventions/calendar/stubs по-прежнему ограничены. |
+| Устаревшие комментарии Market Risk | **Частично закрыто** | FX-комментарий обновлен, но заголовок `api/marketrisk.py` все еще говорит о KBD 5Y/demo book, а `pca_rates()` — о single-factor HypPL, хотя код уже использует пять теноров. |
+| `PricingEnvironment` / `PricerConfiguration` | **Не закрыто** | Явного контракта FO/Risk/EOD/VaR/Stress и versioned mappings по curves/surfaces/pricers/measures нет. |
+| Durable calculation audit | **Не закрыто сквозным образом** | AppDB и `AuditService(db=...)` умеют сохранять записи, но runtime создает несвязанные in-memory services, а `GovernanceService.audit_trail()` продолжает возвращать placeholder без общего persistent audit. |
+| Official/Live P&L, APL vs HypPL, lifecycle effects | **Не закрыто** | Текущий `pnl_explain` — model/factor HypPL текущей книги по последним factor moves; actual/official P&L source, fees/new trades/fixings/coupons/exercise/maturity/corporate actions отсутствуют. |
+
+### Новые подтвержденные замечания
+
+| Severity | Где | Что подтверждено | Влияние / требуемая правка |
+|---|---|---|---|
+| **High** | `risk/historical_var.py`, `hs_age_weighted` | Веса уже создаются в порядке «старое мало -> новое много», после чего `w[::-1]` переворачивает их. В контрольном примере функция дала VaR `100`, тогда как корректное recent-heavy weighting дает VaR `10`. | Age-weighted HS систематически придает больший вес старым наблюдениям. Убрать reversal и добавить направленный regression-тест, а не только проверки `VaR >= 0`/`ES >= VaR`. |
+| **High / methodology** | `api/marketrisk.py`, `overview`; `risk/historical_var.py` | h-day результат строится суммой независимых 1d full-reprice P&L, каждый из которых рассчитан от одной и той же текущей базы. | Для nonlinear/full-revaluation VaR сначала агрегировать h-day factor shocks (equity/FX compounding, rates/vol absolute sums), затем один раз переоценивать книгу на каждом overlapping window. |
+| **High / governance** | `scripts/validation_program.py` | Из `108` promoted IDs только `69` имеют запись в `TEST_MAP`; `39` получают `None`, не считаются ошибкой, а `--run` не запускает обещанный общий pool вместо них. | Validation gate может завершиться успешно, не выполнив model-specific test path для 39 promoted моделей. Сделать отсутствие mapping ошибкой либо реально запускать полный suite один раз и сохранять evidence. |
+| **High** | `api/underlying.py`; `services/portfolio_service.py` | Реальный future сохраняется с параметром `F`, pricer читает `F`, но `_SPOT_KEYS` его не шокирует. Probe для `F=100`, quantity `10`, `dS=10%` и per-name `20%` вернул P&L `0` без ошибок. | Добавить типизированный factor mapping для futures и regression-тест capture -> HypPL; не ограничиваться добавлением `F` в общий список без проверки FX/rates futures conventions. |
+| **High** | `api/marketrisk.py`, `incremental` / `hyppl` | What-if portfolio передается в repricing, но `_book_secids()`/`_book_fx_pairs()` по-прежнему читают `ctx.portfolio`; выбранный `engine` игнорируется при создании позиции. | Строить factor universe по фактически оцениваемому portfolio и сохранять product -> engine/pricer mapping в trade/PricingEnvironment. |
+| **High** | `api/marketrisk.py` -> `PortfolioService.full_reprice_pnl` | Equity/FX факторы формируются как log-return, но spot шокируется через `S * (1 + shock)`. Для роста уровня на 10% переданный `ln(1.10)` дает P&L `9.531` вместо `10` на линейной позиции `S=100`; в stress tails ошибка усиливается. | Преобразовывать log-return через `exp(r)-1` либо хранить simple returns и однозначно зафиксировать factor convention. |
+| **Medium** | `api/marketrisk.py`, `overview` | Для horizon `10` и `120` исходных сценариев API вернул `111` P&L-точек с датами `2025-12-29 … 2026-06-09`, тогда как даты концов окон должны быть `2026-01-15 … 2026-06-23`. `worst/best` смещены так же. | Привязать overlapping P&L к `dates[horizon-1:]`; добавить тест на первую и последнюю дату окна. |
+| **Medium** | `api/marketrisk.py`, `mc_var_matrix` / `overview` | Новый matrix-MC не включен в `methods`, не использует `eq_names`/`fx_pairs`, а EVT warnings не прокидываются в payload. | Интегрировать новый расчет в основной report/UI и показывать proxy/fallback/EVT data-quality diagnostics. |
+| **Medium** | `api/marketrisk.py`, IV auto-switch | После появления первых `60` IV levels код переключится с длинного RVI-ряда на короткую IV-серию, из которой получится около `59` shocks; проверка `>=60 joint dates` и старые stress windows могут перестать работать. Сейчас IV-ряды имеют только около `11` точек, поэтому дефект латентный. | Разделить readiness levels/returns, не сокращать factor history молча, иметь датированный fallback и stress-period availability check. |
+| **Medium** | `api/marketrisk.py`, параметры API/backtest | Неизвестный `stress` молча превращается в rolling report с непустой stress-меткой; слишком короткий `window` может дать `n_obs=0` и деление на ноль в Kupiec. | Валидировать enum/ranges на API-границе и явно отклонять неподдерживаемые stress periods/недостаточную backtest history. |
+
+### Повторная валидация
+
+Команда целевого regression-прогона:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 /usr/local/bin/python3.14 -m pytest \
+  tests/test_validation_remarks_stage1.py \
+  tests/test_validation_remarks_stage2.py \
+  -q -W error::RuntimeWarning -p no:cacheprovider
+```
+
+Результат:
+
+```text
+20 passed in 220.44s
+```
+
+Расширенная регрессия по VaR, Market Risk API, portfolio dispatch, exotic pricing, basket note и API bridge:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 /opt/miniconda3/bin/python3 -m pytest \
+  tests/test_var.py tests/test_marketrisk_api.py \
+  tests/test_portfolio_service.py tests/test_portfolio_exotic_dispatch.py \
+  tests/test_pricing_service_exotics.py tests/test_basket_note.py \
+  tests/test_api_bridge.py \
+  -q -W error::RuntimeWarning -p no:cacheprovider
+```
+
+```text
+89 passed in 282.47s
+```
+
+Дополнительные проверки:
+
+- `scripts/validation_program.py`: `Validated: 108`, `Approximation: 0`, согласованность реестра формально `ok`;
+- runtime `factor_shifts(window=500)`: `500` сценариев, `has_fx=True`, `386` ненулевых FX-движений; рабочий vol factor все еще `RVI`, так как per-underlying IV history не достиг порога;
+- направленный probe подтвердил reversal весов `hs_age_weighted`;
+- runtime probe подтвердил неверную датировку 10-day overlapping окон;
+- `git diff --check` проходит; Ruff на измененных Python-файлах показывает `14 x E702`, из них две новые ошибки стиля находятся в `api/marketrisk.py` в строках с объединенными statement для matrix-MC;
+- Swift/Xcode установлен, но `swift test` в текущей sandbox-сессии не смог записать `~/.cache/clang/ModuleCache`; это ограничение окружения, а не выявленная ошибка Swift-кода. Сборка клиента остается непроверенной в этой актуализации.
+
+Последний полный результат `1139 passed`, записанный в плане реализации, относится к прогону автора правок. В этой актуализации независимо повторены целевой набор и расширенная регрессия выше; полный suite следует повторить после исправления новых замечаний и перед release/sign-off.
+
+### Что осталось — рекомендуемый порядок
+
+1. Исправить `hs_age_weighted`, датировку overlapping windows, log/simple-return convention и нулевой risk shock для futures; добавить направленные end-to-end тесты.
+2. Для multi-day full-revaluation агрегировать исторические factor shocks до переоценки, а не суммировать однодневные nonlinear P&L.
+3. Усилить validation gate: 100% mapping promoted model -> executable evidence, owner, validation date, references, tolerance matrix и независимый sign-off. До этого UI-статус `Validated` трактовать как **internally tested**, не production-approved.
+4. Довести factor map до exact curve/surface/quote/tenor/issuer/contract mapping; строить его по оцениваемой, включая what-if, книге; запретить молчаливые IMOEX/USD-RUB/KBD fallbacks либо явно показывать их как data-quality warnings.
+5. Включить matrix-MC и EVT diagnostics в основной Market Risk report/UI; добавить статистические convergence/stability tests.
+6. Реализовать `PricingEnvironment`, общий persistent calculation audit и book/trade filters.
+7. Развить P&L Explained до APL vs HypPL с lifecycle/system/time effects.
+8. После восстановления доступной Swift build-среды прогнать `swift test` и проверить новые поля backtest decoder/UI.
+
+---
+
+## Исходный отчет от 2026-07-09 (исторический срез)
+
+Ниже сохранена исходная проверка для audit trail. Ее численные статусы и выводы о состоянии кода не следует использовать как текущие без секции актуализации выше.
 
 ## Итоговый вывод
 

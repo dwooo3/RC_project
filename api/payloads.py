@@ -93,8 +93,10 @@ def curves(ctx) -> dict:
     return {"curves": out}
 
 
-def portfolio(ctx) -> dict:
-    ps = ctx.portfolio
+def portfolio(ctx, book: str | None = None, instrument: str | None = None,
+              currency: str | None = None) -> dict:
+    ps = ctx.filtered_portfolio(book, instrument, currency) \
+        if any((book, instrument, currency)) else ctx.portfolio
     val = ps.value()
     return {
         "snapshot": snapshot_meta(ctx),
@@ -108,6 +110,8 @@ def portfolio(ctx) -> dict:
         },
         "positions": _safe(ps.positions_table, []),
         "aggregate": _safe(ps.aggregate, {}),
+        "books": _safe(ctx.books, []),
+        "filter": {"book": book, "instrument": instrument, "currency": currency},
     }
 
 

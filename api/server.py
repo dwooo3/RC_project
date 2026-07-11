@@ -54,13 +54,27 @@ app.add_middleware(
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
 
-_svc = PricingService(allow_analytics_lab=True)
+_svc = PricingService(allow_analytics_lab=True, audit=CONTEXT.audit)
 
 
 class WsPriceRequest(BaseModel):
     product: str
     engine: str | None = None
     params: dict[str, float | int | str | None] = {}
+    env_id: str | None = None
+
+
+class EnvironmentPayload(BaseModel):
+    env_id: str
+    name: str
+    purpose: str = "fo"
+    snapshot_id: str | None = None
+    curve_map: dict[str, str] = {}
+    surface_map: dict[str, str] = {}
+    pricer_overrides: dict[str, str] = {}
+    default_params: dict[str, float | int | str] = {}
+    measures: list[str] = ["value", "greeks"]
+    metadata: dict[str, str] = {}
 
 
 class WsCaptureRequest(BaseModel):
@@ -145,9 +159,11 @@ def ws_catalogue() -> dict:
 @app.post("/pricing/price")
 def ws_price(req: WsPriceRequest) -> dict:
     try:
+        env = CONTEXT.environment(req.env_id) if req.env_id else None
+        snapshot = CONTEXT.env_snapshot(env) if env else CONTEXT.snapshot
         _svc.market_data = CONTEXT.market
         result = pricing_workstation.price_ws(
-            _svc, CONTEXT.snapshot, req.product, req.engine, req.params)
+            _svc, snapshot, req.product, req.engine, req.params, env=env)
     except KeyError as exc:
         raise HTTPException(status_code=422, detail=f"missing parameter {exc}")
     except ValueError as exc:
@@ -156,6 +172,42 @@ def ws_price(req: WsPriceRequest) -> dict:
     except TypeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return jsonable(result)
+
+
+# ── pricing environments (A1: FO / Risk / EOD / VaR / Stress контуры) ──
+@app.get("/environments")
+def environments_list() -> dict:
+    CONTEXT.environment()                          # seed defaults on first touch
+    return jsonable({"environments": CONTEXT.app_db.list_environments()})
+
+
+@app.get("/environments/{env_id}")
+def environments_get(env_id: str) -> dict:
+    try:
+        return jsonable(CONTEXT.environment(env_id).to_dict())
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.put("/environments/{env_id}")
+def environments_put(env_id: str, payload: EnvironmentPayload) -> dict:
+    from domain.pricing_environment import PricingEnvironment
+    data = payload.model_dump()
+    data["env_id"] = env_id.upper()
+    try:
+        env = PricingEnvironment.from_dict(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    CONTEXT.save_environment(env)
+    return jsonable(env.to_dict())
+
+
+@app.delete("/environments/{env_id}")
+def environments_delete(env_id: str) -> dict:
+    if env_id.upper() in ("FO",):
+        raise HTTPException(status_code=400, detail="базовый контур FO не удаляется")
+    CONTEXT.app_db.delete_environment(env_id.upper())
+    return {"deleted": env_id.upper()}
 
 
 @app.get("/pricing/underlying/{category}/{secid}")
@@ -233,10 +285,11 @@ def ws_ladder(req: WsLadderRequest) -> dict:
 # ── Market Risk workstation (ERS-style: HypPL / VaR / backtesting) ──
 @app.get("/marketrisk")
 def marketrisk_overview(confidence: float = 0.99, window: int = 500,
-                        horizon: int = 1, stress: str | None = None) -> dict:
+                        horizon: int = 1, stress: str | None = None,
+                        book: str | None = None) -> dict:
     try:
         return jsonable(marketrisk.overview(CONTEXT, confidence, window, horizon,
-                                            stress=stress))
+                                            stress=stress, book=book))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -371,8 +424,14 @@ def market() -> dict:
 
 
 @app.get("/portfolio")
-def portfolio() -> dict:
-    return jsonable(payloads.portfolio(CONTEXT))
+def portfolio(book: str | None = None, instrument: str | None = None,
+              currency: str | None = None) -> dict:
+    return jsonable(payloads.portfolio(CONTEXT, book, instrument, currency))
+
+
+@app.get("/portfolio/books")
+def portfolio_books() -> dict:
+    return jsonable({"books": CONTEXT.books()})
 
 
 # ── trade capture: workstation -> persistent book ────────
