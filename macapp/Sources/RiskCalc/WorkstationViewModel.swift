@@ -14,6 +14,10 @@ final class WorkstationViewModel {
     var choiceValues: [String: String] = [:]
     var result: WsResult?
 
+    // pricing environment (контур оценки, A1)
+    var environments: [WsEnvironment] = []
+    var envID: String = "FO"
+
     // underlying picker
     var underlyingQuery = ""
     var underlyingHits: [SearchHit] = []
@@ -69,6 +73,8 @@ final class WorkstationViewModel {
             catalogue = try await client.wsCatalogue()
             if productID == nil { productID = products.first?.id }
             resetForSelection()
+            // контуры — не критично: без них прайсим в дефолтном FO
+            environments = (try? await client.environments()) ?? []
         } catch {
             serverDown = true
             errorMessage = error.localizedDescription
@@ -205,7 +211,8 @@ final class WorkstationViewModel {
         errorMessage = nil
         do {
             let priced = try await client.wsPrice(product: product.id, engine: engine.id,
-                                                  params: bridgeParams())
+                                                  params: bridgeParams(),
+                                                  envID: envID.isEmpty ? nil : envID)
             result = priced
             if let first = priced.errors.first { errorMessage = first }
         } catch {

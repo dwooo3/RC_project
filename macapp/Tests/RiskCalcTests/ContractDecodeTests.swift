@@ -108,4 +108,55 @@ extension ContractDecodeTests {
         // null facts (atm_iv) must decode, not throw
         XCTAssertTrue(f.facts.keys.contains("atm_iv"))
     }
+
+    // MARK: - Swift-бэклог: env picker, book-фильтр, MC VaR, actual P&L
+
+    func testDecodeCatalogueConventions() throws {
+        let cat = try JSONDecoder().decode(WsCatalogue.self, from: load("ws_catalogue"))
+        XCTAssertFalse(cat.conventions.isEmpty)   // A5: глобальные конвенции
+        XCTAssertTrue(cat.conventions.contains { $0.contains("ACT/365") })
+    }
+
+    func testDecodeEnvironments() throws {
+        let envs = try JSONDecoder().decode(WsEnvironments.self, from: load("environments"))
+        let ids = Set(envs.environments.map(\.envID))
+        XCTAssertTrue(ids.isSuperset(of: ["FO", "RISK", "EOD", "VAR", "STRESS"]))
+    }
+
+    func testDecodeMarketRiskMonteCarlo() throws {
+        let mc = try JSONDecoder().decode(MRMonteCarlo.self, from: load("marketrisk_montecarlo"))
+        XCTAssertGreaterThan(mc.varValue, 0)
+        XCTAssertFalse(mc.histogram.isEmpty)
+        XCTAssertTrue(mc.factors.contains { $0.contains("eq") || $0.contains("equity") || $0.contains("IMOEX") })
+    }
+
+    func testDecodePortfolioBooks() throws {
+        let books = try JSONDecoder().decode(MRBooks.self, from: load("portfolio_books"))
+        XCTAssertFalse(books.books.isEmpty)
+        XCTAssertGreaterThan(books.books[0].positions, 0)
+    }
+
+    func testDecodeMarketRiskBookSlice() throws {
+        let ov = try JSONDecoder().decode(MROverview.self, from: load("marketrisk_overview"))
+        XCTAssertEqual(ov.book, "Trading")
+        XCTAssertGreaterThan(ov.varValue, 0)
+    }
+
+    func testDecodeMarketRiskBacktestActual() throws {
+        let bt = try JSONDecoder().decode(MRBacktest.self, from: load("marketrisk_backtest"))
+        XCTAssertNotNil(bt.actualBacktest)   // actual_backtest всегда присутствует
+    }
+
+    func testDecodePnlExplainWithActual() throws {
+        let d = try JSONDecoder().decode(PnlExplain.self, from: load("pnl_explain_actual"))
+        let avh = try XCTUnwrap(d.actualVsHypothetical)
+        XCTAssertTrue(avh.available)
+        XCTAssertNotNil(avh.actualPnl)
+        XCTAssertNotNil(avh.gap)
+    }
+
+    func testDecodePnlExplainNoActual() throws {
+        let d = try JSONDecoder().decode(PnlExplain.self, from: load("pnl_explain"))
+        XCTAssertEqual(d.actualVsHypothetical?.available, false)
+    }
 }

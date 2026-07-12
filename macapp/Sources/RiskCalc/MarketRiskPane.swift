@@ -48,9 +48,10 @@ struct MROverview: Decodable, Sendable {
     let best: [MRPnlPoint]
     let factors: [String]
     let dataQuality: [String]
+    let book: String?
 
     enum CodingKeys: String, CodingKey {
-        case confidence, window, horizon, stress, methods, histogram, hyppl, worst, best, factors
+        case confidence, window, horizon, stress, methods, histogram, hyppl, worst, best, factors, book
         case stressPeriod = "stress_period"
         case nScenarios = "n_scenarios"
         case portfolioValue = "portfolio_value"
@@ -84,6 +85,20 @@ struct MRBacktestRow: Decodable, Sendable, Hashable {
     }
 }
 
+struct MRActualBacktest: Decodable, Sendable {
+    let nObs: Int
+    let nExceptions: Int
+    let importedDates: Int?
+    let note: String
+
+    enum CodingKeys: String, CodingKey {
+        case note
+        case nObs = "n_obs"
+        case nExceptions = "n_exceptions"
+        case importedDates = "imported_dates"
+    }
+}
+
 struct MRBacktest: Decodable, Sendable {
     let confidence: Double
     let lookback: Int
@@ -93,6 +108,7 @@ struct MRBacktest: Decodable, Sendable {
     let kupiec: MRKupiec?
     let trafficLight: String
     let bias: String?
+    let actualBacktest: MRActualBacktest?
     let rows: [MRBacktestRow]
 
     enum CodingKeys: String, CodingKey {
@@ -101,7 +117,45 @@ struct MRBacktest: Decodable, Sendable {
         case nExceptions = "n_exceptions"
         case expectedExceptions = "expected_exceptions"
         case trafficLight = "traffic_light"
+        case actualBacktest = "actual_backtest"
     }
+}
+
+// MARK: - Matrix-MC VaR (GET /marketrisk/montecarlo)
+
+struct MRMonteCarlo: Decodable, Sendable {
+    let confidence: Double
+    let window: Int
+    let nSims: Int
+    let varValue: Double
+    let es: Double
+    let pnlMean: Double
+    let pnlStd: Double
+    let histogram: [MRHistBin]
+    let factors: [String]
+    let corrEqRates5y: Double
+    let corrEqFx: Double
+    let note: String
+
+    enum CodingKeys: String, CodingKey {
+        case confidence, window, histogram, factors, note, es
+        case nSims = "n_sims"
+        case varValue = "var"
+        case pnlMean = "pnl_mean"
+        case pnlStd = "pnl_std"
+        case corrEqRates5y = "corr_eq_rates5y"
+        case corrEqFx = "corr_eq_fx"
+    }
+}
+
+struct MRBook: Decodable, Sendable, Identifiable, Hashable {
+    let book: String
+    let positions: Int
+    var id: String { book }
+}
+
+struct MRBooks: Decodable, Sendable {
+    let books: [MRBook]
 }
 
 struct MRPcaWeight: Decodable, Sendable, Hashable {
@@ -152,14 +206,26 @@ extension BridgeClient {
     }
 
     func marketRisk(confidence: Double, window: Int, horizon: Int,
-                    stress: String = "") async throws -> MROverview {
+                    stress: String = "", book: String = "",
+                    evtThreshold: Double = 0.10) async throws -> MROverview {
         var path = "marketrisk?confidence=\(confidence)&window=\(window)&horizon=\(horizon)"
+        path += "&evt_threshold=\(evtThreshold)"
         if !stress.isEmpty { path += "&stress=\(stress)" }
+        if !book.isEmpty { path += "&book=\(book)" }
         return try await get(path)
     }
 
     func marketRiskBacktest(confidence: Double, window: Int) async throws -> MRBacktest {
         try await get("marketrisk/backtest?confidence=\(confidence)&window=\(window)")
+    }
+
+    func marketRiskMonteCarlo(confidence: Double, window: Int,
+                              nSims: Int = 2000) async throws -> MRMonteCarlo {
+        try await get("marketrisk/montecarlo?confidence=\(confidence)&window=\(window)&n_sims=\(nSims)")
+    }
+
+    func portfolioBooks() async throws -> [MRBook] {
+        try await get("portfolio/books", as: MRBooks.self).books
     }
 }
 
@@ -172,11 +238,16 @@ final class MarketRiskViewModel {
     var window: Int = 500
     var horizon: Int = 1
     var stress: String = ""            // "" = rolling window, else named period
+    var book: String = ""              // "" = вся книга, else срез по book (A4)
+    var evtThreshold: Double = 0.10    // доля хвоста для GPD-фита EVT (A5)
 
     var overview: MROverview?
     var backtest: MRBacktest?
     var pca: MRPca?
+    var monteCarlo: MRMonteCarlo?
+    var books: [MRBook] = []
     var isLoading = false
+    var isLoadingMC = false
     var errorMessage: String?
 
     private let client = BridgeClient()
@@ -186,15 +257,25 @@ final class MarketRiskViewModel {
         errorMessage = nil
         do {
             async let ov = client.marketRisk(confidence: confidence, window: window,
-                                             horizon: horizon, stress: stress)
+                                             horizon: horizon, stress: stress,
+                                             book: book, evtThreshold: evtThreshold)
             async let bt = client.marketRiskBacktest(confidence: confidence, window: window)
             overview = try await ov
             backtest = try await bt
             pca = try? await client.marketRiskPca(confidence: confidence, window: window)
+            if books.isEmpty { books = (try? await client.portfolioBooks()) ?? [] }
         } catch {
             errorMessage = error.localizedDescription
         }
         isLoading = false
+    }
+
+    /// Matrix-transform Monte Carlo VaR (Cholesky joint factors + full reprice).
+    func runMonteCarlo() async {
+        isLoadingMC = true
+        monteCarlo = try? await client.marketRiskMonteCarlo(
+            confidence: confidence, window: window)
+        isLoadingMC = false
     }
 }
 
@@ -261,6 +342,16 @@ struct MarketRiskPane: View {
                 Text("10d").tag(10)
             }
             .pickerStyle(.segmented).fixedSize()
+            if vm.books.count > 1 {
+                Picker("Book", selection: $vm.book) {
+                    Text("Все книги").tag("")
+                    ForEach(vm.books) { b in
+                        Text(b.book).tag(b.book)
+                    }
+                }
+                .pickerStyle(.menu).fixedSize()
+                .help("Срез VaR по книге (полная переоценка без кэша)")
+            }
             Button {
                 Task { await vm.run() }
             } label: {
@@ -290,7 +381,8 @@ struct MarketRiskPane: View {
                     icon: "waveform.path.ecg"),
             KPICard(label: "Scenarios", value: "\(ov.nScenarios)",
                     sub: "joint historical shifts", accent: Theme.accent, icon: "clock.arrow.circlepath"),
-            KPICard(label: "Portfolio", value: Fmt.money(ov.portfolioValue),
+            KPICard(label: (ov.book ?? "").isEmpty ? "Portfolio" : "Book · \(ov.book ?? "")",
+                    value: Fmt.money(ov.portfolioValue),
                     sub: "\(ov.positions) positions", accent: Theme.bucketColor("Equity"),
                     icon: "briefcase.fill"),
             KPICard(label: "Backtest", value: vm.backtest?.trafficLight.capitalized ?? "—",
@@ -306,6 +398,7 @@ struct MarketRiskPane: View {
             backtestCard
             extremesCard(ov)
         }
+        monteCarloCard
         if let pca = vm.pca {
             pcaCard(pca)
         }
@@ -438,8 +531,22 @@ struct MarketRiskPane: View {
                                                 : Theme.positive)
                     }
                     KeyValueRow(key: "Rolling lookback", value: "\(bt.lookback)d")
+                    if let ab = bt.actualBacktest, ab.nObs > 0 {
+                        Divider()
+                        Text("ФАКТИЧЕСКИЙ P&L (Basel: обе серии)")
+                            .font(.system(size: 9, weight: .semibold))
+                            .tracking(0.5).foregroundStyle(.tertiary)
+                        KeyValueRow(key: "Actual observations", value: "\(ab.nObs)")
+                        KeyValueRow(key: "Actual exceptions", value: "\(ab.nExceptions)",
+                                    valueColor: ab.nExceptions > bt.nExceptions
+                                                ? Theme.warning : Theme.positive)
+                    }
                     Text("Kupiec reject = частота пробоев статистически не соответствует уровню доверия; направление показывает, завышает модель риск или занижает.")
                         .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    if let ab = bt.actualBacktest, ab.nObs == 0 {
+                        Text(ab.note)
+                            .font(.system(size: 9)).foregroundStyle(.tertiary)
+                    }
                 } else {
                     Text("Нет данных").font(.caption).foregroundStyle(.secondary)
                 }
@@ -527,6 +634,67 @@ struct MarketRiskPane: View {
                     .frame(width: 300)
                 }
                 Text(pca.note).font(.system(size: 10)).foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    /// Matrix-transform Monte Carlo VaR: коррелированные Гауссовы факторы
+    /// (Cholesky от исторической ковариации) + полная переоценка книги.
+    @ViewBuilder
+    private var monteCarloCard: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s3) {
+                HStack {
+                    BlockTitle("Monte Carlo VaR · matrix transform",
+                               icon: "dice")
+                    Spacer()
+                    Button {
+                        Task { await vm.runMonteCarlo() }
+                    } label: {
+                        if vm.isLoadingMC {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("Run MC", systemImage: "play.circle")
+                                .font(.system(size: 11))
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(vm.isLoadingMC)
+                }
+                if let mc = vm.monteCarlo {
+                    HStack(alignment: .top, spacing: Theme.s4) {
+                        Chart {
+                            ForEach(mc.histogram, id: \.x) { bin in
+                                BarMark(x: .value("P&L", bin.x),
+                                        y: .value("Count", bin.count))
+                                    .foregroundStyle(bin.x < -mc.varValue
+                                                     ? Theme.negative.gradient
+                                                     : Theme.accent.opacity(0.7).gradient)
+                            }
+                            RuleMark(x: .value("VaR", -mc.varValue))
+                                .foregroundStyle(Theme.negative)
+                                .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4]))
+                        }
+                        .frame(height: 180)
+                        VStack(alignment: .leading, spacing: Theme.s2) {
+                            KeyValueRow(key: "MC VaR", value: Fmt.money(mc.varValue),
+                                        valueColor: Theme.negative)
+                            KeyValueRow(key: "MC ES", value: Fmt.money(mc.es),
+                                        valueColor: Theme.warning)
+                            KeyValueRow(key: "Симуляций", value: "\(mc.nSims)")
+                            Divider()
+                            KeyValueRow(key: "corr(IMOEX, КБД 5Y)",
+                                        value: Fmt.number(mc.corrEqRates5y, digits: 2))
+                            KeyValueRow(key: "corr(IMOEX, USD/RUB)",
+                                        value: Fmt.number(mc.corrEqFx, digits: 2))
+                        }
+                        .frame(width: 300)
+                    }
+                    Text(mc.note).font(.system(size: 10)).foregroundStyle(.tertiary)
+                } else {
+                    Text("Коррелированные joint-сценарии факторов через Cholesky; сравнивать с historical на том же окне — расхождение показывает вклад нелинейности и корреляций.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
             }
         }
     }

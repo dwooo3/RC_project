@@ -6,10 +6,19 @@ struct WsCatalogue: Decodable, Sendable {
     let assetClasses: [WsAssetClass]
     let curves: [WsCurveRef]
     let products: [WsProductModel]
+    let conventions: [String]            // A5: глобальные конвенции воркстейшена
 
     enum CodingKeys: String, CodingKey {
-        case curves, products
+        case curves, products, conventions
         case assetClasses = "asset_classes"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        assetClasses = try c.decode([WsAssetClass].self, forKey: .assetClasses)
+        curves = try c.decode([WsCurveRef].self, forKey: .curves)
+        products = try c.decode([WsProductModel].self, forKey: .products)
+        conventions = try c.decodeIfPresent([String].self, forKey: .conventions) ?? []
     }
 }
 
@@ -63,6 +72,25 @@ struct WsEngineModel: Decodable, Sendable, Identifiable, Hashable {
     }
 }
 
+// MARK: - Pricing environments (GET /environments)
+
+/// Контур оценки (A1): какой снапшот/кривые/движки использует расчёт.
+struct WsEnvironment: Decodable, Sendable, Identifiable, Hashable {
+    let envID: String
+    let name: String
+    let purpose: String
+    var id: String { envID }
+
+    enum CodingKeys: String, CodingKey {
+        case name, purpose
+        case envID = "env_id"
+    }
+}
+
+struct WsEnvironments: Decodable, Sendable {
+    let environments: [WsEnvironment]
+}
+
 // MARK: - Result (POST /pricing/price)
 
 struct WsMeasure: Decodable, Sendable, Identifiable, Hashable {
@@ -96,9 +124,11 @@ struct WsResult: Decodable, Sendable {
     let limitations: [String]
     let product: String
     let engine: String
+    let environment: String?              // контур оценки, если задан env_id
 
     enum CodingKeys: String, CodingKey {
         case value, greeks, measures, series, warnings, errors, limitations, product, engine
+        case environment
         case modelID = "model_id"
         case modelStatus = "model_status"
     }
@@ -212,6 +242,7 @@ private struct WsPriceBody: Encodable {
     let product: String
     let engine: String
     let params: [String: BridgeValue]
+    var env_id: String? = nil            // nil → мост берёт дефолтный контур
 }
 
 private struct WsLadderBody: Encodable {
@@ -267,10 +298,16 @@ struct WsCaptureResult: Decodable, Sendable {
 extension BridgeClient {
     func wsCatalogue() async throws -> WsCatalogue { try await get("pricing/catalogue") }
 
+    func environments() async throws -> [WsEnvironment] {
+        try await get("environments", as: WsEnvironments.self).environments
+    }
+
     func wsPrice(product: String, engine: String,
-                 params: [String: BridgeValue]) async throws -> WsResult {
+                 params: [String: BridgeValue],
+                 envID: String? = nil) async throws -> WsResult {
         let body = try JSONEncoder().encode(
-            WsPriceBody(product: product, engine: engine, params: params))
+            WsPriceBody(product: product, engine: engine, params: params,
+                        env_id: envID))
         return try await post("pricing/price", body: body)
     }
 

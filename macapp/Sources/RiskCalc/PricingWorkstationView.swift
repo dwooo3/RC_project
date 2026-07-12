@@ -92,7 +92,10 @@ struct PricingWorkstationView: View {
                     PageHeader(product.name, subtitle: governanceLine(engine)) {
                         StatusChip(status: engine.governance.status)
                     }
-                    enginePicker(product)
+                    HStack(spacing: Theme.s4) {
+                        enginePicker(product)
+                        environmentPicker
+                    }
                     if !product.note.isEmpty {
                         Label(product.note, systemImage: "info.circle")
                             .font(.caption).foregroundStyle(.secondary)
@@ -122,6 +125,7 @@ struct PricingWorkstationView: View {
                             Grid2DCard(vm: vm)
                         }
                     }
+                    conventionsFooter
                 }
                 .padding(Theme.s5)
                 .frame(maxWidth: 1240, alignment: .leading)
@@ -162,6 +166,53 @@ struct PricingWorkstationView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+            }
+        }
+    }
+
+    /// Глобальные конвенции воркстейшена (A5): day count, начисление, seed,
+    /// bump-размеры, источники σ/кривых — то, что раньше жило неявно.
+    @State private var showConventions = false
+
+    @ViewBuilder
+    private var conventionsFooter: some View {
+        if let conventions = vm.catalogue?.conventions, !conventions.isEmpty {
+            GlassCard {
+                DisclosureGroup(isExpanded: $showConventions) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(conventions, id: \.self) { c in
+                            HStack(alignment: .top, spacing: 6) {
+                                Circle().fill(.tertiary).frame(width: 4, height: 4)
+                                    .padding(.top, 5)
+                                Text(c).font(.system(size: 11)).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .padding(.top, Theme.s2)
+                } label: {
+                    BlockTitle("Конвенции расчёта", icon: "ruler")
+                }
+            }
+        }
+    }
+
+    /// Контур оценки (A1): FO/RISK/EOD/VAR/STRESS — задаёт снапшот, кривые
+    /// ролей и дефолтные движки; запрос всегда побеждает контур.
+    @ViewBuilder
+    private var environmentPicker: some View {
+        if !vm.environments.isEmpty {
+            HStack(spacing: Theme.s2) {
+                Text("Environment")
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                Picker("", selection: $vm.envID) {
+                    ForEach(vm.environments) { env in
+                        Text(env.envID).tag(env.envID)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .fixedSize()
+                .help("Контур оценки: снапшот, кривые ролей и движки по умолчанию")
             }
         }
     }
@@ -642,6 +693,14 @@ private struct WorkstationResultPanel: View {
                         .lineLimit(1).minimumScaleFactor(0.5)
                     HStack {
                         Text(r.modelID).font(.caption).foregroundStyle(.tertiary)
+                        if let env = r.environment {
+                            Text(env)
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(Theme.accent)
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .background(Theme.accent.opacity(0.12), in: Capsule())
+                                .help("Контур оценки")
+                        }
                         Spacer()
                         Button {
                             vm.exportCSV()
