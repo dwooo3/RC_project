@@ -1097,6 +1097,42 @@ MODEL_REGISTRY: dict[str, dict] = {
         "tests": ["npv_zero_at_fair_spread", "implied_hazard_round_trip"],
         "notes": "Flat hazard rate, flat discount rate. For term-structure pricing use cds_curve.",
     },
+    # ── Этап 5: расширение линейки (по составу книги) ─────
+    "equity_forward": {
+        "name": "Equity Forward / Future",
+        "status": ModelStatus.VALIDATED,
+        "domain": "Pricing",
+        "tests": ["cost_of_carry_identity", "npv_zero_at_fair_forward"],
+        "notes": "Точный cost-of-carry F=S·e^{(r−q)T}; непрерывная дивдоходность q, без дискретных дивидендов/корп-действий.",
+    },
+    "dividend_swap": {
+        "name": "Dividend Swap",
+        "status": ModelStatus.VALIDATED,
+        "domain": "Pricing",
+        "tests": ["expected_div_identity", "npv_zero_at_fair_strike"],
+        "notes": "PV дивидендов = S(1−e^{−qT}) при непрерывной q; реальный dividend strip требует графика дивидендов по имени.",
+    },
+    "equity_swap": {
+        "name": "Equity Total-Return Swap",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["leg_parity_identity", "npv_equals_minus_spread_leg"],
+        "notes": "Непрерывный ресет: carry/дивиденды сокращаются точно. Дискретные ресеты/фиксинги и borrow-кривая не моделируются.",
+    },
+    "asset_swap": {
+        "name": "Asset Swap (par-par)",
+        "status": ModelStatus.VALIDATED,
+        "domain": "Pricing",
+        "tests": ["asw_zero_at_riskfree_value", "spread_sign"],
+        "notes": "Par-par ASW spread = (V*−P)/annuity, V* — цена бонда по risk-free кривой. Плоская ставка; без term-structure свопа.",
+    },
+    "cds_index": {
+        "name": "CDS Index (homogeneous pool)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["upfront_zero_at_coupon", "isda_flat_hazard_roundtrip"],
+        "notes": "Гомогенный пул, плоский hazard из индекс-спреда (ISDA-стиль). Дисперсия имён/index skew/curve не моделируются.",
+    },
     "cds_curve": {
         "name": "CDS on Hazard Curve",
         "status": ModelStatus.VALIDATED,

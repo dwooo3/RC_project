@@ -245,6 +245,82 @@ class PricingService:
             return self._error_result(model_id=model_id, error=exc, snapshot=snapshot,
                                       calculation_type=calculation_type, inputs=inputs)
 
+    # ── Этап 5: линейный equity / asset swap / CDS index / FXO ────────
+    def price_equity_forward(self, S, K, T, r, q=0.0, notional=1.0,
+                             position="long", snapshot=None) -> dict:
+        """Equity forward/future (exact cost-of-carry)."""
+        from instruments.equity_linear import equity_forward
+        return self._priced(
+            model_id="equity_forward", calculation_type="equity_forward_pricing",
+            engine=lambda: equity_forward(S, K, T, r, q, notional, position),
+            inputs={"S": S, "K": K, "T": T, "r": r, "q": q, "notional": notional,
+                    "position": position},
+            snapshot=snapshot, user_action="Price equity forward", value_key="npv")
+
+    def price_equity_swap(self, S, notional, T, r, q=0.0, spread=0.0, freq=4,
+                          receive_equity=True, snapshot=None) -> dict:
+        """Equity total-return swap (continuous-reset closed form)."""
+        from instruments.equity_linear import equity_swap
+        return self._priced(
+            model_id="equity_swap", calculation_type="equity_swap_pricing",
+            engine=lambda: equity_swap(S, notional, T, r, q, spread, freq,
+                                       receive_equity),
+            inputs={"S": S, "notional": notional, "T": T, "r": r, "q": q,
+                    "spread": spread, "freq": freq, "receive_equity": receive_equity},
+            snapshot=snapshot, user_action="Price equity swap", value_key="npv")
+
+    def price_dividend_swap(self, S, T, r, q, div_strike=None, notional=1.0,
+                            position="long", snapshot=None) -> dict:
+        """Dividend swap (expected dividend strip vs fixed strike)."""
+        from instruments.equity_linear import dividend_swap
+        return self._priced(
+            model_id="dividend_swap", calculation_type="dividend_swap_pricing",
+            engine=lambda: dividend_swap(S, T, r, q, div_strike, notional, position),
+            inputs={"S": S, "T": T, "r": r, "q": q, "div_strike": div_strike,
+                    "notional": notional, "position": position},
+            snapshot=snapshot, user_action="Price dividend swap", value_key="npv")
+
+    def price_asset_swap(self, face, coupon, T, freq, market_price, r,
+                         snapshot=None) -> dict:
+        """Par-par asset swap spread (bond vs risk-free curve)."""
+        from instruments.credit import asset_swap_parpar
+        return self._priced(
+            model_id="asset_swap", calculation_type="asset_swap_pricing",
+            engine=lambda: asset_swap_parpar(face, coupon, T, freq, market_price, r),
+            inputs={"face": face, "coupon": coupon, "T": T, "freq": freq,
+                    "market_price": market_price, "r": r},
+            snapshot=snapshot, user_action="Price asset swap",
+            value_key="asset_swap_spread_bp")
+
+    def price_cds_index(self, notional, index_spread, coupon, T, freq, r,
+                        recovery=0.4, n_names=125, buy_protection=True,
+                        snapshot=None) -> dict:
+        """CDS index on a homogeneous pool (ISDA-style flat hazard, upfront)."""
+        from instruments.credit import cds_index
+        return self._priced(
+            model_id="cds_index", calculation_type="cds_index_pricing",
+            engine=lambda: cds_index(notional, index_spread, coupon, T, freq, r,
+                                     recovery, n_names, buy_protection),
+            inputs={"notional": notional, "index_spread": index_spread,
+                    "coupon": coupon, "T": T, "freq": freq, "r": r,
+                    "recovery": recovery, "n_names": n_names,
+                    "buy_protection": buy_protection},
+            snapshot=snapshot, user_action="Price CDS index", value_key="upfront")
+
+    def price_fx_barrier(self, S, K, H, T, r_d, r_f, sigma, opt="call",
+                         barrier_type="down-out", rebate=0.0,
+                         notional=1_000_000, snapshot=None) -> dict:
+        """FX barrier option (Garman-Kohlhagen carry, continuous monitoring)."""
+        from instruments.fx import fx_barrier
+        return self._priced(
+            model_id="barrier", calculation_type="fx_barrier_pricing",
+            engine=lambda: fx_barrier(S, K, H, T, r_d, r_f, sigma, opt,
+                                      barrier_type, rebate, notional),
+            inputs={"S": S, "K": K, "H": H, "T": T, "r_d": r_d, "r_f": r_f,
+                    "sigma": sigma, "opt": opt, "barrier_type": barrier_type,
+                    "rebate": rebate, "notional": notional},
+            snapshot=snapshot, user_action="Price FX barrier")
+
     # ── Equity exotics ────────────────────────────────────────────────
     def price_barrier_option(self, S, K, H, T, r, sigma, q=0.0, opt="call",
                              barrier_type="down-out", rebate=0.0, snapshot=None) -> dict:

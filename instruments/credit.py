@@ -343,3 +343,64 @@ def dva(exposure_profile: list, hazard_own: float,
         recovery_own: float, r: float) -> dict:
     """DVA — own credit value adjustment (symmetric to CVA on own default)."""
     return cva(exposure_profile, hazard_own, recovery_own, r)
+
+
+# ─────────────────────────────────────────────────────────
+# Asset swap (par-par) — Этап 5
+# ─────────────────────────────────────────────────────────
+
+def asset_swap_parpar(face: float, coupon: float, T: float, freq: int,
+                      market_price: float, r: float) -> dict:
+    """Par-par asset swap spread.
+
+    Инвестор покупает бонд по грязной цене P, входит в своп: платит купоны
+    бонда, получает плавающую + спред s на номинал par=face. Пакет стоит par.
+    Спред s (десятичная ставка) = (V* − P) / (face · A), где V* — цена бонда
+    по risk-free (своп) кривой, A — per-unit аннуитет плавающей ноги.
+    Recovery не входит: это risk-free-vs-market спред, не hazard-модель.
+    """
+    dt = 1.0 / freq
+    times = [i * dt for i in range(1, int(round(T * freq)) + 1)]
+    annuity = sum(dt * np.exp(-r * t) for t in times)      # per-unit (на 1 par)
+
+    # цена бонда по risk-free кривой (плоская r) — «справедливая» без кредита
+    riskfree_value = sum(face * coupon * dt * np.exp(-r * t) for t in times)
+    riskfree_value += face * np.exp(-r * T)
+
+    # s — десятичная ставка на номинал par=face: делим на face·A
+    asw_spread = ((riskfree_value - market_price) / (face * annuity)
+                  if annuity > 0 else float("nan"))
+    return dict(
+        asset_swap_spread=asw_spread,                      # десятичная, scale-invariant
+        asset_swap_spread_bp=asw_spread * 10000,
+        riskfree_value=riskfree_value, market_price=market_price,
+        annuity=annuity, npv=riskfree_value - market_price,
+        value=asw_spread * 10000,
+    )
+
+
+# ─────────────────────────────────────────────────────────
+# CDS Index (homogeneous pool) — Этап 5
+# ─────────────────────────────────────────────────────────
+
+def cds_index(notional: float, index_spread: float, coupon: float, T: float,
+              freq: int, r: float, recovery: float = 0.4,
+              n_names: int = 125, buy_protection: bool = True) -> dict:
+    """CDS index на гомогенном пуле (iTraxx/CDX-стиль).
+
+    Плоский hazard из котируемого индекс-спреда (ISDA-стиль), затем клин-
+    апфронт на фиксированном купоне (100/500bp) = (par − coupon)·RPV01.
+    Возвращает fair spread, RPV01, upfront, protection/premium PV.
+    """
+    h = isda_flat_hazard(index_spread, T, freq, r, recovery)
+    legs = isda_cds_legs(h, coupon, T, freq, r, recovery)
+    upfront = (legs["par_spread"] - coupon) * legs["rpv01"] * notional
+    sign = 1.0 if buy_protection else -1.0
+    return dict(
+        fair_spread=legs["par_spread"], hazard=h, rpv01=legs["rpv01"],
+        upfront=sign * upfront, points_upfront=sign * upfront / notional,
+        protection_pv=legs["protection_pv"] * notional,
+        premium_pv=coupon * legs["rpv01"] * notional,
+        n_names=n_names, index_dv01=notional * legs["rpv01"] / 10000,
+        npv=sign * upfront, value=sign * upfront,
+    )

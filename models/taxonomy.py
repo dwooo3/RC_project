@@ -168,8 +168,14 @@ CLASSIFICATION: dict[str, tuple] = {
     "asian": (_A.EQUITY, _MF.ANALYTIC, _M.MONTE_CARLO),
     "variance_swap": (_A.EQUITY, _MF.REPLICATION, _M.CLOSED_FORM),
     "multi_asset": (_A.HYBRID, _MF.ANALYTIC, _M.MONTE_CARLO),
+    # ── Этап 5: линейный equity ───────────────────────────
+    "equity_forward": (_A.EQUITY, _MF.ANALYTIC, _M.CLOSED_FORM),
+    "equity_swap": (_A.EQUITY, _MF.ANALYTIC, _M.CLOSED_FORM),
+    "dividend_swap": (_A.EQUITY, _MF.ANALYTIC, _M.CLOSED_FORM),
     # ── Credit ────────────────────────────────────────────
     "cds": (_A.CREDIT, _MF.REDUCED_FORM, _M.CLOSED_FORM),
+    "asset_swap": (_A.CREDIT, _MF.ANALYTIC, _M.CLOSED_FORM),
+    "cds_index": (_A.CREDIT, _MF.REDUCED_FORM, _M.CLOSED_FORM),
     "cds_curve": (_A.CREDIT, _MF.REDUCED_FORM, _M.CLOSED_FORM),
     "risky_bond": (_A.CREDIT, _MF.REDUCED_FORM, _M.CLOSED_FORM),
     "cva_dva": (_A.CREDIT, _MF.REDUCED_FORM, _M.CLOSED_FORM),

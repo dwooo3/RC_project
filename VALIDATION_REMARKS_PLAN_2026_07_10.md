@@ -68,8 +68,16 @@
 
 Adversarial-ревью диффа (multi-agent, 3 линзы + верификация) — исправлено до коммита: (1) CSV-импорт коверкал ru-числа («2026-07-09;-1234,56» въезжал как −1234.0 без ошибки) — парсер локалей `_actual_pnl_number` (ru/en тысячи/десятичные), `;`-строки не сводятся к `,`; (2) импорт стал атомарным — валидация всех строк ДО записи (раньше 422 на k-й строке оставлял k−1 записей); (3) нечисловой pnl в `rows` давал 500 вместо 422; (4) даты через `date.fromisoformat` (2026-02-31 отвергается, регэксп пропускал); (5) `evt_threshold=0.02` тихо ронял EVT из methods (KeyError глотался) — причина пропуска теперь в `data_quality`; (6) кап 1000 строк `list_actual_pnl` в бэктесте → явные 100k; (7) нота actual_backtest различает «не импортирован» и «нет пересечения дат»; методологические честности: VaR текущей статичной книги vs исторический APL (каведж в ноте), Basel APL должен быть очищен от комиссий, theta сидит в разрыве APL−HypPL (HypPL без старения), «купоны непрерывные» → простые периодические выплаты.
 
-### Этап 5 — расширение продуктовой линейки (по составу реальной книги)
-Из таблицы «отсутствуют как workflow» — брать по мере появления таких позиций в книге, в порядке: FXO-конвенции (delta/premium/settlement + FX-версии barrier/digital/asian) → equity forward/swap/dividend swap → CDS index/asset swap → loans/MM lifecycle → ABS/MBS workflow UI. Сейчас книга bonds/IRS/FX — приоритет низкий.
+### Этап 5 — расширение продуктовой линейки ✅ ЧАСТИЧНО 2026-07-12
+Взят верхний приоритет таблицы «отсутствуют как workflow» (FXO → equity linear → CDS index/asset swap). Добавлено 6 продуктов (43 в каталоге):
+- [x] **FXO**: `fx_barrier` (Garman-Kohlhagen carry q=r_f, непрерывный мониторинг, премия в domestic) — отдельный продукт поверх существующего движка. FX-конвенции (delta spot/fwd/premium-adj, премия dom/fgn/%) уже отдаёт `fx_option`.
+- [x] **Equity linear** (`instruments/equity_linear.py`): `equity_forward` (точный cost-of-carry, Validated), `equity_swap` (total-return vs финансирование, непрерывный ресет, Approximation), `dividend_swap` (PV дивидендов S(1−e^{−qT}), Validated).
+- [x] **Credit** (в `instruments/credit.py`): `asset_swap` (par-par ASW spread = (V*−P)/annuity, Validated), `cds_index` (гомогенный пул, плоский hazard из индекс-спреда ISDA-стиль, Approximation).
+- Governance: реестр 111 Validated / 2 Approximation (честные упрощения) / 5 Prototype. Валидационные тождества: `tests/test_stage5_products.py` (11). Swift подхватывает автоматически (схемо-ориентированный каталог), 19 контракт-тестов зелёные.
+- **Осталось на будущее (по составу книги)**: FX-версии digital/asian/lookback/window forward, equity future/warrant/correlation swap, CDS index option/quanto/asset swap lifecycle, loans/MM, ABS/MBS. Trade-capture новых продуктов в риск-книгу — когда появятся такие позиции (нужен reprice-путь в domain/portfolio).
+
+### Этап 5-остаток — расширение продуктовой линейки (по составу реальной книги)
+Из таблицы «отсутствуют как workflow» — брать по мере появления таких позиций в книге, в порядке: FX-версии digital/asian/lookback + window/flexible forward → equity future/warrant/correlation swap → CDS index option/quanto/asset swap lifecycle → loans/MM lifecycle → ABS/MBS workflow UI. Сейчас книга bonds/IRS/FX — приоритет низкий.
 
 ## 4. Что из отчёта НЕ беру и почему
 

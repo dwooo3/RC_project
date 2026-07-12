@@ -39,8 +39,13 @@ def test_governance_service_exposes_workspace_sections():
     limitations = governance.limitations_report()
 
     assert any(model.model_id == "fixed_bond" for model in models)
-    # batch-5 (2026-07) промоутнул весь Approximation-пул — теперь ноль
-    assert counts["Validated"] > 0 and counts["Approximation"] == 0
+    # batch-5 промоутнул старый Approximation-пул в ноль; этап-5 (2026-07-12)
+    # добавил equity_swap/cds_index честными Approximation (упрощения модели
+    # до внешней валидации) — проверяем, что пул именно эти новые продукты.
+    assert counts["Validated"] > 0
+    approx_ids = {m.model_id for m in models
+                  if getattr(m, "status", None) == "Approximation"}
+    assert approx_ids <= {"equity_swap", "cds_index"}
     assert any(row["model_id"] == "fixed_bond" for row in validation)
     assert any(row["quant_review_status"] == "Partially Validated" for row in validation)
     assert audit and audit[0]["status"] == "Pending"
