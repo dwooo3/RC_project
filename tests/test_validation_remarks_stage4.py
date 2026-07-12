@@ -31,6 +31,7 @@ def test_actual_pnl_roundtrip():
 
 
 def test_actual_pnl_number_locales():
+    pytest.importorskip("fastapi")            # api.server требует FastAPI (нет в CI)
     from api.server import _actual_pnl_number
     assert _actual_pnl_number("-1234,56") == -1234.56       # ru десятичная
     assert _actual_pnl_number("-1 234,56") == -1234.56      # ru + пробел тысяч
@@ -45,6 +46,7 @@ def test_actual_pnl_number_locales():
 def test_actual_pnl_import_validation():
     """CSV с ';' и десятичной запятой; 422 на мусор ДО записи (атомарно);
     невозможные даты отвергаются."""
+    pytest.importorskip("fastapi")            # api.server требует FastAPI (нет в CI)
     from fastapi import HTTPException
 
     from api import server
