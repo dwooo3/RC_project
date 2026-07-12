@@ -60,6 +60,13 @@ _SCHEMA = [
         payload TEXT NOT NULL,
         updated_at TEXT
     )""",
+    """CREATE TABLE IF NOT EXISTS actual_pnl (
+        dt TEXT PRIMARY KEY,
+        pnl REAL NOT NULL,
+        source TEXT DEFAULT 'manual',
+        note TEXT DEFAULT '',
+        updated_at TEXT
+    )""",
 ]
 
 
@@ -138,6 +145,33 @@ class AppDB:
             market_data_snapshot_id=row["market_data_snapshot_id"],
             metadata=json.loads(row["metadata"]),
         )
+
+    # ── Actual P&L (A3: APL для сверки с HypPL) ───────────
+
+    def save_actual_pnl(self, dt: str, pnl: float, source: str = "manual",
+                        note: str = "") -> None:
+        self.conn.execute(
+            """INSERT INTO actual_pnl (dt, pnl, source, note, updated_at)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(dt) DO UPDATE SET
+                 pnl=excluded.pnl, source=excluded.source,
+                 note=excluded.note, updated_at=excluded.updated_at""",
+            (str(dt), float(pnl), source, note, datetime.now().isoformat()))
+        self.conn.commit()
+
+    def load_actual_pnl(self, dt: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM actual_pnl WHERE dt=?", (str(dt),)).fetchone()
+        return dict(row) if row else None
+
+    def list_actual_pnl(self, limit: int = 1000) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM actual_pnl ORDER BY dt DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_actual_pnl(self, dt: str) -> None:
+        self.conn.execute("DELETE FROM actual_pnl WHERE dt=?", (str(dt),))
+        self.conn.commit()
 
     # ── Pricing environments (A1) ──────────────────────────
 

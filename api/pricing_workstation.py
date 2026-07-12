@@ -202,7 +202,8 @@ def _strike(default=100.0):
 
 
 def _mat(default=1.0, label="Maturity T"):
-    return P("T", label, default, "contract", minimum=1e-4, maximum=100.0, unit="y")
+    return P("T", label, default, "contract", minimum=1e-4, maximum=100.0, unit="y",
+             help="в годах, ACT/365 (T = дни/365)")
 
 
 def _rate(key="r", label="Rate r", default=0.10):
@@ -675,7 +676,10 @@ PRODUCTS: list[WsProduct] = [
          P("barrier_type", "Barrier type", "down-out", "contract", dtype="choice",
            choices=["down-out", "down-in", "up-out", "up-in"])],
         [E("barrier"), E("pde_cn")],
-        _barrier, underlying=_EQ_UNDERLYING),
+        _barrier, underlying=_EQ_UNDERLYING,
+        note="Непрерывный мониторинг барьера (Reiner–Rubinstein); дискретный "
+             "мониторинг не моделируется (поправка Броди–Глассермана-Коу не "
+             "применяется) — дискретный барьер пробивается реже."),
     WsProduct(
         "asian_option", "Asian Option", "equity", "Exotics",
         [_spot(), _strike(), _mat(), _rate("r", "Risk-free r", 0.05), _div(), _sigma(),
@@ -691,7 +695,9 @@ PRODUCTS: list[WsProduct] = [
             _num(v, "sigma", .2), _num(v, "q", 0), v.get("opt", "call"),
             v.get("averaging", "arithmetic"), int(_num(v, "n", 12)),
             int(_num(v, "n_sims", 50000)), snapshot=snap),
-        underlying=_EQ_UNDERLYING),
+        underlying=_EQ_UNDERLYING,
+        note="Фиксинги равномерные по сроку (n штук), среднее арифметич./геом. "
+             "по цене; MC с фиксированным seed (воспроизводимость)."),
     WsProduct(
         "digital_option", "Digital Option", "equity", "Exotics",
         [_spot(), _strike(), _mat(0.5), _rate("r", "Risk-free r", 0.04), _div(), _sigma(),
@@ -703,7 +709,9 @@ PRODUCTS: list[WsProduct] = [
             _num(v, "S", 100), _num(v, "K", 100), _num(v, "T", .5), _num(v, "r", .04),
             _num(v, "sigma", .2), _num(v, "q", 0), v.get("opt", "call"),
             v.get("style", "cash"), _num(v, "cash", 1.0), snapshot=snap),
-        underlying=_EQ_UNDERLYING),
+        underlying=_EQ_UNDERLYING,
+        note="Разрывный payoff: greeks у страйка вблизи экспирации нестабильны; "
+             "спред-репликация (call spread) не применяется."),
     WsProduct(
         "lookback_option", "Lookback Option", "equity", "Exotics",
         [_spot(), _mat(), _rate("r", "Risk-free r", 0.05), _div(), _sigma(), _optype(),
@@ -715,7 +723,9 @@ PRODUCTS: list[WsProduct] = [
             _num(v, "S", 100), _num(v, "T", 1), _num(v, "r", .05), _num(v, "sigma", .2),
             _num(v, "q", 0), v.get("opt", "call"), v.get("strike_type", "floating"),
             _num(v, "K", 100), snapshot=snap),
-        underlying=_EQ_UNDERLYING),
+        underlying=_EQ_UNDERLYING,
+        note="Непрерывное наблюдение экстремума (Goldman–Sosin–Gatto); "
+             "дискретное наблюдение даёт меньшую стоимость."),
     WsProduct(
         "variance_swap", "Variance Swap", "equity", "Volatility",
         [_spot(), _mat(), _rate("r", "Risk-free r", 0.05), _div(),
@@ -1246,6 +1256,21 @@ def build_ws_catalogue(curve_ids: list[str] | None = None,
         "asset_classes": [{"id": ac, "label": label} for ac, label in ASSET_CLASSES],
         "curves": [{"id": c, "label": CURVE_LABELS.get(c, c)} for c in curve_ids],
         "products": products,
+        # A5: глобальные конвенции воркстейшена — то, что раньше жило неявно
+        "conventions": [
+            "Сроки T — в годах, ACT/365 (T = календарные дни / 365).",
+            "Ставки r и дивидендные доходности q — непрерывное начисление; "
+            "купоны облигаций и фиксированные ноги — простые периодические "
+            "выплаты face·c/freq, дисконтируемые по непрерывной ставке.",
+            "Дивиденды акций — непрерывная дивидендная доходность q.",
+            "MC-движки используют фиксированный seed — результат воспроизводим; "
+            "stderr в результате — оценка MC-погрешности.",
+            "FD-грики портфеля: bump 1% спота, 1 в.п. вола, 1 б.п. ставки.",
+            "Кривые из снапшота маркет-даты последнего торгового дня; "
+            "'— флэт r —' — плоская кривая из поля r.",
+            "Vol surface — калиброванный SABR-смайл по IV опционов MOEX; "
+            "'— ручная σ —' — поле σ.",
+        ],
     }
 
 

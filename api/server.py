@@ -17,6 +17,7 @@ the client surfaces the status so nothing is silently treated as production-grad
 from __future__ import annotations
 
 import os
+from datetime import date
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -62,6 +63,17 @@ class WsPriceRequest(BaseModel):
     engine: str | None = None
     params: dict[str, float | int | str | None] = {}
     env_id: str | None = None
+
+
+class ActualPnlPayload(BaseModel):
+    """Импорт фактического P&L (A3): одна запись {date,pnl}, список rows,
+    или csv-текст «date,pnl» построчно (заголовок и ';' допускаются)."""
+    date: str | None = None
+    pnl: float | None = None
+    rows: list[dict[str, float | str]] | None = None
+    csv: str | None = None
+    source: str = "manual"
+    note: str = ""
 
 
 class EnvironmentPayload(BaseModel):
@@ -286,10 +298,13 @@ def ws_ladder(req: WsLadderRequest) -> dict:
 @app.get("/marketrisk")
 def marketrisk_overview(confidence: float = 0.99, window: int = 500,
                         horizon: int = 1, stress: str | None = None,
-                        book: str | None = None) -> dict:
+                        book: str | None = None,
+                        evt_threshold: float = 0.10) -> dict:
     try:
         return jsonable(marketrisk.overview(CONTEXT, confidence, window, horizon,
-                                            stress=stress, book=book))
+                                            stress=stress, book=book,
+                                            evt_threshold=min(max(evt_threshold,
+                                                                  0.02), 0.5)))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -354,6 +369,77 @@ def pnl_explain(theta_days: float = 1.0) -> dict:
         return jsonable(marketrisk.pnl_explain(CONTEXT, theta_days))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/pnl/actual")
+def pnl_actual_list(limit: int = 1000) -> dict:
+    rows = CONTEXT.app_db.list_actual_pnl(limit)
+    return jsonable({"rows": rows, "count": len(rows)})
+
+
+def _actual_pnl_number(s: str) -> float:
+    """Число в ru/en-локали: '-1 234,56', '1.234,56', '1,234.5', '500'.
+    При обоих разделителях десятичный — последний; одиночная запятая —
+    десятичная (ru-локаль)."""
+    s = s.strip().replace("\u00a0", "").replace(" ", "")
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    else:
+        s = s.replace(",", ".")
+    return float(s)
+
+
+@app.post("/pnl/actual")
+def pnl_actual_import(req: ActualPnlPayload) -> dict:
+    """Импорт атомарный: сначала разбор и валидация ВСЕХ строк, потом
+    запись — при 422 в базе не остаётся частичного импорта."""
+    entries: list[tuple[str, float]] = []
+    try:
+        if req.date is not None and req.pnl is not None:
+            entries.append((req.date, float(req.pnl)))
+        for row in req.rows or []:
+            if "date" in row and "pnl" in row:
+                entries.append((str(row["date"]),
+                                _actual_pnl_number(str(row["pnl"]))))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"не разобран pnl: {exc}")
+    for line in (req.csv or "").splitlines():
+        sep = ";" if ";" in line else ","
+        parts = [p.strip() for p in line.split(sep)]
+        if not parts[0] or parts[0].lower() in ("date", "дата"):
+            continue
+        if len(parts) != 2:
+            raise HTTPException(
+                status_code=422,
+                detail=f"строка CSV не 'date{sep}pnl' (десятичная запятая "
+                       f"требует разделителя ';'): {line!r}")
+        try:
+            entries.append((parts[0], _actual_pnl_number(parts[1])))
+        except ValueError:
+            raise HTTPException(status_code=422,
+                                detail=f"не разобрана строка CSV: {line!r}")
+    if not entries:
+        raise HTTPException(status_code=422,
+                            detail="нет данных: нужен date+pnl, rows или csv")
+    for dt, _ in entries:                      # валидация ДО записи
+        try:
+            date.fromisoformat(dt)             # строгая: 2026-02-31 не пройдёт
+        except ValueError:
+            raise HTTPException(status_code=422,
+                                detail=f"дата не YYYY-MM-DD: {dt!r}")
+    for dt, pnl in entries:
+        CONTEXT.app_db.save_actual_pnl(dt, pnl, req.source, req.note)
+    return jsonable({"imported": len(entries),
+                     "total": len(CONTEXT.app_db.list_actual_pnl())})
+
+
+@app.delete("/pnl/actual/{dt}")
+def pnl_actual_delete(dt: str) -> dict:
+    CONTEXT.app_db.delete_actual_pnl(dt)
+    return jsonable({"deleted": dt})
 
 
 @app.post("/portfolio/add_market")

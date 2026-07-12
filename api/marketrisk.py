@@ -235,10 +235,12 @@ def _var_es(losses: np.ndarray, confidence: float) -> tuple[float, float]:
 
 def overview(ctx, confidence: float = 0.99, window: int = 500,
              horizon: int = 1, stress: str | None = None,
-             book: str | None = None) -> dict:
+             book: str | None = None,
+             evt_threshold: float = 0.10) -> dict:
     """VaR analysis report: HypPL distribution + metrics by method + drill-down.
     ``stress`` selects a named fixed historical period (Stress VaR);
-    ``book`` (A4) считает VaR по срезу книги (без кэша)."""
+    ``book`` (A4) считает VaR по срезу книги (без кэша);
+    ``evt_threshold`` (A5) — доля хвоста для GPD-фита EVT (было скрытое 0.10)."""
     from risk.var import evt_var, montecarlo_var, parametric_var
 
     frm, till = STRESS_WINDOWS.get(stress or "", (None, None))
@@ -276,13 +278,20 @@ def overview(ctx, confidence: float = 0.99, window: int = 500,
                         "var": float(mc["VaR"]), "es": float(mc.get("ES", mc["VaR"]))})
     except Exception:
         pass
+    evt_skip = None
     try:
-        ev = evt_var(pnl, 1.0, max(confidence, 0.99))
-        methods.append({"method": "evt", "label": "EVT (GPD tail)",
-                        "model_id": "evt_var",
-                        "var": float(ev["VaR"]), "es": float(ev.get("ES", ev["VaR"]))})
-    except Exception:
-        pass
+        ev = evt_var(pnl, 1.0, max(confidence, 0.99),
+                     threshold_pct=evt_threshold)
+        if "error" in ev:
+            evt_skip = (f"EVT пропущен: {ev['error']} — порог {evt_threshold:.0%}"
+                        f" × {len(pnl)} наблюдений даёт <21 превышения")
+        else:
+            methods.append({"method": "evt", "label": "EVT (GPD tail)",
+                            "model_id": "evt_var", "threshold_pct": evt_threshold,
+                            "var": float(ev["VaR"]),
+                            "es": float(ev.get("ES", ev["VaR"]))})
+    except Exception as exc:
+        evt_skip = f"EVT пропущен: {exc}"
 
     order = np.argsort(pnl)
     worst = [{"date": hp["dates"][int(i)], "pnl": float(pnl[int(i)])} for i in order[:5]]
@@ -294,6 +303,8 @@ def overview(ctx, confidence: float = 0.99, window: int = 500,
         quality.append("FX-фактор без истории — валютный риск в HypPL не учтён")
     if hp["reprice_errors"]:
         quality.append(f"{len(hp['reprice_errors'])} позиций не переоценились")
+    if evt_skip:
+        quality.append(evt_skip)
     if horizon_method == "sqrt_time":
         quality.append("горизонт масштабирован sqrt(h) — истории мало для "
                        "перекрывающихся окон (параметрическое приближение)")
@@ -433,10 +444,14 @@ def incremental(ctx, product: str, engine: str | None, params: dict,
 
 
 def pnl_explain(ctx, theta_days: float = 1.0) -> dict:
-    """P&L Explained (Calypso §2.4): the latest day's ACTUAL factor moves →
-    full-reprice total P&L, attributed via greeks into market-data effects
-    (delta/gamma/vega/rho) + time effect (theta); the unexplained remainder is
-    the residual (higher-order + FX + cross terms)."""
+    """P&L Explained (Calypso §2.4): the latest day's factor moves →
+    full-reprice HYPOTHETICAL P&L (Basel: static book, market moves applied),
+    attributed via greeks into market-data effects (delta/gamma/vega/rho) +
+    time effect (theta); the unexplained remainder is the residual
+    (higher-order + FX + cross terms). Если на дату as_of импортирован
+    ФАКТИЧЕСКИЙ P&L (A3), выдаётся split APL vs HypPL: разрыв между ними —
+    то, чего HypPL не содержит по построению (новые сделки, комиссии,
+    внутридневная торговля, lifecycle-события)."""
     shifts = factor_shifts(ctx, window=30)
     dS, dr = float(shifts["eq"][-1]), float(shifts["dr"][-1])
     dvol, dfx = float(shifts["dvol"][-1]), float(shifts["fx"][-1])
@@ -446,6 +461,39 @@ def pnl_explain(ctx, theta_days: float = 1.0) -> dict:
     actual = ps.full_reprice_pnl(dS=dS, dr=dr, dvol=dvol, dfx=dfx)
     result = ps.explain_pnl(total_pnl=actual["pnl"], dS=dS, dVol=dvol, dr=dr,
                             theta_days=theta_days)
+
+    # A3: фактический P&L (импортированный) vs гипотетический (модельный)
+    apl_row = None
+    try:
+        apl_row = ctx.app_db.load_actual_pnl(as_of)
+    except Exception:
+        pass
+    hyp = float(actual["pnl"])
+    apl = {"available": apl_row is not None, "date": as_of}
+    if apl_row is not None:
+        apl.update({
+            "actual_pnl": float(apl_row["pnl"]),
+            "hypothetical_pnl": hyp,
+            "gap": float(apl_row["pnl"]) - hyp,
+            "source": apl_row.get("source", "manual"),
+            "note": ("Разрыв APL−HypPL: новые сделки, внутридневная торговля, "
+                     "lifecycle и theta (HypPL здесь без старения позиций — "
+                     "время целиком в разрыве). Basel требует APL, очищенный "
+                     "от комиссий: если импортирована серия с комиссиями, они "
+                     "тоже осядут в разрыве."),
+        })
+
+    # lifecycle v1 (честно): позиции книги не «стареют» (T статично), поэтому
+    # детектировать купоны/экспирации по календарю нельзя — только
+    # предупреждаем о позициях у экспирации, чей lifecycle-эффект скоро
+    # попадёт в разрыв APL/HypPL.
+    lifecycle = []
+    for p in ps.positions:
+        t_rem = p.params.get("T", p.params.get("T_option"))
+        if t_rem is not None and 0 < float(t_rem) <= 5 / 252:
+            lifecycle.append({"position": p.description,
+                              "T_years": float(t_rem),
+                              "note": "экспирация ≤ 5 т.д. — lifecycle-эффект"})
 
     labels = {"delta_pnl": "Delta (equity)", "gamma_pnl": "Gamma",
               "vega_pnl": "Vega (vol)", "theta_pnl": "Theta (time)",
@@ -466,6 +514,8 @@ def pnl_explain(ctx, theta_days: float = 1.0) -> dict:
                       for k, v in (result.factor_pnl or {}).items()],
         "by_position": [{"position": k, "pnl": float(v)}
                         for k, v in (result.position_pnl or {}).items()],
+        "actual_vs_hypothetical": apl,
+        "lifecycle": lifecycle,
         "note": ("Market-data effect по грикам, time effect = theta; residual — "
                  "нелинейность/кросс-эффекты/FX (FX-атрибуция по грикам пока не "
                  "разложена)."),
@@ -564,13 +614,29 @@ def backtest(ctx, confidence: float = 0.99, window: int = 500,
     if len(pnl) <= lookback + 20:
         lookback = max(60, len(pnl) // 2)
 
-    rows, exceptions = [], []
+    # A3: если импортирован фактический P&L — Basel требует бэктест VaR
+    # против ОБЕИХ серий (hypothetical и actual); actual подмешивается в
+    # строки по датам, где он есть.
+    apl_by_date = {}
+    try:
+        apl_by_date = {r["dt"]: float(r["pnl"])
+                       for r in ctx.app_db.list_actual_pnl(limit=100_000)}
+    except Exception:
+        pass
+
+    rows, exceptions, apl_exceptions = [], [], []
     for t in range(lookback, len(pnl)):
         var_t = float(np.quantile(-pnl[t - lookback:t], confidence))
         breach = bool(pnl[t] < -var_t)
         exceptions.append(breach)
-        rows.append({"date": hp["dates"][t], "pnl": float(pnl[t]),
-                     "var": -var_t, "breach": breach})
+        row = {"date": hp["dates"][t], "pnl": float(pnl[t]),
+               "var": -var_t, "breach": breach}
+        apl = apl_by_date.get(hp["dates"][t])
+        if apl is not None:
+            row["actual_pnl"] = apl
+            row["actual_breach"] = bool(apl < -var_t)
+            apl_exceptions.append(row["actual_breach"])
+        rows.append(row)
 
     n_obs, n_exc = len(exceptions), int(sum(exceptions))
     expected = n_obs * (1 - confidence)
@@ -600,5 +666,21 @@ def backtest(ctx, confidence: float = 0.99, window: int = 500,
         "kupiec": kupiec, "christoffersen": christ,
         "traffic_light": zone,
         "bias": bias,
+        "actual_backtest": {
+            "n_obs": len(apl_exceptions),
+            "n_exceptions": int(sum(apl_exceptions)),
+            "imported_dates": len(apl_by_date),
+            "note": ("Тот же VaR против импортированной серии actual P&L (Basel: обе "
+                     "серии). Внимание: VaR считается по ТЕКУЩЕЙ книге "
+                     "(позиции статичны) — сравнение с историческим APL "
+                     "корректно, пока состав книги на этих датах близок к "
+                     "текущему."),
+        } if apl_exceptions else {
+            "n_obs": 0, "n_exceptions": 0,
+            "imported_dates": len(apl_by_date),
+            "note": ("actual P&L не импортирован" if not apl_by_date else
+                     f"actual импортирован ({len(apl_by_date)} дат), но даты "
+                     "не пересекаются с хвостом бэктеста"),
+        },
         "rows": rows,
     }
