@@ -404,3 +404,45 @@ def cds_index(notional: float, index_spread: float, coupon: float, T: float,
         n_names=n_names, index_dv01=notional * legs["rpv01"] / 10000,
         npv=sign * upfront, value=sign * upfront,
     )
+
+
+# ─────────────────────────────────────────────────────────
+# CDS Index Option — Этап 5
+# ─────────────────────────────────────────────────────────
+
+def cds_index_option(notional: float, strike_spread: float, current_spread: float,
+                     sigma: float, T_opt: float, T_index: float, freq: int,
+                     r: float, recovery: float = 0.4,
+                     option: str = "payer") -> dict:
+    """Опцион на CDS-индекс (payer/receiver) — Black на форвардном спреде с
+    ФОРВАРДНЫМ risky-annuity нумерером (как swaption).
+
+    payer (право купить защиту по strike) = A_fwd·[F·N(d1) − K·N(d2)];
+    receiver (право продать защиту) = A_fwd·[K·N(−d2) − F·N(−d1)], где
+    A_fwd = RPV01(0,T_index) − RPV01(0,T_opt) — annuity периода T_opt→T_index
+    (докупонные периоды до экспирации в underlying опциона не входят).
+    Упрощения (→ Approximation): форвардный спред F≈current_spread (без
+    convexity/carry), front-end protection (FEP) не добавляется, плоский
+    hazard/дисконт.
+    """
+    from scipy.stats import norm as _norm
+
+    h = isda_flat_hazard(current_spread, T_index, freq, r, recovery)
+    rpv01_index = isda_cds_legs(h, 0.0, T_index, freq, r, recovery)["rpv01"]
+    rpv01_opt = (isda_cds_legs(h, 0.0, T_opt, freq, r, recovery)["rpv01"]
+                 if T_opt > 0 else 0.0)
+    annuity_fwd = max(rpv01_index - rpv01_opt, 0.0)      # forward risky annuity
+    F, K = current_spread, strike_spread
+    sv = sigma * np.sqrt(T_opt)
+    d1 = (np.log(F / K) + 0.5 * sv * sv) / sv
+    d2 = d1 - sv
+    if option == "payer":
+        unit = F * _norm.cdf(d1) - K * _norm.cdf(d2)
+    else:
+        unit = K * _norm.cdf(-d2) - F * _norm.cdf(-d1)
+    price = notional * annuity_fwd * unit
+    return dict(
+        price=price, value=price, npv=price,
+        rpv01=annuity_fwd, rpv01_index=rpv01_index, forward_spread=F, hazard=h,
+        option=option, notional=notional,
+    )

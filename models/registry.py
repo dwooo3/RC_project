@@ -1133,6 +1133,35 @@ MODEL_REGISTRY: dict[str, dict] = {
         "tests": ["upfront_zero_at_coupon", "isda_flat_hazard_roundtrip"],
         "notes": "Гомогенный пул, плоский hazard из индекс-спреда (ISDA-стиль). Дисперсия имён/index skew/curve не моделируются.",
     },
+    "cds_index_option": {
+        "name": "CDS Index Option (Black)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["index_option_atm_symmetry", "index_option_strike_monotonic"],
+        "notes": "Black на форвардном индекс-спреде с RPV01-нумерером. Упрощения: F≈current_spread (без convexity/carry), FEP не добавляется, плоский hazard.",
+    },
+    # ── Этап 5-остаток: equity future/warrant, MM ────────
+    "equity_future": {
+        "name": "Equity Future",
+        "status": ModelStatus.VALIDATED,
+        "domain": "Pricing",
+        "tests": ["future_fair_price_identity", "future_delta_exceeds_forward"],
+        "notes": "Точный cost-of-carry F=S·e^{(r−q)T}; MtM без дисконта (daily variation margin). Дискретные дивиденды не моделируются.",
+    },
+    "warrant": {
+        "name": "Warrant (dilution-adjusted)",
+        "status": ModelStatus.APPROXIMATION,
+        "domain": "Pricing",
+        "tests": ["warrant_dilution_factor", "warrant_below_undiluted"],
+        "notes": "Dilution-factor аппроксимация W=(N/(N+M))·C_BSM; точная оценка неявная (C зависит от размытой цены).",
+    },
+    "term_deposit": {
+        "name": "Money-Market Term Deposit",
+        "status": ModelStatus.VALIDATED,
+        "domain": "Pricing",
+        "tests": ["deposit_npv_zero_at_fair_rate", "deposit_loan_mirror"],
+        "notes": "Простое (ACT/365) или непрерывное начисление, дисконт к плоской ставке. Term-structure дисконта — следующий шаг.",
+    },
     "cds_curve": {
         "name": "CDS on Hazard Curve",
         "status": ModelStatus.VALIDATED,

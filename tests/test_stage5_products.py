@@ -134,3 +134,99 @@ def test_fx_barrier_matches_gk_barrier():
     ki = fx_barrier(S, K, H, T, r_d, r_f, sig, "call", "down-in", 0.0, 1.0)
     ko = fx_barrier(S, K, H, T, r_d, r_f, sig, "call", "down-out", 0.0, 1.0)
     assert ki["price"] + ko["price"] > 0
+
+
+# ── FX exotics (digital/asian/lookback) — GK carry q=r_f ─
+
+def test_fx_exotics_match_domain_engines():
+    from instruments.asian import geometric_asian_discrete
+    from instruments.digital import cash_or_nothing
+    from instruments.fx import fx_asian, fx_digital, fx_lookback
+    from instruments.lookback import floating_lookback
+    S, K, T, r_d, r_f, sig = 90.0, 92.0, 1.0, 0.16, 0.05, 0.15
+    # FX-обёртка == доменный движок с r=r_d, q=r_f
+    assert fx_digital(S, K, T, r_d, r_f, sig, "call", "cash", 1.0, 1.0)["price"] \
+        == pytest.approx(cash_or_nothing(S, K, T, r_d, sig, r_f, "call", 1.0)["price"])
+    assert fx_asian(S, K, T, r_d, r_f, sig, "call", "geometric", 12,
+                    notional=1.0)["price"] \
+        == pytest.approx(geometric_asian_discrete(S, K, T, r_d, sig, r_f, 12,
+                                                  "call")["price"])
+    assert fx_lookback(S, T, r_d, r_f, sig, "call", "floating",
+                       notional=1.0)["price"] \
+        == pytest.approx(floating_lookback(S, T, r_d, sig, r_f, "call")["price"])
+
+
+# ── equity_future: fair price + futures delta > forward ──
+
+def test_future_fair_price_identity():
+    from instruments.equity_linear import equity_future
+    S, K, T, r, q = 100.0, 100.0, 1.0, 0.10, 0.02
+    f = equity_future(S, K, T, r, q)
+    assert f["fair_future"] == pytest.approx(S * np.exp((r - q) * T))
+    z = equity_future(S, f["fair_future"], T, r, q)
+    assert z["npv"] == pytest.approx(0.0, abs=1e-9)   # MtM без дисконта
+
+
+def test_future_delta_exceeds_forward():
+    from instruments.equity_linear import equity_forward, equity_future
+    S, K, T, r, q = 100.0, 100.0, 1.0, 0.10, 0.02
+    fut = equity_future(S, K, T, r, q)
+    fwd = equity_forward(S, K, T, r, q)
+    # futures delta e^{(r−q)T} > forward delta e^{−qT}
+    assert fut["delta"] == pytest.approx(np.exp((r - q) * T))
+    assert fut["delta"] > fwd["delta"]
+
+
+# ── warrant: dilution factor + below undiluted ───────────
+
+def test_warrant_dilution_factor():
+    from instruments.equity_linear import warrant
+    w = warrant(100, 100, 1, 0.05, 0.2, 0.0, n_shares=100, n_warrants=25)
+    assert w["dilution_factor"] == pytest.approx(100 / 125)
+
+
+def test_warrant_below_undiluted():
+    from models.black_scholes import bsm
+    from instruments.equity_linear import warrant
+    w = warrant(100, 90, 1.5, 0.05, 0.25, 0.01, n_shares=100, n_warrants=10)
+    c = bsm(100, 90, 1.5, 0.05, 0.25, 0.01, "call").price
+    assert w["price"] < c
+    assert w["price"] == pytest.approx((100 / 110) * c)
+
+
+# ── cds_index_option: ATM symmetry + strike monotonic ────
+
+def test_index_option_atm_symmetry():
+    from instruments.credit import cds_index_option
+    # ATM (strike == current): payer == receiver (Black)
+    p = cds_index_option(10e6, 0.011, 0.011, 0.5, 0.5, 5, 4, 0.08, option="payer")
+    r = cds_index_option(10e6, 0.011, 0.011, 0.5, 0.5, 5, 4, 0.08, option="receiver")
+    assert p["price"] == pytest.approx(r["price"], rel=1e-6)
+
+
+def test_index_option_strike_monotonic():
+    from instruments.credit import cds_index_option
+    # payer (право купить защиту): дороже при меньшем страйке
+    lo = cds_index_option(10e6, 0.008, 0.011, 0.5, 0.5, 5, 4, 0.08, option="payer")
+    hi = cds_index_option(10e6, 0.020, 0.011, 0.5, 0.5, 5, 4, 0.08, option="payer")
+    assert lo["price"] > hi["price"] > 0
+
+
+# ── term_deposit: NPV zero at fair rate + loan mirror ────
+
+def test_deposit_npv_zero_at_fair_rate():
+    from instruments.money_market import term_deposit
+    td = term_deposit(1e6, 0.12, 0.25, 0.10, "simple")
+    at_fair = term_deposit(1e6, td["fair_rate"], 0.25, 0.10, "simple")
+    assert at_fair["npv"] == pytest.approx(0.0, abs=1e-6)
+    # непрерывное начисление: fair rate == дисконтная ставка
+    tdc = term_deposit(1e6, 0.10, 0.25, 0.10, "continuous")
+    assert tdc["npv"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_deposit_loan_mirror():
+    from instruments.money_market import term_deposit
+    dep = term_deposit(1e6, 0.15, 0.5, 0.10, "simple", deposit=True)
+    loan = term_deposit(1e6, 0.15, 0.5, 0.10, "simple", deposit=False)
+    assert dep["npv"] == pytest.approx(-loan["npv"])
+    assert dep["npv"] > 0            # ставка 15% > дисконт 10% → депозит в плюсе

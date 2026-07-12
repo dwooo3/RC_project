@@ -321,6 +321,101 @@ class PricingService:
                     "rebate": rebate, "notional": notional},
             snapshot=snapshot, user_action="Price FX barrier")
 
+    def price_fx_digital(self, S, K, T, r_d, r_f, sigma, opt="call",
+                         style="cash", cash=1.0, notional=1_000_000,
+                         snapshot=None) -> dict:
+        """FX digital (cash/asset-or-nothing, GK carry)."""
+        from instruments.fx import fx_digital
+        return self._priced(
+            model_id="digital", calculation_type="fx_digital_pricing",
+            engine=lambda: fx_digital(S, K, T, r_d, r_f, sigma, opt, style,
+                                      cash, notional),
+            inputs={"S": S, "K": K, "T": T, "r_d": r_d, "r_f": r_f,
+                    "sigma": sigma, "opt": opt, "style": style, "cash": cash,
+                    "notional": notional},
+            snapshot=snapshot, user_action="Price FX digital")
+
+    def price_fx_asian(self, S, K, T, r_d, r_f, sigma, opt="call",
+                       averaging="arithmetic", n=12, n_sims=50_000,
+                       notional=1_000_000, snapshot=None) -> dict:
+        """FX Asian (arithmetic MC / geometric closed form, GK carry)."""
+        from instruments.fx import fx_asian
+        return self._priced(
+            model_id="asian", calculation_type="fx_asian_pricing",
+            engine=lambda: fx_asian(S, K, T, r_d, r_f, sigma, opt, averaging,
+                                    n, n_sims, notional),
+            inputs={"S": S, "K": K, "T": T, "r_d": r_d, "r_f": r_f,
+                    "sigma": sigma, "opt": opt, "averaging": averaging, "n": n,
+                    "notional": notional},
+            snapshot=snapshot, user_action="Price FX asian")
+
+    def price_fx_lookback(self, S, T, r_d, r_f, sigma, opt="call",
+                          strike_type="floating", K=None, notional=1_000_000,
+                          snapshot=None) -> dict:
+        """FX lookback (floating/fixed strike, GK carry)."""
+        from instruments.fx import fx_lookback
+        return self._priced(
+            model_id="lookback", calculation_type="fx_lookback_pricing",
+            engine=lambda: fx_lookback(S, T, r_d, r_f, sigma, opt, strike_type,
+                                       K, notional),
+            inputs={"S": S, "T": T, "r_d": r_d, "r_f": r_f, "sigma": sigma,
+                    "opt": opt, "strike_type": strike_type, "K": K,
+                    "notional": notional},
+            snapshot=snapshot, user_action="Price FX lookback")
+
+    def price_equity_future(self, S, K, T, r, q=0.0, notional=1.0,
+                            position="long", snapshot=None) -> dict:
+        """Equity future (futures convention: undiscounted MtM)."""
+        from instruments.equity_linear import equity_future
+        return self._priced(
+            model_id="equity_future", calculation_type="equity_future_pricing",
+            engine=lambda: equity_future(S, K, T, r, q, notional, position),
+            inputs={"S": S, "K": K, "T": T, "r": r, "q": q, "notional": notional,
+                    "position": position},
+            snapshot=snapshot, user_action="Price equity future", value_key="npv")
+
+    def price_warrant(self, S, K, T, r, sigma, q=0.0, n_shares=100.0,
+                      n_warrants=10.0, opt="call", notional=1.0,
+                      snapshot=None) -> dict:
+        """Warrant (dilution-adjusted BSM)."""
+        from instruments.equity_linear import warrant
+        return self._priced(
+            model_id="warrant", calculation_type="warrant_pricing",
+            engine=lambda: warrant(S, K, T, r, sigma, q, n_shares, n_warrants,
+                                   opt, notional),
+            inputs={"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q,
+                    "n_shares": n_shares, "n_warrants": n_warrants, "opt": opt,
+                    "notional": notional},
+            snapshot=snapshot, user_action="Price warrant")
+
+    def price_cds_index_option(self, notional, strike_spread, current_spread,
+                               sigma, T_opt, T_index, freq, r, recovery=0.4,
+                               option="payer", snapshot=None) -> dict:
+        """CDS index option (Black on index spread, RPV01 numeraire)."""
+        from instruments.credit import cds_index_option
+        return self._priced(
+            model_id="cds_index_option", calculation_type="cds_index_option_pricing",
+            engine=lambda: cds_index_option(notional, strike_spread, current_spread,
+                                            sigma, T_opt, T_index, freq, r,
+                                            recovery, option),
+            inputs={"notional": notional, "strike_spread": strike_spread,
+                    "current_spread": current_spread, "sigma": sigma,
+                    "T_opt": T_opt, "T_index": T_index, "freq": freq, "r": r,
+                    "recovery": recovery, "option": option},
+            snapshot=snapshot, user_action="Price CDS index option", value_key="price")
+
+    def price_term_deposit(self, notional, deposit_rate, T, r, basis="simple",
+                           deposit=True, snapshot=None) -> dict:
+        """Money-market term deposit / loan (simple/continuous accrual)."""
+        from instruments.money_market import term_deposit
+        return self._priced(
+            model_id="term_deposit", calculation_type="term_deposit_pricing",
+            engine=lambda: term_deposit(notional, deposit_rate, T, r, basis,
+                                        deposit),
+            inputs={"notional": notional, "deposit_rate": deposit_rate, "T": T,
+                    "r": r, "basis": basis, "deposit": deposit},
+            snapshot=snapshot, user_action="Price term deposit", value_key="npv")
+
     # ── Equity exotics ────────────────────────────────────────────────
     def price_barrier_option(self, S, K, H, T, r, sigma, q=0.0, opt="call",
                              barrier_type="down-out", rebate=0.0, snapshot=None) -> dict:

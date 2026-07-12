@@ -13,6 +13,9 @@ FX instruments:
 import numpy as np
 from models.black_scholes import garman_kohlhagen
 from instruments.barrier import single_barrier, barrier_mc
+from instruments.digital import asset_or_nothing, cash_or_nothing
+from instruments.asian import arithmetic_asian, geometric_asian_discrete
+from instruments.lookback import fixed_lookback, floating_lookback
 
 
 # ─────────────────────────────────────────────────────────
@@ -212,6 +215,48 @@ def fx_barrier(S: float, K: float, H: float, T: float,
         res = single_barrier(S, K, H, T, r_d, sigma, r_f, opt, barrier_type, rebate)
     else:
         res = barrier_mc(S, K, H, T, r_d, sigma, r_f, opt, barrier_type, rebate)
+    res["premium_domestic"] = res["price"] * notional
+    return res
+
+
+# ─────────────────────────────────────────────────────────
+# FX exotics: digital / asian / lookback (Этап 5)
+# GK carry — доменный движок вызывается с r=r_d, q=r_f.
+# ─────────────────────────────────────────────────────────
+
+def fx_digital(S: float, K: float, T: float, r_d: float, r_f: float,
+               sigma: float, opt: str = "call", style: str = "cash",
+               cash: float = 1.0, notional: float = 1_000_000) -> dict:
+    """FX digital (cash/asset-or-nothing), GK carry q=r_f."""
+    if style == "asset":
+        res = asset_or_nothing(S, K, T, r_d, sigma, r_f, opt)
+    else:
+        res = cash_or_nothing(S, K, T, r_d, sigma, r_f, opt, cash)
+    res["premium_domestic"] = res["price"] * notional
+    return res
+
+
+def fx_asian(S: float, K: float, T: float, r_d: float, r_f: float,
+             sigma: float, opt: str = "call", averaging: str = "arithmetic",
+             n: int = 12, n_sims: int = 50_000,
+             notional: float = 1_000_000) -> dict:
+    """FX Asian (arithmetic MC / geometric closed form), GK carry q=r_f."""
+    if averaging == "geometric":
+        res = geometric_asian_discrete(S, K, T, r_d, sigma, r_f, n, opt)
+    else:
+        res = arithmetic_asian(S, K, T, r_d, sigma, r_f, n, opt, n_sims)
+    res["premium_domestic"] = res["price"] * notional
+    return res
+
+
+def fx_lookback(S: float, T: float, r_d: float, r_f: float, sigma: float,
+                opt: str = "call", strike_type: str = "floating",
+                K: float = None, notional: float = 1_000_000) -> dict:
+    """FX lookback (floating/fixed strike), GK carry q=r_f."""
+    if strike_type == "fixed":
+        res = fixed_lookback(S, K, T, r_d, sigma, r_f, opt)
+    else:
+        res = floating_lookback(S, T, r_d, sigma, r_f, opt)
     res["premium_domestic"] = res["price"] * notional
     return res
 
