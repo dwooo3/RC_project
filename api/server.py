@@ -9,9 +9,10 @@ Endpoints
     GET  /pricing/catalogue  the universal pricer catalogue (products x engines)
     POST /pricing/price      {"product","engine","params"} -> normalized result
 
-The engine runs with `allow_analytics_lab=True` so research models (Heston, Merton)
-return a governed result with their lab-status warnings rather than a hard block —
-the client surfaces the status so nothing is silently treated as production-grade.
+The engine runs in an explicitly analytical mode: Analytics-Lab and other
+non-production models may return governed results with status warnings, while
+their ``production_allowed`` metadata remains false. Service defaults stay
+fail-closed.
 """
 
 from __future__ import annotations
@@ -55,7 +56,11 @@ app.add_middleware(
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
 
-_svc = PricingService(allow_analytics_lab=True, audit=CONTEXT.audit)
+_svc = PricingService(
+    allow_analytics_lab=True,
+    allow_non_production_models=True,
+    audit=CONTEXT.audit,
+)
 
 
 class WsPriceRequest(BaseModel):
@@ -523,18 +528,25 @@ def portfolio_books() -> dict:
 # ── trade capture: workstation -> persistent book ────────
 @app.post("/portfolio/add")
 def portfolio_add(req: WsCaptureRequest) -> dict:
-    mapped = pricing_workstation.to_position(req.product, req.params)
+    try:
+        quantity = pricing_workstation.portfolio_quantity(req.quantity)
+        mapped = pricing_workstation.to_position(
+            req.product, req.params, engine_id=req.engine)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if mapped is None:
         raise HTTPException(status_code=400,
                             detail=f"'{req.product}' не поддерживается портфельной переоценкой")
+    resolved_engine = pricing_workstation.portfolio_repricing_engine(req.product)
     instrument, params, default_desc = mapped
     pos = CONTEXT.add_position(instrument, params,
-                               req.description or default_desc, req.quantity)
+                               req.description or default_desc, quantity)
     try:
         CONTEXT.portfolio.price_all()
     except Exception:
         pass
     return jsonable({"position_id": pos.id, "instrument": pos.instrument,
+                     "engine": resolved_engine,
                      "description": pos.description, "quantity": pos.quantity,
                      "market_value": pos.market_value,
                      "positions": len(CONTEXT.portfolio.positions)})

@@ -87,12 +87,12 @@ def test_eod_job_runs_all_sources_and_builds_snapshot():
     assert s["equity_quotes"] == 1 and s["vol_surface"] == 1
     assert s["index:IMOEX"] == 1 and s["equity:SBER"] == 1
     assert s["cbr_key_rate"] == 1 and s["cbr_ruonia"] == 1
-    assert s["ruonia_ois"] == 5 and s["ruonia_ois_cbonds"] == 10
+    assert s["ruonia_ois"] == 5 and s["ruonia_ois_cbonds"] == 0
     snap = summary["snapshot"]
     assert snap["source"] == "MOEX" and snap["quality"] == "OK"
     assert "GCURVE_RUB" in snap["curves"]
     assert "KEYRATE_RUB" in snap["curves"] and "RUONIA_RUB" in snap["curves"]
-    assert "RUONIA-OIS-CBONDS" in snap["curves"]
+    assert "RUONIA-OIS-CBONDS" not in snap["curves"]  # no future manual capture
     assert "SBER_FORTS" in snap["vol_surfaces"]
 
 

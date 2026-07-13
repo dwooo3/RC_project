@@ -4,18 +4,39 @@ import Observation
 
 // MARK: - Models (GET /marketrisk, /marketrisk/backtest)
 
+struct MREvtXiPoint: Decodable, Sendable, Hashable {
+    let thresholdPct: Double
+    let xi: Double
+
+    enum CodingKeys: String, CodingKey {
+        case xi
+        case thresholdPct = "threshold_pct"
+    }
+}
+
 struct MRMethod: Decodable, Sendable, Identifiable, Hashable {
     let method: String
     let label: String
     let modelID: String
     let varValue: Double
-    let es: Double
+    let es: Double?
+    let confidence: Double?
+    let thresholdPct: Double?
+    let xi: Double?
+    let nExceedances: Int?
+    let xiSpread: Double?
+    let xiGrid: [MREvtXiPoint]?
+    let warnings: [String]?
     var id: String { method }
 
     enum CodingKeys: String, CodingKey {
-        case method, label, es
+        case method, label, es, confidence, xi, warnings
         case modelID = "model_id"
         case varValue = "var"
+        case thresholdPct = "threshold_pct"
+        case nExceedances = "n_exceedances"
+        case xiSpread = "xi_spread"
+        case xiGrid = "xi_grid"
     }
 }
 
@@ -136,15 +157,20 @@ struct MRMonteCarlo: Decodable, Sendable {
     let corrEqRates5y: Double
     let corrEqFx: Double
     let note: String
+    let method: String?
+    let repriceErrors: [String]?
+    let factorWarnings: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case confidence, window, histogram, factors, note, es
+        case confidence, window, histogram, factors, note, es, method
         case nSims = "n_sims"
         case varValue = "var"
         case pnlMean = "pnl_mean"
         case pnlStd = "pnl_std"
         case corrEqRates5y = "corr_eq_rates5y"
         case corrEqFx = "corr_eq_fx"
+        case repriceErrors = "reprice_errors"
+        case factorWarnings = "factor_warnings"
     }
 }
 
@@ -255,16 +281,28 @@ final class MarketRiskViewModel {
     func run() async {
         isLoading = true
         errorMessage = nil
+        // Never leave a metric from the previous controls visible while a
+        // fail-closed repricing request is running (or after it fails).
+        overview = nil
+        backtest = nil
+        pca = nil
+        monteCarlo = nil
         do {
             async let ov = client.marketRisk(confidence: confidence, window: window,
                                              horizon: horizon, stress: stress,
                                              book: book, evtThreshold: evtThreshold)
             async let bt = client.marketRiskBacktest(confidence: confidence, window: window)
-            overview = try await ov
-            backtest = try await bt
+            let nextOverview = try await ov
+            let nextBacktest = try await bt
+            // Publish the governed pair only after both requests succeed, so
+            // a backtest failure cannot leave a partial overview visible.
+            overview = nextOverview
+            backtest = nextBacktest
             pca = try? await client.marketRiskPca(confidence: confidence, window: window)
             if books.isEmpty { books = (try? await client.portfolioBooks()) ?? [] }
         } catch {
+            overview = nil
+            backtest = nil
             errorMessage = error.localizedDescription
         }
         isLoading = false
@@ -273,8 +311,14 @@ final class MarketRiskViewModel {
     /// Matrix-transform Monte Carlo VaR (Cholesky joint factors + full reprice).
     func runMonteCarlo() async {
         isLoadingMC = true
-        monteCarlo = try? await client.marketRiskMonteCarlo(
-            confidence: confidence, window: window)
+        errorMessage = nil
+        monteCarlo = nil
+        do {
+            monteCarlo = try await client.marketRiskMonteCarlo(
+                confidence: confidence, window: window)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
         isLoadingMC = false
     }
 }
@@ -458,22 +502,40 @@ struct MarketRiskPane: View {
                 BlockTitle("VaR by method", icon: "list.number")
                 VStack(spacing: 4) {
                     ForEach(ov.methods) { m in
-                        HStack {
-                            Text(m.label).font(.system(size: 11)).lineLimit(1)
-                            Spacer()
-                            VStack(alignment: .trailing, spacing: 1) {
-                                Text(Fmt.money(m.varValue))
-                                    .font(.system(size: 12, weight: .semibold)).monospacedDigit()
-                                Text("ES \(Fmt.money(m.es))")
-                                    .font(.system(size: 9)).monospacedDigit()
-                                    .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(m.label).font(.system(size: 11)).lineLimit(1)
+                                Spacer()
+                                VStack(alignment: .trailing, spacing: 1) {
+                                    Text(Fmt.money(m.varValue))
+                                        .font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                                    Text("ES \(m.es.map { Fmt.money($0) } ?? "—")")
+                                        .font(.system(size: 9)).monospacedDigit()
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            if m.method == "evt" {
+                                let xi = m.xi.map { String(format: "%.3f", $0) } ?? "—"
+                                let spread = m.xiSpread.map { String(format: "%.3f", $0) } ?? "—"
+                                Text("ξ \(xi) · exceedances \(m.nExceedances ?? 0) · spread \(spread)")
+                                    .font(.system(size: 9)).foregroundStyle(.secondary)
+                                if let grid = m.xiGrid, !grid.isEmpty {
+                                    Text(grid.map {
+                                        "\(String(format: "%.0f", $0.thresholdPct * 100))%: \(String(format: "%.3f", $0.xi))"
+                                    }.joined(separator: " · "))
+                                    .font(.system(size: 9)).foregroundStyle(.tertiary)
+                                }
+                                ForEach(m.warnings ?? [], id: \.self) { warning in
+                                    Text("EVT: \(warning)")
+                                        .font(.system(size: 9)).foregroundStyle(Theme.warning)
+                                }
                             }
                         }
                         .padding(.vertical, 3)
                         if m.id != ov.methods.last?.id { Divider() }
                     }
                 }
-                Text("Один и тот же HypPL — пять методик: сравнение model risk по Calypso §2.3.")
+                Text("Один и тот же HypPL — \(ov.methods.count) методик: сравнение model risk по Calypso §2.3.")
                     .font(.system(size: 10)).foregroundStyle(.tertiary)
             }
         }
@@ -677,9 +739,9 @@ struct MarketRiskPane: View {
                         }
                         .frame(height: 180)
                         VStack(alignment: .leading, spacing: Theme.s2) {
-                            KeyValueRow(key: "MC VaR", value: Fmt.money(mc.varValue),
+                            KeyValueRow(key: "Matrix-MC VaR", value: Fmt.money(mc.varValue),
                                         valueColor: Theme.negative)
-                            KeyValueRow(key: "MC ES", value: Fmt.money(mc.es),
+                            KeyValueRow(key: "Matrix-MC ES", value: Fmt.money(mc.es),
                                         valueColor: Theme.warning)
                             KeyValueRow(key: "Симуляций", value: "\(mc.nSims)")
                             Divider()
@@ -689,6 +751,11 @@ struct MarketRiskPane: View {
                                         value: Fmt.number(mc.corrEqFx, digits: 2))
                         }
                         .frame(width: 300)
+                    }
+                    Text("Factors: \(mc.factors.joined(separator: ", "))")
+                        .font(.system(size: 9)).foregroundStyle(.tertiary)
+                    ForEach((mc.factorWarnings ?? []) + (mc.repriceErrors ?? []), id: \.self) { warning in
+                        Text(warning).font(.system(size: 9)).foregroundStyle(Theme.warning)
                     }
                     Text(mc.note).font(.system(size: 10)).foregroundStyle(.tertiary)
                 } else {

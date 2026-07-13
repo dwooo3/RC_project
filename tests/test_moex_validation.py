@@ -59,6 +59,20 @@ def test_assess_quality_stale():
     assert q == QUALITY_STALE
 
 
+def test_assess_quality_rejects_future_curve_observation():
+    q, warnings = assess_quality(
+        valuation_date=date(2026, 6, 4),
+        as_of=date(2026, 6, 5),
+        curve_errors=[],
+        fx_errors=[],
+        expected_components={"GCURVE_RUB", "FX"},
+        present_components={"GCURVE_RUB", "FX"},
+    )
+
+    assert q == QUALITY_REJECTED
+    assert any("after valuation" in warning for warning in warnings)
+
+
 def test_assess_quality_partial_on_missing_component():
     q, _ = assess_quality(valuation_date=date(2026, 6, 4), as_of=date(2026, 6, 4),
                           curve_errors=[], fx_errors=[],

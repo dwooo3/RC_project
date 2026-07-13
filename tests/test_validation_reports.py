@@ -38,3 +38,15 @@ def test_history_returned(db):
     hist = db.list_validation_reports(SID)
     assert len(hist) >= 1
     assert "status" in hist[0] and "validation_ts" in hist[0]
+
+
+def test_snapshot_mutation_invalidates_fingerprint_and_persists_new_report(db):
+    first = persist_quality_report(db, SID)
+    count = len(db.list_validation_reports(SID))
+
+    db.save_fx_rate(SID, "USD/RUB", 99.0)
+    second = persist_quality_report(db, SID)
+
+    assert (first["checks"]["snapshot_fingerprint"]
+            != second["checks"]["snapshot_fingerprint"])
+    assert len(db.list_validation_reports(SID)) == count + 1

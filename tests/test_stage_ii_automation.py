@@ -2,7 +2,7 @@
 Stage II — automation: app auto-connect to the real DB (best_available_snapshot),
 data-quality reporting, and the ISS smoke-test helpers. No network.
 """
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -25,8 +25,24 @@ def _seed_real_snapshot(db, sid="moex-2026-06-10", vdate="2026-06-10"):
     db.save_curve(sid, "RUONIA_RUB", method="cbr_flat", nss_params={}, as_of=vdate, points=pts)
     for pair, rate in (("USD/RUB", 71.7), ("EUR/RUB", 82.8), ("CNY/RUB", 10.6)):
         db.save_fx_rate(sid, pair, rate)
+    vol_observations = []
+    expiry = (date.fromisoformat(vdate) + timedelta(days=30)).isoformat()
     for i in range(120):
-        db.save_vol_point(sid, "Si", "2026-09-18", 70000 + i * 100, 0.4)
+        strike = 70000 + i * 100
+        db.save_vol_point(sid, "Si", expiry, strike, 0.4)
+        vol_observations.append({
+            "underlying": "Si", "expiry": expiry, "strike": strike,
+            "iv": 0.4, "forward": 76000.0, "tenor_days": 30,
+            "oi": 100.0, "observation_date": vdate,
+            "observation_status": "verified", "source": "MOEX_FORTS",
+            "method": "black76_settlement",
+            "option_price_date": vdate, "forward_date": vdate,
+            "option_price_source": "MOEX_FORTS_OPTION_SETTLEMENT",
+            "forward_source": "MOEX_FORTS_FUTURES_SETTLEMENT",
+            "option_price_basis": "settlement", "forward_basis": "settlement",
+        })
+    db.replace_vol_point_observations(sid, vol_observations)
+    db.save_time_series("IV30:Si", "vol", [(vdate, 0.4)])
     db.save_bond_quote(sid, {"secid": "SU26238RMFS4", "clean_price": 60.0,
                              "ytm": 0.15, "board": "TQOB"})
     db.save_snapshot_meta(snapshot_id=sid, valuation_date=vdate, source="MOEX",
@@ -73,6 +89,54 @@ def test_latest_snapshot_meta_filters_source():
     assert db.latest_snapshot_meta(source="BLOOMBERG") is None
 
 
+def test_production_accepts_fresh_snapshot_bound_to_current_report():
+    from infra.jobs.data_quality import persist_quality_report
+
+    today = date.today()
+    sid = f"moex-{today.isoformat()}"
+    db = MarketDataDB(":memory:")
+    _seed_real_snapshot(db, sid, today.isoformat())
+    report = persist_quality_report(db, sid, valuation_date=today)
+
+    assert report["status"] == "OK"
+    snap = MarketDataService(market_db=db, mode="production").moex_snapshot(today)
+    assert snap.snapshot_id == sid
+
+
+def test_production_rejects_snapshot_mutated_after_quality_report():
+    from infra.jobs.data_quality import persist_quality_report
+
+    today = date.today()
+    sid = f"moex-{today.isoformat()}"
+    expiry = (today + timedelta(days=30)).isoformat()
+    db = MarketDataDB(":memory:")
+    _seed_real_snapshot(db, sid, today.isoformat())
+    assert persist_quality_report(db, sid, valuation_date=today)["status"] == "OK"
+
+    db.save_vol_point(sid, "Si", expiry, 70000, 0.99)
+
+    with pytest.raises(Exception, match="no production MOEX snapshot"):
+        MarketDataService(market_db=db, mode="production").moex_snapshot(today)
+
+
+@pytest.mark.parametrize("offset", [-10, 7])
+def test_production_latest_rejects_stale_or_future_snapshot_at_runtime(offset):
+    from infra.jobs.data_quality import persist_quality_report
+
+    snapshot_day = date.today() + timedelta(days=offset)
+    sid = f"moex-{snapshot_day.isoformat()}"
+    db = MarketDataDB(":memory:")
+    _seed_real_snapshot(db, sid, snapshot_day.isoformat())
+    # The historical report was valid at its own run date.  It must not admit
+    # that payload indefinitely (or before its date) at today's runtime.
+    assert persist_quality_report(
+        db, sid, valuation_date=snapshot_day)["status"] == "OK"
+
+    with pytest.raises(Exception, match="no production MOEX snapshot"):
+        MarketDataService(
+            market_db=db, mode="production").best_available_snapshot()
+
+
 # ── Data-quality report ──────────────────────────────────
 
 def test_quality_report_complete_snapshot():
@@ -85,6 +149,8 @@ def test_quality_report_complete_snapshot():
     assert rep["staleness_days"] == 0
     assert rep["alerts"] == []
     assert rep["checks"]["vol_points"] >= 100
+    assert rep["checks"]["contract_version"].endswith("snapshot-binding-v3")
+    assert len(rep["checks"]["snapshot_fingerprint"]) == 64
 
 
 def test_quality_report_flags_missing_and_stale():

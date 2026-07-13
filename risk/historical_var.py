@@ -83,10 +83,10 @@ def hs_age_weighted(pnl: np.ndarray, confidence: float = 0.95,
         raise ValueError("decay must be between 0 and 1")
     pnl_h, horizon_method = overlapping_horizon_pnl(pnl, horizon)
     n = len(pnl_h)
-    # weights: most recent WINDOW (по дате конца окна) получает decay^0
-    k = np.arange(n-1, -1, -1)  # k=0 is most recent
+    # Weights are aligned with pnl_h's chronological order: the oldest window
+    # gets decay**(n-1), while the most recent window gets decay**0.
+    k = np.arange(n - 1, -1, -1)
     w = decay**k * (1-decay) / (1 - decay**n)
-    w = w[::-1]  # align with pnl order
 
     losses = -pnl_h
     var, cvar = _loss_var_es(losses, confidence, w)

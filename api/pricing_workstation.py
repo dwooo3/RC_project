@@ -22,6 +22,8 @@ exotics, multi-asset and structured products.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
+from numbers import Real
 from typing import Callable
 
 from api.instruments import CURVE_LABELS
@@ -51,6 +53,21 @@ def _floats(text) -> list[float]:
     if isinstance(text, (list, tuple)):
         return [float(x) for x in text]
     return [float(x) for x in str(text).replace(";", ",").split(",") if x.strip()]
+
+
+def _component_secids(text) -> list[str]:
+    """Parse a component identity schedule, accepting ``SECID:weight`` too."""
+    if text in (None, "", []):
+        return []
+    values = text if isinstance(text, (list, tuple)) else str(text).replace(";", ",").split(",")
+    out = []
+    for value in values:
+        if isinstance(value, dict):
+            value = value.get("secid") or value.get("id") or ""
+        secid = str(value).strip().split(":", 1)[0].strip()
+        if secid:
+            out.append(secid)
+    return out
 
 
 def _pairs(text) -> list[tuple[float, float]]:
@@ -1111,10 +1128,10 @@ PRODUCTS: list[WsProduct] = [
     WsProduct(
         "cds_index_option", "CDS Index Option", "credit", "Index",
         [_notional(10e6, "Notional"),
-         P("strike_spread", "Strike spread", 0.011, "contract", minimum=0.0,
+         P("strike_spread", "Strike spread", 0.011, "contract", minimum=1e-8,
            maximum=1.0),
          P("current_spread", "Current index spread", 0.011, "market",
-           minimum=0.0, maximum=1.0),
+           minimum=1e-8, maximum=1.0),
          P("sigma", "Spread vol", 0.5, "market", minimum=1e-3, maximum=3.0,
            help="лог-нормальная вол спреда (Black)"),
          P("T_opt", "Option expiry", 0.5, "contract", minimum=1e-3, maximum=10.0,
@@ -1283,7 +1300,9 @@ PRODUCTS: list[WsProduct] = [
     # ═══ MULTI-ASSET & STRUCTURED ═══════════════════════════════════
     WsProduct(
         "spread_option", "Spread Option", "hybrid", "Multi-asset",
-        [P("S1", "Spot 1", 100.0, "market", minimum=0.0),
+        [P("component_secids", "Component SECIDs", "", "market", dtype="schedule",
+           help="два SECID в порядке Spot 1, Spot 2 для granular VaR"),
+         P("S1", "Spot 1", 100.0, "market", minimum=0.0),
          P("S2", "Spot 2", 100.0, "market", minimum=0.0),
          P("K", "Strike", 5.0, "contract"),
          _mat(), _rate("r", "Rate r", 0.05),
@@ -1294,7 +1313,9 @@ PRODUCTS: list[WsProduct] = [
          P("q2", "Div yield 2", 0.0, "market", minimum=-1.0, maximum=1.0)],
         [E("spread", "Kirk closed form", model_id="multi_asset"),
          E("adi", params=engine_params("adi"))],
-        _spread),
+        _spread,
+        underlying={"categories": ["equities", "indices"], "fill": {},
+                    "append_to": "component_secids"}),
     WsProduct(
         "two_asset_option", "Two-Asset Option (ADI PDE)", "hybrid", "Multi-asset",
         [P("S1", "Spot 1", 100.0, "market", minimum=0.0),
@@ -1312,13 +1333,17 @@ PRODUCTS: list[WsProduct] = [
         _two_asset),
     WsProduct(
         "basket_option", "Basket Option", "hybrid", "Multi-asset",
-        [P("spots", "Spots (list)", "100,100,100", "market", dtype="schedule"),
+        [P("component_secids", "Component SECIDs", "", "market", dtype="schedule",
+           help="SECID каждого spot в том же порядке для granular VaR"),
+         P("spots", "Spots (list)", "100,100,100", "market", dtype="schedule"),
          P("weights", "Weights (list)", "0.4,0.3,0.3", "contract", dtype="schedule"),
          P("sigmas", "Vols (list)", "0.2,0.25,0.3", "market", dtype="schedule"),
          P("rho", "Pairwise corr ρ", 0.4, "market", minimum=-0.5, maximum=0.999),
          _strike(), _mat(), _rate("r", "Rate r", 0.05), _optype()],
         [E("multi_asset", "MC (Cholesky)")],
-        _basket_opt),
+        _basket_opt,
+        underlying={"categories": ["equities", "indices"], "fill": {},
+                    "append_to": "component_secids"}),
     WsProduct(
         "rainbow_option", "Rainbow (Best/Worst-of)", "hybrid", "Multi-asset",
         [P("spots", "Spots (list)", "100,95", "market", dtype="schedule"),
@@ -1745,11 +1770,35 @@ def price_ws(svc, snapshot, product_id: str, engine_id: str | None,
 
 
 # ── trade capture: workstation values -> portfolio Position ─────────
-# Only products PortfolioService can revalue are capturable; engine-specific
-# model params are dropped — the book reprices positions with its own default
-# engines (the workstation engine choice is a pricing view, not a trade term).
+# Only products PortfolioService can revalue are capturable. The canonical
+# portfolio engine is the product's first/default workstation engine; callers
+# that supply a different engine must be rejected instead of silently losing
+# the model choice during conversion to Position.
 def _n(v, key, default=0.0):
     return _num(v, key, default)
+
+
+def _fx_pair(v: dict) -> str:
+    """Resolve the risk-factor pair from explicit input or selected MOEX id."""
+    explicit = v.get("ccy_pair")
+    if explicit not in (None, ""):
+        return str(explicit)
+    secid = str(v.get("secid") or "").strip()
+    compact = "".join(ch for ch in secid.upper() if ch.isalnum())
+    direct = {
+        "USDRUB": "USD/RUB", "EURRUB": "EUR/RUB", "CNYRUB": "CNY/RUB",
+        "EURUSD": "EUR/USD",
+    }
+    for prefix, pair in direct.items():
+        if compact.startswith(prefix):  # e.g. EURRUB_TOM / CNYRUBTOD
+            return pair
+    # FORTS futures: SiU6 / EuU6 / CNYU6 -> strip month and year suffix.
+    root = compact[:-2] if (len(compact) >= 3 and compact[-1].isdigit()
+                             and compact[-2] in "FGHJKMNQUVXZ") else compact
+    return {
+        "SI": "USD/RUB", "EU": "EUR/RUB", "CNY": "CNY/RUB",
+        "ED": "EUR/USD",
+    }.get(root, "USD/RUB")
 
 
 TO_POSITION: dict[str, Callable[[dict], tuple[str, dict, str]]] = {
@@ -1781,12 +1830,15 @@ TO_POSITION: dict[str, Callable[[dict], tuple[str, dict, str]]] = {
         "S1": _n(v, "S1", 100), "S2": _n(v, "S2", 100), "K": _n(v, "K", 5),
         "T": _n(v, "T", 1), "r": _n(v, "r", .05), "sigma1": _n(v, "sigma1", .2),
         "sigma2": _n(v, "sigma2", .25), "rho": _n(v, "rho", .4),
-        "q1": _n(v, "q1", 0), "q2": _n(v, "q2", 0)}, "Spread option"),
+        "q1": _n(v, "q1", 0), "q2": _n(v, "q2", 0),
+        "component_secids": _component_secids(v.get("component_secids"))},
+        "Spread option"),
     "basket_option": lambda v: ("basket", {
         "assets": _floats(v.get("spots", "100,100,100")),
         "weights": _floats(v.get("weights", "0.4,0.3,0.3")),
         "K": _n(v, "K", 100), "T": _n(v, "T", 1), "r": _n(v, "r", .05),
         "sigmas": _floats(v.get("sigmas", "0.2,0.25,0.3")),
+        "component_secids": _component_secids(v.get("component_secids")),
         "corr": _corr_matrix(_n(v, "rho", .4),
                              len(_floats(v.get("spots", "100,100,100")))),
         "opt": v.get("opt", "call")}, "Basket option"),
@@ -1834,22 +1886,112 @@ TO_POSITION: dict[str, Callable[[dict], tuple[str, dict, str]]] = {
     "fx_forward": lambda v: ("fx_forward", {
         "S": _n(v, "S", 90), "K": _n(v, "forward_agreed", 0) or None,
         "r_d": _n(v, "r_d", .16), "r_f": _n(v, "r_f", .05), "T": _n(v, "T", 1),
-        "ccy_pair": "USD/RUB"}, "FX forward"),
+        "notional": _n(v, "notional", 1e6),
+        "ccy_pair": _fx_pair(v)}, "FX forward"),
 }
 
 
-def to_position(product_id: str, values: dict) -> tuple[str, dict, str] | None:
+def portfolio_repricing_engine(product_id: str,
+                               engine_id: str | None = None) -> str | None:
+    """Resolve and validate the engine reproducible by PortfolioService."""
+    if product_id not in TO_POSITION:
+        return None
+    product = find_product(product_id)
+    if product is None or not product.engines:
+        raise ValueError(f"no pricing engines configured for '{product_id}'")
+    engine_ids = [engine.id for engine in product.engines]
+    canonical = engine_ids[0]
+    if engine_id is None:
+        return canonical
+    if engine_id not in engine_ids:
+        raise ValueError(f"unknown engine '{engine_id}' for '{product_id}'")
+    if engine_id != canonical:
+        raise ValueError(
+            f"engine '{engine_id}' cannot be reproduced by the canonical "
+            f"portfolio repricer for '{product_id}'; use '{canonical}'")
+    return canonical
+
+
+def portfolio_quantity(value) -> float:
+    """Validate a capture/what-if quantity before it reaches valuation."""
+    if isinstance(value, bool):
+        raise ValueError("portfolio quantity must be a finite number")
+    try:
+        quantity = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("portfolio quantity must be a finite number") from exc
+    if not math.isfinite(quantity):
+        raise ValueError("portfolio quantity must be a finite number")
+    return quantity
+
+
+def _validate_finite_position_params(value, path: str = "params") -> None:
+    if value is None or isinstance(value, (str, bool)):
+        return
+    if isinstance(value, Real):
+        if not math.isfinite(float(value)):
+            raise ValueError(f"{path} must be finite")
+        return
+    if isinstance(value, dict):
+        for key, child in value.items():
+            _validate_finite_position_params(child, f"{path}.{key}")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            _validate_finite_position_params(child, f"{path}[{index}]")
+
+
+def to_position(product_id: str, values: dict,
+                engine_id: str | None = None) -> tuple[str, dict, str] | None:
     """Map workstation form values onto a portfolio position; None if the
-    product has no portfolio revaluation route yet."""
+    product has no portfolio revaluation route yet. When supplied, ``engine``
+    is validated against the canonical engine used for portfolio repricing."""
     fn = TO_POSITION.get(product_id)
     if fn is None:
         return None
+    portfolio_repricing_engine(product_id, engine_id)
     inst, params, desc = fn(values)
+    if inst in ("spread", "basket"):
+        expected = 2 if inst == "spread" else len(params.get("assets") or [])
+        component_secids = params.get("component_secids") or []
+        if component_secids and len(component_secids) != expected:
+            raise ValueError(
+                f"{product_id} requires {expected} component SECIDs; "
+                f"got {len(component_secids)}")
+        canonical_secids = [secid.casefold() for secid in component_secids]
+        if component_secids and len(set(canonical_secids)) != len(component_secids):
+            raise ValueError(
+                f"{product_id} component SECIDs must be unique for factor attribution")
+        if inst == "basket":
+            n_assets = len(params.get("assets") or [])
+            if len(params.get("weights") or []) != n_assets:
+                raise ValueError("basket assets and weights must have equal length")
+            if len(params.get("sigmas") or []) != n_assets:
+                raise ValueError("basket assets and sigmas must have equal length")
+    # Retain factor identity supplied by underlying selection / what-if input.
+    # Without it incremental VaR silently falls back to IMOEX or USD/RUB.
+    if values.get("secid") not in (None, ""):
+        params["secid"] = str(values["secid"])
+    if values.get("ccy_pair") not in (None, ""):
+        params["ccy_pair"] = str(values["ccy_pair"])
+    # Preserve selected market-data provenance even where the current
+    # portfolio repricer intentionally freezes the resolved numeric input.
+    # Exact historical curve/surface-node routing is a separate MR-4 step;
+    # dropping the identity here would make that step impossible to audit.
+    for key, sentinels in {
+        "vol_surface_id": {MANUAL_VOL},
+        "curve_id": {FLAT_CURVE},
+        "proj_curve_id": {PROJ_AS_DISC},
+    }.items():
+        value = values.get(key)
+        if value not in (None, "") and value not in sentinels:
+            params[key] = str(value)
     # fx_forward: an unset agreed rate means "strike at today's fair forward"
     if inst == "fx_forward" and params.get("K") is None:
         import math as _math
         params["K"] = params["S"] * _math.exp(
             (params["r_d"] - params["r_f"]) * params["T"])
+    _validate_finite_position_params(params)
     return inst, params, desc
 
 

@@ -115,7 +115,8 @@ class AppContext:
         if self._portfolio is None:
             try:
                 self._portfolio = PortfolioService.load_from_db(
-                    self.app_db, self._BOOK_ID, audit=self.audit)
+                    self.app_db, self._BOOK_ID, market_data=self.market,
+                    audit=self.audit, snapshot=self.snapshot)
                 if not self._portfolio.positions:
                     raise KeyError("empty book")
             except Exception:
@@ -123,7 +124,8 @@ class AppContext:
         return self._portfolio
 
     def _demo_book(self) -> PortfolioService:
-        ps = PortfolioService(audit=self.audit)
+        ps = PortfolioService(market_data=self.market, audit=self.audit,
+                              snapshot=self.snapshot)
         ps.portfolio.portfolio_id = self._BOOK_ID
         ps.portfolio.name = "Bridge book"
         for spec in _DEMO_POSITIONS:
@@ -146,7 +148,8 @@ class AppContext:
                   and (not currency or p.currency == currency)]
         import copy
         filtered = PortfolioService(market_data=ps.market_data,
-                                    pricing=ps.pricing, audit=self.audit)
+                                    pricing=ps.pricing, audit=self.audit,
+                                    snapshot=ps.snapshot)
         filtered.portfolio.portfolio_id = (
             f"{self._BOOK_ID}:{book or '*'}/{instrument or '*'}/{currency or '*'}")
         filtered.portfolio.name = f"Срез книги ({len(subset)} позиций)"

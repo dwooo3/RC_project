@@ -30,4 +30,6 @@ jobs:
         env:
           # PySide6 widgets construct headlessly under the offscreen platform.
           QT_QPA_PLATFORM: offscreen
-        run: pytest -q
+        run: |
+          python scripts/validation_program.py --run
+          pytest -q -W error::RuntimeWarning

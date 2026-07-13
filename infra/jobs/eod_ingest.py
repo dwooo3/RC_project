@@ -12,7 +12,7 @@ EOD for one valuation date (e.g. 2026-06-02).
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from infra.cbr.ingest import CbrIngestor
 from infra.db.market_data_db import MarketDataDB
@@ -36,36 +36,156 @@ class EodIngestJob:
         self.indices = list(indices if indices is not None else DEFAULT_INDICES)
         self.equities = list(equities if equities is not None else DEFAULT_EQUITIES)
 
-    def _iv_history(self, sid: str, valuation_date: date) -> int:
-        """ATM IV per underlying -> time_series ``IV:{code}`` (kind='vol').
+    def publish_iv30(self, sid: str, valuation_date: date) -> dict:
+        """Publish governed 30-calendar-day ATM-forward IV histories.
 
-        ATM = медиана IV точек ближайшей экспирации в центральной трети
-        страйков; сырые vol_points уже отфильтрованы ингестором. Через
-        несколько месяцев накопится собственная история вег вместо RVI-прокси.
+        ``IV30:{underlying}`` is deliberately separate from the old
+        nearest-expiry ``IV:{underlying}`` series, so a methodology change
+        cannot masquerade as a market shock.  Publication is fail-closed by
+        trading date and uses only primary Black-76 settlement observations.
         """
-        import statistics
+        from infra.moex_iss.vol_surface import (
+            PRIMARY_IV_METHOD,
+            iv30_representative,
+            primary_iv_provenance_error,
+            vol_lineage_diagnostics,
+        )
 
-        rows = self.db._query(  # noqa: SLF001 — internal job, same package
-            "SELECT underlying, expiry, strike, iv FROM vol_points "
-            "WHERE snapshot_id = ?", (sid,))
-        by_und: dict[str, list] = {}
-        for r in rows:
-            if r["iv"] and 0.01 < float(r["iv"]) < 3.0:
-                by_und.setdefault(r["underlying"], []).append(r)
-        saved = 0
-        for und, pts in by_und.items():
-            nearest = min(p["expiry"] for p in pts)
-            slice_pts = sorted((p for p in pts if p["expiry"] == nearest),
-                               key=lambda p: p["strike"])
-            if len(slice_pts) < 3:
+        result: dict = {
+            "status": "skipped",
+            "saved": 0,
+            "target_days": 30,
+            "snapshot_id": sid,
+            "valuation_date": valuation_date.isoformat(),
+            "source": "MOEX_FORTS_SETTLEMENT",
+            "method": "atm_forward_total_variance_30d",
+            "underlyings": {},
+            "rejected": {},
+            "warnings": [],
+        }
+
+        def revoke(reason: str) -> dict:
+            self.db.replace_iv30_for_date(valuation_date, {})
+            result["reason"] = reason
+            result["quality_counts"] = {"OK": 0, "WARN": 0, "rejected": 0}
+            return result
+
+        if valuation_date.weekday() >= 5:
+            return revoke("valuation_date_is_not_a_trading_weekday")
+
+        manifest = self.db.get_snapshot_meta(sid)
+        if manifest is None:
+            return revoke("snapshot_manifest_missing")
+        try:
+            raw_manifest_date = str(manifest["valuation_date"]).strip()
+            manifest_date = (
+                date.fromisoformat(raw_manifest_date)
+                if len(raw_manifest_date) == 10
+                else datetime.fromisoformat(
+                    raw_manifest_date.replace("Z", "+00:00")
+                ).date()
+            )
+        except (KeyError, TypeError, ValueError):
+            return revoke("snapshot_manifest_date_invalid")
+        if manifest_date != valuation_date:
+            return revoke("snapshot_manifest_date_mismatch")
+        if str(manifest.get("source") or "").upper() != "MOEX":
+            return revoke("snapshot_manifest_source_not_governed")
+        if str(manifest.get("quality") or "").upper() != "OK":
+            return revoke("snapshot_manifest_quality_not_ok")
+
+        raw_points = self.db.get_vol_points(sid)
+        rows = self.db.get_vol_point_observations(sid)
+        if not raw_points:
+            return revoke("no_raw_vol_surface")
+        if not rows:
+            return revoke("no_vol_point_provenance")
+        lineage = vol_lineage_diagnostics(raw_points, rows)
+        if not lineage["payload_match_complete"]:
+            result["lineage"] = {
+                "key_coverage_complete": lineage["key_coverage_complete"],
+                "invalid_raw_payloads": lineage["invalid_raw_payloads"],
+                "invalid_observation_payloads": (
+                    lineage["invalid_observation_payloads"]),
+                "iv_value_mismatch_keys": lineage["iv_value_mismatch_keys"],
+            }
+            return revoke("raw_provenance_payload_mismatch")
+
+        by_underlying: dict[str, list[dict]] = {}
+        for row in rows:
+            by_underlying.setdefault(str(row.get("underlying") or "UNKNOWN"), []).append(row)
+
+        publishable: dict[str, float] = {}
+        for underlying, all_points in sorted(by_underlying.items()):
+            points = [row for row in all_points
+                      if row.get("method") == PRIMARY_IV_METHOD]
+            if not points:
+                result["rejected"][underlying] = {
+                    "reason": "no_primary_black76_observations",
+                }
                 continue
-            third = max(len(slice_pts) // 3, 1)
-            central = slice_pts[third:len(slice_pts) - third] or slice_pts
-            atm_iv = statistics.median(float(p["iv"]) for p in central)
-            self.db.save_time_series(f"IV:{und}", "vol",
-                                     [(valuation_date.isoformat(), atm_iv)])
-            saved += 1
-        return saved
+            provenance_errors = [
+                primary_iv_provenance_error(row, valuation_date)
+                for row in points
+            ]
+            provenance_errors = [error for error in provenance_errors if error]
+            if provenance_errors:
+                reasons = sorted(set(provenance_errors))
+                reason = (
+                    "observation_date_not_verified"
+                    if "observation_date_not_verified" in reasons
+                    else "observation_date_mismatch"
+                    if "observation_date_mismatch" in reasons
+                    else reasons[0]
+                )
+                result["rejected"][underlying] = {
+                    "reason": reason,
+                    "provenance_errors": reasons,
+                }
+                continue
+            representative = iv30_representative(points, valuation_date)
+            if not representative.get("accepted"):
+                result["rejected"][underlying] = representative
+                continue
+            if representative.get("quality") != "OK":
+                result["rejected"][underlying] = {
+                    **representative,
+                    "reason": "representative_not_production_quality",
+                }
+                result["warnings"].extend(
+                    f"{underlying}: {warning}"
+                    for warning in representative.get("warnings", []))
+                continue
+            factor_id = f"IV30:{underlying}"
+            publishable[underlying] = representative["value"]
+            result["underlyings"][underlying] = {
+                "factor_id": factor_id,
+                **representative,
+            }
+            result["warnings"].extend(
+                f"{underlying}: {warning}"
+                for warning in representative.get("warnings", []))
+
+        # One commit both revokes stale same-date values and publishes the
+        # representatives that survived every provenance/methodology gate.
+        self.db.replace_iv30_for_date(valuation_date, publishable)
+        result["saved"] = len(publishable)
+        if result["saved"]:
+            result["status"] = "partial" if result["rejected"] else "ok"
+        else:
+            result["reason"] = "no_publishable_iv30_observations"
+        result["quality_counts"] = {
+            "OK": sum(row.get("quality") == "OK"
+                      for row in result["underlyings"].values()),
+            "WARN": sum(row.get("quality") == "WARN"
+                        for row in result["underlyings"].values()),
+            "rejected": len(result["rejected"]),
+        }
+        return result
+
+    def _iv_history(self, sid: str, valuation_date: date) -> dict:
+        """Backward-compatible alias for the public snapshot publisher."""
+        return self.publish_iv30(sid, valuation_date)
 
     def run(self, valuation_date: date | None = None) -> dict:
         valuation_date = valuation_date or date.today()
@@ -91,9 +211,6 @@ class EodIngestJob:
         step("equity_quotes", lambda: moex.ingest_equity_quotes(sid, valuation_date))
         # Stage I.5: self-implied option vol surfaces
         step("vol_surface", lambda: moex.ingest_option_vol_surface(sid, valuation_date))
-        # Stage I.5b: accumulate per-underlying ATM IV history (IV:{code}) —
-        # own vega factors for historical VaR (пока в VaR RVI-прокси)
-        step("iv_history", lambda: self._iv_history(sid, valuation_date))
         for idx in self.indices:
             step(f"index:{idx}",
                  lambda idx=idx: moex.ingest_index_history(idx, valuation_date, valuation_date))
@@ -125,8 +242,10 @@ class EodIngestJob:
 
         # cbonds RUONIA OIS reference curve (manual capture) for cross-validation.
         def _cbonds_ruonia():
-            from infra.cbonds import ingest_cbonds_ruonia_ois
-            return ingest_cbonds_ruonia_ois(self.db, sid)
+            from infra.cbonds import CBONDS_AS_OF, ingest_cbonds_ruonia_ois
+            if CBONDS_AS_OF > valuation_date:
+                return 0
+            return ingest_cbonds_ruonia_ois(self.db, sid, as_of=CBONDS_AS_OF)
 
         step("ruonia_ois_cbonds", _cbonds_ruonia)
 
@@ -168,7 +287,11 @@ class EodIngestJob:
         step("dividends", _dividends)
 
         try:
-            snap = MarketDataService(market_db=self.db).moex_snapshot(valuation_date)
+            snap = MarketDataService(market_db=self.db).moex_snapshot(
+                valuation_date,
+                fallback_to_demo=False,
+                persist_manifest=True,
+            )
             summary["snapshot"] = {
                 "source": snap.source_value,
                 "quality": snap.quality,
@@ -177,6 +300,11 @@ class EodIngestJob:
             }
         except Exception as exc:
             summary["snapshot"] = {"error": str(exc)}
+
+        # Stage I.5b: publish governed constant-maturity history only after the
+        # authoritative snapshot manifest exists. Legacy IV:{code} remains
+        # untouched; the new methodology is published as IV30:{code}.
+        step("iv_history", lambda: self.publish_iv30(sid, valuation_date))
 
         # Stage II.2: compute + persist a validation report (MD-002) with alerts
         try:

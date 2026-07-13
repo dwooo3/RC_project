@@ -1,15 +1,141 @@
 # Проверка реализации инструкции Calypso risk/pricing
 
 **Дата исходной проверки:** 2026-07-09<br>
-**Дата актуализации:** 2026-07-10<br>
-**Проверенный HEAD:** `10d986a`<br>
+**Дата актуализации:** 2026-07-13<br>
+**Проверенная база:** `860308c`<br>
+**Проверенный diff:** corrective packs 1–5 + adversarial hardening + bounded MR-8B2 rollout slice<br>
 **Инструкция:** `/Users/dmitriykiselev/Downloads/calypso_risk_modules_models_detailed.md`<br>
 **Проект:** `/Users/dmitriykiselev/Library/Mobile Documents/com~apple~CloudDocs/Python/RC_project`<br>
-**Ограничение исходной проверки:** на 2026-07-09 код проекта не изменялся; был создан только этот отчет. При актуализации проверены последующие правки, сам код не менялся.
+**Ограничение исходной проверки:** на 2026-07-09 код проекта не изменялся; был создан только этот отчет. При первой актуализации 2026-07-13 код также только проверялся. После команды начать реализацию внесены описанные ниже corrective packs 1–5, затем выполнены adversarial hardening и безопасный read-only срез MR-8B2.
 
-## Актуализация после правок от 2026-07-10
+## Актуализация текущего статуса от 2026-07-13
 
-### Актуальный вывод
+Эта секция является текущим статусом проекта и заменяет вывод актуализации от 2026-07-10 ниже. Проверены изменения этапов 3–5 (`4465ea4..860308c`), затем реализованы и повторно проверены пять corrective-пакетов Market Risk/governance/pricing/EOD, snapshot atomicity/certification hardening и bounded MR-8B2 rollout slice.
+
+### Текущий вывод
+
+Проект существенно расширился, а пять корректирующих пакетов и последующий hardening реализованы и провалидированы. Пакет 4 довёл исполняемую часть MR-4: активный snapshot привязан к основной и фильтрованной книге; именованные discount/projection curves реально участвуют в valuation/full reprice, а cashflow ниже или выше native tenor support отклоняется. Узловая именованная vol surface разрешается только внутри калиброванной K/T-области — silent clipping/extrapolation и thin-surface median запрещены; параметризации `flat` и `rr_bf` следуют собственному контракту без узловой K/T-границы. Spread/basket получили component Delta/Gamma/Vega, именованные exposures и component P&L attribution; неоднозначные duplicate IDs отклоняются.
+
+Пакет 5 реализовал первый production-oriented срез MR-4B. Для каждой именованной discount/projection curve исторические сценарии теперь строятся из её собственных snapshot-bound grids по фактической `as_of`-дате и используют все native tenors плюс canonical tenors внутри полного native support: глобальная cubic-интерполяция не допускает локального усечения узлов. Маршрутизация разделена через Historical/h-day, Matrix-MC, incremental, P&L Explain и `RiskService`; неполная история, конфликт двух snapshots за дату, смена методологии или неподдержанный первый/последний cashflow отклоняются. Общий RUB KBD proxy разрешён только legacy scalar-rate позициям и больше не подменяет named curve. Именованная FORTS surface получает position-specific sticky-strike/constant-maturity total-variance move из проверенного point provenance; отсутствующий день, K/T вне support или невалидный lineage отклоняются без IV30/RVI proxy. Это ещё не полная динамика каждого strike/expiry node и не key-rate/smile attribution.
+
+Политика переоценки стала fail-closed на уровне producer и всех Market Risk consumers: partial/error/non-finite valuation не попадает в HypPL, VaR/ES, Matrix-MC, backtest, incremental или P&L Explain. Dual-curve IRS DV01 и cap/floor vega теперь считаются на согласованных discount+projection curves. Swift очищает stale metrics до запроса и публикует overview/backtest только атомарной успешной парой.
+
+EOD формирует отдельный `IV30:{underlying}` как ATM-forward 30-calendar-day IV: smile-интерполяция по `log(K/F)=0`, затем total-variance interpolation по сроку; exact/nearest также проходят calendar-variance guard. Option и forward даты/source/basis хранятся раздельно и проходят whitelist. Raw surface + provenance, а также publish/revoke IV30 за дату заменяются атомарно; representative с `WARN` теперь вообще не публикуется в canonical IV30. Quality gate требует 1:1 point keys и IV30 для каждого underlying. Offline operational job детерминированно переиздаёт IV30 из сохранённых snapshots и проверяет master calendar, full-window universe, contiguous shocks, stress/freshness/look-ahead, duplicate snapshots, raw↔provenance lineage и canonical equality. Локальный rebuild остаётся диагностическим контуром; production consumers дополнительно требуют актуальный per-snapshot validation report.
+
+Production snapshot/readiness теперь защищены от torn reads: `MoexProvider`, Market Risk `factor_shifts`, quality/fingerprint и IV30 readiness/accessor читают связанный multi-table bundle в одной транзакции (`BEGIN` для SQLite; `REPEATABLE READ READ ONLY` для PostgreSQL). Контракт `2026-07-13.snapshot-binding-v3` связывает validation report с manifest, curve headers/points, FX, raw/provenance vol, bonds и same-day canonical IV30. Production принимает только текущий `OK + production_eligible` report с совпадающим fingerprint и повторно проверяет runtime quality. Любая последующая мутация данных делает certification неактуальной и блокирует consumer.
+
+MR-8B2 частично реализован безопасным read-only срезом: `run_iv30_readiness.py check` и `schedule-status` имеют стабильный JSON-контракт и exit codes `0/2/64/70`; production gate требует `source=MOEX`, явный непустой календарь и фиксированную universe. SQLite открывается `mode=ro + query_only`, без migrations; активный WAL без существующего `-shm` отклоняется. CLI не публикует IV30 и не запускает scheduler. PostgreSQL получил DSN factory и идемпотентную additive migration, но реальный серверный round-trip ещё не выполнен.
+
+Validation-gate повторно зелёный для `113/113` Validated-моделей и включён в CI. Проект всё ещё **не готов к production sign-off**: code routing для собственных curve/surface histories теперь есть и fail-closed, но в активной БД достаточную глубину имеет главным образом `GCURVE_RUB`; большинство остальных curves имеют лишь 5–11 observation dates, а governed surface provenance и `IV30:*` отсутствуют. Legacy GCURVE history математически читается exact path, но `1,300/1,451` headers и `13,706` points остаются orphan без manifest/`snapshot_key`, поэтому production lineage требует официального MOEX replay/backfill, а не синтетического certification. Не реализованы полная strike/expiry node dynamics, rate-index/fixing/CSA и части index/credit/commodity факторов. Реальный PostgreSQL round-trip, внешний scheduler/live accumulation, governance metadata/sign-off, Stage 3–4 production-контур и capture новых Stage 5 продуктов также остаются незавершёнными.
+
+### Статус этапов 3–5
+
+| Блок | Текущий статус | Проверенная оценка |
+|---|---:|---|
+| A1 `PricingEnvironment` | **Частично закрыто** | Контракт, AppDB, REST, env picker и применение в `/pricing/price` есть. Но `surface_map`/`measures` не используются; env не применяется к grid/payoff/ladder/scenarios, Market Risk, APL/EOD/Stress; version history отсутствует. Это рабочий FO pricing MVP, а не сквозной valuation contour. |
+| A2 durable audit | **Частично закрыто** | Pricing/Portfolio/Risk/Governance используют общий persistent `AuditService`. Но Market Risk overview/MC/PCA/backtest/incremental/P&L explain не создают собственный `CalculationRecord`; import/delete APL и изменения environments также не аудируются. |
+| A4 books/trade filters | **Частично закрыто** | Есть book/instrument/currency slice, REST и book filter в Market Risk/UI. Metadata пустого среза исправлены: `positions=0`, value `0`. По-прежнему хранится один `bridge_book`, нет hierarchy/trader/trade-id. |
+| A3 Actual P&L / APL vs HypPL | **Частично закрыто** | Durable manual/CSV import, split/gap, APL backtest leg и UI реализованы. Official/live source, исторический состав книги, trade dates, coupons/fixings/exercise/maturity/corporate actions отсутствуют; lifecycle пока только warning. |
+| A5 disclosure допущений | **Закрыто как MVP UI/API** | Каталог показывает глобальные conventions и help, EVT threshold вынесен в параметр. Полный per-model assumptions sweep, provenance и audit изменений параметров еще не закрыты. |
+| A6 QuantLib benchmark-pack | **Частично закрыто** | Локально подтверждены `12` cross-benchmarks + coverage gate (`13/13` тестов): BSM, Black-76, GK, CRR, Heston, barrier, digital, lookback, Asian, bond и IRS. Нет внешних benchmark adapters для cap/floor, swaption, CDS, G2++, LMM/XVA; evidence не заполняет owner/date/references/sign-off в registry. |
+| Matrix-MC / EVT UI | **Закрыто как корректный MVP** | Matrix path остаётся отдельным on-demand endpoint/card и не смешан с fitted-normal MC в overview. Он использует `eq_names`/`vol_names`/`fx_pairs`, alias для USD/RUB и explicit factor routes. EVT ξ-grid/exceedances/spread/warnings доходят до API/UI; ES берётся из `CVaR`, infinite ES отображается как неопределённый. Остаток: book/stress/horizon controls ещё не проведены в Matrix-MC endpoint. |
+| Stage 5 products | **Частично закрыто** | Каталог: `50` продуктов, `100` engines. Добавлено 13 pricing workflows (FX exotics, equity linear/future/warrant, CDS index/option, ASW, deposit), но всего `16/50` продуктов capturable; ни один из новых 13 не имеет `TO_POSITION`/portfolio reprice workflow. |
+| Swift UI | **Проверено** | Environments, books, Matrix-MC и Actual P&L UI/decoders собраны; `CSVExport.save` изолирован через `@MainActor`, выбранный `secid` включён в capture/incremental payload. Market Risk очищает stale state и атомарно публикует overview/backtest. Строгая Swift 6 сборка: `19 tests`, `0 failures`, warnings отсутствуют. |
+
+### Текущая governance-статистика
+
+- registry: `122` модели = `113 Validated / 4 Approximation / 5 Prototype`;
+- executable `TEST_MAP` есть у `113/113` Validated; для последних `44` добавлены точные pytest node IDs (`90` направленных evidence-тестов), все селекторы собраны и исполнены;
+- пять новых Validated Stage 5 (`asset_swap`, `dividend_swap`, `equity_forward`, `equity_future`, `term_deposit`) теперь также имеют model-specific mapping;
+- `scripts/validation_program.py --run` выполняет дедуплицированный green path и при падении локализует результат по моделям; consistency + evidence gate включены в `.github/workflows/tests.yml` перед полным suite;
+- у моделей не заполнены назначенный owner, validation date и external references; общий quant review остается преимущественно `Open`;
+- `equity_swap`, `cds_index`, `cds_index_option`, `warrant` теперь получают `production_allowed=False`; default Pricing/Risk services блокируют их, аналитический bridge использует отдельный явный opt-in и сохраняет non-production metadata.
+
+Статус `Validated` по-прежнему следует читать как **internally tested**, а не как independent production approval.
+
+### Реализованные corrective packs 1–5 и adversarial hardening
+
+| Пункт | Статус после реализации | Направленное подтверждение |
+|---|---:|---|
+| Age-weighted HS | **Исправлено** | Старый экстремум: VaR `10`; тот же экстремум в свежем хвосте: VaR `100`. Ошибочный reverse весов удалён. |
+| Log/simple return convention | **Исправлено** | Исторический `log(1.1)` преобразуется через `expm1` и даёт ровно тот же P&L, что simple `+10%`, включая per-name/per-pair и второй `RiskService.full_reprice_var` path. |
+| Multi-day full revaluation и даты | **Исправлено для Market Risk HypPL** | Факторы сначала агрегируются, затем книга переоценивается один раз; дата — конец окна. Два дня `+10%`: nonlinear call `16.6186`, тогда как прежняя ошибочная сумма 1d P&L была `14.4247`. |
+| Futures risk (`F`) | **Исправлено для typed `instrument="future"`** | `F=100`, quantity `10`, multiplier `2`, shock `+10%` даёт P&L `200`, в simple и log-конвенциях. Bond/STIR futures не затронуты. |
+| P&L Explain equity/FX | **Исправлено** | Relative moves переводятся в absolute по spot каждой позиции; FX использует собственный `dfx`, per-name/per-pair карты доходят до attribution. Legacy absolute `dS` сохранён. |
+| Approximation production policy | **Исправлено** | Все четыре реальные Approximation имеют `production_allowed=False`; default service возвращает governed error, аналитический opt-in явный. Analytics-Lab invariant нельзя переопределить полями registry. |
+| Validation gate fail-closed | **Исправлено** | Missing mapping/file теперь `False`/exit `1`; runner использует текущий Python, `RuntimeWarning` как error и запускает evidence всех 113 Validated, а не исторические 108. Green path дедуплицирован и включён в CI. |
+| Empty book / unknown stress | **Исправлено** | Пустой/неизвестный book возвращает согласованные zero metadata; неизвестный stress-window отклоняется. Короткая backtest history также теперь fail-closed отдельным guard. |
+| Incremental VaR universe / engine | **Исправлено** | Factor universe строится один раз по base + what-if; base/union/solo получают одинаковые dates/factors и обходят обычный cache. `secid`/FX pair сохраняются, неизвестный или невоспроизводимый engine отклоняется и в incremental, и в `/portfolio/add`. |
+| Capture parity | **Исправлено для 16 существующих capturable routes** | FX forward сохраняет notional, contractual `K` и pair; legacy quantity-as-notional не умножается дважды. CDS сохраняет выбранный flat hazard. NaN/Inf и reprice errors больше не дают тихий NaN-VaR. |
+| Backtest / Kupiec guards | **Исправлено** | Backtest требует минимум `60` lookback + `20` out-of-sample, проверяет даты/finite HypPL; `n_obs=0` явно non-applicable. Kupiec отклоняет дробные counts и считает likelihood в log-space без underflow. |
+| Validation evidence | **Исправлено** | `113/113` mappings, последние `44` — node-level; evidence gate зелёный и включён в CI. |
+| Stage 5 pricer edge cases | **Исправлено** | `equity_swap` delta приведена к `0` для реализованной spot-independent par-start формулы; `cds_index_option` валидирует finite/positive spreads, sigma, сроки, frequency, recovery и option side. |
+| Swift actor isolation | **Исправлено** | `CSVExport.save` помечен `@MainActor`; strict warnings-as-errors build и `19/19` тестов зелёные. |
+| Typed multi-asset spot/vol | **Исправлено для capturable spread/basket** | Capture сохраняет aligned unique `component_secids`; basket list-поля больше не имеют нулевого shock effect, spread legs и basket components получают собственные `dS_by_name`/`dvol_by_name`, Delta/Gamma/Vega exposures и P&L attribution. Missing identity остаётся совместимым global-proxy fallback, но явно попадает в warnings; duplicate/colliding IDs отклоняются. |
+| Named curve dependencies | **Исправлено для current + historical routing** | Книга и book slices используют активный snapshot. `curve_id`/`proj_curve_id` разрешаются раздельно; current valuation и historical scenario получают exact curve map, scalar `r`/RUB KBD не применяются второй раз и не подменяют missing named history. Snapshot grids читаются по `as_of`; scenario map включает все native tenors и canonical tenors внутри полного native support. Неполный календарь, unsupported lower/upper cashflow, конфликт и method transition отклоняются. Dual-curve IRS DV01 согласован с joint 1bp FD. |
+| Named surface dependencies | **Частично исправлено: current + position history** | Current узловая `vol_surface_id` разрешает sigma по K/T без DEMO fallback; `flat`/`rr_bf` используют свой контракт. Historical scenario для FORTS surface теперь position-specific: verified provenance → sticky-strike + constant-maturity total variance без extrapolation и IV30/RVI proxy. Остаются отдельная covariance/routing каждого strike/expiry node и node-level smile/term attribution. |
+| Strict reprice policy | **Исправлено** | Producer и Historical/h-day, overview, backtest, Matrix-MC, incremental, P&L Explain и `RiskService.full_reprice_var` отвергают error/partial/invalid/non-finite результаты с scenario/date context. Неуспешные серии не кэшируются; Swift не оставляет stale/partial metrics. |
+| Dual-curve Greeks / P&L Explain | **Исправлено в поддержанном контуре** | IRS DV01 и cap/floor vega используют те же discount/projection curves, что и valuation. Exposure valuation fail-closed; P&L Explain full reprice получает полный KBD tenor shock. First-order rate attribution всё ещё aggregate-DV01, поэтому curve-shape/cross effects явно остаются в residual/warning. |
+| Per-underlying IV factor | **Исправлено на уровне routing/readiness** | `vol_names` строится по approved mapping и проходит через Historical/h-day/P&L Explain/Matrix-MC. Canonical `IV30:*` используется только как цельная сертифицированная v3-серия без splice с legacy `IV:*`; при отсутствии certification production consumer fail-closed. Только явно legacy scalar-vol path может остаться на диагностированном RVI/`IV:*` proxy. |
+| Matrix-MC granular routing | **Исправлено** | Базовые factor indices фиксированы явно; per-name equity, per-underlying vol и non-global FX добавляются в covariance matrix. Идентичные series становятся alias, поэтому USD/RUB не создаёт сингулярную duplicate-column. |
+| EVT API/UI contract | **Исправлено** | Overview переносит ξ, threshold grid, число превышений, ξ-spread и warnings. Исправлена подмена EVT ES: используется `CVaR`, а при `ξ≥1` возвращается `null`/«—». |
+| IV readiness | **Исправлено для Risk source selection** | Проверяются aligned endpoints, минимум `max(60, horizon+49)` daily shocks, полное покрытие requested window/stress period и текущая v3 certification каждого snapshot. `60` levels больше не считаются `60` shocks; короткая IV не укорачивает VaR window. |
+| EOD IV30 methodology / lineage | **Исправлено в коде; live history ещё не накоплена** | ATM-forward и 30D total-variance methodology, calendar guard, независимые даты/source/basis, whitelist, atomic raw+provenance replace и atomic IV30 publish/revoke реализованы. Representative `WARN` не публикуется; quality требует полного key/underlying coverage. |
+| IV30 operational readiness / MR-8B2 | **Bounded read-only slice реализован; внешний rollout открыт** | Offline job идемпотентно rebuild/revoke series; production readiness требует master-calendar/full-universe coverage, contiguous shock depth, stress/freshness, отсутствия look-ahead/duplicates, полного raw↔provenance lineage, canonical equality и current v3 validation fingerprint. CLI `check`/`schedule-status` только читает и выдаёт `0/2/64/70`. Внешний scheduler, live history и реальный PostgreSQL остаются открыты. |
+| Snapshot atomicity / PostgreSQL | **Исправлено контрактно; реальный сервер не проверен** | Multi-table production reads выполняются из одного DB snapshot. SQLite `mode=ro + query_only` сохраняет locking/change detection; WAL и rollback-journal regressions закрывают mixed-bundle. PostgreSQL первым statement задаёт `SET TRANSACTION ... REPEATABLE READ, READ ONLY`; unit и opt-in concurrent-writer test добавлены. Fresh/additive schema и atomic writes покрыты, но real-PG test пропущен без `RISKCALC_TEST_POSTGRES_DSN`. |
+| FX initial forward-fill | **Уточнено** | Sparse fixing grid инициализируется последней доступной фиксацией до начала окна; первый scenario больше не получает ложный zero/fallback только потому, что дата старта не была fixing day. |
+
+### Что остаётся открытым
+
+| Severity | Пункт | Остаток |
+|---|---|---|
+| **High** | Historical factor map | Exact named discount/projection curve history и position-specific FORTS surface history реализованы и fail-closed. Остаются самостоятельная динамика/covariance каждого strike/expiry surface node, rate-index/fixing/CSA, index/credit/commodity mappings и расширение governed identity beyond `{UNDERLYING}_FORTS`. Legacy scalar positions продолжают использовать RUB KBD/RVI по явному контракту; named dependencies ими больше не подменяются. |
+| **Medium** | Rate attribution | P&L Explain actual HypPL использует полный KBD tenor shock, но first-order rates effect остаётся aggregate DV01; curve-shape и cross effects попадают в явно описанный residual. Для полного explain нужны key-rate exposures по каждому curve role/node. |
+| **Medium / operational** | IV30 live rollout | Методология, lineage, atomicity, quality gate, offline rebuild и bounded read-only CLI закрыты в коде, но live gate всё ещё `not_ready`: только 1/5 required snapshots, `IV30:MIX` имеет 0 levels/shocks, provenance отсутствует, а report от 2026-07-08 не соответствует v3 contract/fingerprint. Нужны внешний scheduler, устойчивый trading-day EOD, накопление полного календаря и новые v3 reports. PostgreSQL контракты проверены локально, но не реальным server round-trip. |
+| **Medium** | Matrix-MC controls | Granular routing и EVT propagation закрыты; Matrix-MC endpoint пока считает полную книгу, rolling 1-day window и не принимает выбранные в UI book/stress/horizon controls. |
+| **High / governance** | Sign-off metadata | Исполняемый gate закрыт, но owner, validation date, references, tolerance matrix и независимый review остаются незаполненными; 101 Open и 14 Partially Validated quant-review записей требуют решения. |
+| **High** | Stage 3–4 production contour | PricingEnvironment, durable audit, APL/HypPL и books остаются MVP без сквозного env/versioning, официального P&L/lifecycle и полного calculation/config audit. |
+| **High** | Stage 5 capture | Все 13 новых pricing workflows по-прежнему не имеют `TO_POSITION`/portfolio repricing; PR-1 исправлен, но PR-2 открыт. |
+| **Low / UX** | Engine-aware capture UI | Backend корректно отклоняет неканонический engine, но `capturable` пока product-level: кнопка видна и пользователь получает controlled 400 вместо предварительно disabled state. |
+| **Low / test hygiene** | All-warnings mode | Штатный CI/full suite зелёный, а validation runner трактует `RuntimeWarning` как error. Более широкий `-W error` на Python 3.14 дополнительно поднимает legacy `ResourceWarning` из незакрытых файлов/SQLite connections; это не численный дефект пакета 4, но ресурсную гигиену тестов следует закрыть. |
+
+### Валидация 2026-07-13
+
+```text
+P0 + P1 directed regressions (-W error::RuntimeWarning): 269 passed
+Final atomicity / IV30 / provider / DB cluster: 100 passed, 1 skipped in 2.57s
+Validation evidence rerun: 113/113 Validated models green; registry consistency ok
+Full Python suite after all hardening: 1492 passed, 1 skipped in 638.97s
+The only skip: opt-in real PostgreSQL transaction/repeatability test (no RISKCALC_TEST_POSTGRES_DSN)
+QuantLib 1.42.1: 12 cross-benchmarks + coverage gate, 13/13 tests passed
+Swift 6 build/tests after final changes: 19 tests, 0 failures
+Validation program: consistency ok; --run green; CI gate enabled
+Python compileall and CI-critical Ruff rules: clean; strict whole-repo Ruff retains legacy style debt
+git diff --check: clean
+```
+
+Read-only live audit активной `data/market_data.sqlite` на 2026-07-13: `13` MOEX valuation dates (`2026-06-09..2026-07-08`). Последний snapshot `moex-2026-07-08` содержит `15` curves / `111` nodes, `1,013` raw vol nodes / `19` underlyings, `3,067` bonds, `497` equities и `3` FX; по всей БД — `11,593` raw vol nodes в `11` snapshots, но `vol_point_observations=0` и `IV30:* = 0`. Legacy IV имеет `185` points / `24` factors / максимум `11` dates. `GCURVE_RUB` имеет `1,257` полноценных observation dates с nodes (`2021-06-24..2026-07-07`) и покрывает текущую 501-level risk-сетку; ещё `54` holiday-placeholder headers без nodes теперь корректно игнорируются как не-наблюдения. Большинство прочих curves имеют лишь `5–11` полноценных dates, `RUONIA-OIS-CBONDS` — одну, а `RUONIA_RUB` меняет методику `cbr_flat → ois_bootstrap` и потому fail-closed на пересекающем переход окне. Поэтому новый exact named-curve path практически применим прежде всего к GCURVE и блокирует короткие/несогласованные histories; named-surface path сейчас закономерно блокируется отсутствием provenance.
+
+Lineage curve history также ещё не production-grade: `1,300/1,451` legacy curve headers и `13,706` points не имеют manifest/`snapshot_key`; активная bridge book состоит из четырёх scalar-позиций без `curve_id`, `proj_curve_id` или `vol_surface_id`. Математический exact path читает эту историю, но production governance требует официального MOEX replay/backfill. Прежняя read-only проверка `500 scenarios / 7 nodes` была выполнена до full-native hardening и больше не является текущим node-count evidence: активный GCURVE snapshot содержит 11 native nodes (`0.25, 0.5, 0.75, 1, 2, 3, 5, 7, 10, 15, 20Y`), а новая логика требует полный поддержанный набор. Same-date identical grids дедуплицируются; conflicts отклоняются.
+
+Quality, пересчитанный новым кодом, — `WARN`, completeness `80%`, `production_eligible=false`: отсутствуют provenance и все `19` IV30 последнего snapshot. Сохранённый старый report `OK/100%/true` создан прежним контрактом и не является актуальным evidence. Финальный read-only CLI (`2026-07-06..10`, `as_of=2026-07-13`) вернул `exit 2 / not_ready`: 5 expected dates, 1 stored, 4 missing (`06, 07, 09, 10 июля`), `IV30:MIX` — 0 levels/shocks; snapshot 08.07 имеет ungoverned lineage и failures `validation_contract_version_mismatch` + `validation_snapshot_fingerprint_mismatch`. Blockers: `missing_snapshot_dates`, `snapshot_iv30_lineage_not_governed`, `snapshot_validation_not_current`, `factor_coverage_or_depth_insufficient`. Для legacy scalar-vol позиций RVI остаётся явно диагностированным fallback; canonical IV30 consumers fail-closed. Технические `created_at/fetch_ts` сознательно не использованы как признак рыночной свежести.
+
+Python/QuantLib/Swift regressions и validation gate зелёные. Повторный Swift build/test после финального Python-suite прошёл `19/19`. CI-critical Ruff rules, compileall и `git diff --check` чисты; строгий Ruff по всему legacy-коду не является зелёным baseline и сохраняется как отдельный style debt.
+
+### Актуальный приоритет
+
+1. Продолжить MR-4B после закрытого exact curve/position-surface routing: добавить governed strike/expiry node dynamics и covariance, key-rate/smile attribution, rate-index/fixing/CSA, index/credit/commodity identities; расширять history только без proxy-подмены named dependencies.
+2. Подключить bounded IV30 readiness к внешнему production scheduler, накопить полный master calendar, выпустить актуальные v3 validation reports и провести реальный PostgreSQL round-trip/repeatability test; переход legacy scalar-vol позиций с RVI разрешать только после зелёного gate.
+3. Заполнить owner/date/references/tolerances, привязать QuantLib evidence к registry и провести решение по Open/Partially Validated review; executable evidence уже закрыто.
+4. Довести Stage 3–4 до сквозного контура: PricingEnvironment для Risk/EOD/VaR/Stress и всех pricing analytics, CalculationRecord для risk/config/APL mutations, official P&L/lifecycle и book hierarchy.
+5. Добавить portfolio capture/reprice для новых 13 products; провести book/stress/horizon controls в Matrix-MC, сделать capture control engine-aware и добавить Swift state-transition tests.
+6. Закрыть legacy ResourceWarning hygiene и после следующего пакета снова повторить полный Python/QuantLib/Swift suite перед изменением production status моделей.
+
+---
+
+## Предыдущая актуализация от 2026-07-10 (исторический срез)
+
+### Вывод на 2026-07-10
 
 Правки заметно продвинули проект: подтвержденные дефекты Christoffersen и basket moment matching исправлены, появился персистентный trade capture, Stress VaR, Incremental VaR, пятиузловой rate factor, per-name/per-pair wiring, overlapping horizons, matrix-transform MC endpoint и EVT diagnostics. Целевой regression-набор этапов 1–2 проходит полностью.
 

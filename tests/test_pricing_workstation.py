@@ -25,7 +25,10 @@ from services.pricing_service import PricingService
 
 @pytest.fixture(scope="module")
 def svc():
-    return PricingService(allow_analytics_lab=True)
+    return PricingService(
+        allow_analytics_lab=True,
+        allow_non_production_models=True,
+    )
 
 
 def _default_params(product, engine) -> dict:

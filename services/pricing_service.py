@@ -28,11 +28,13 @@ class PricingService:
         governance: GovernanceService | None = None,
         audit: AuditService | None = None,
         allow_analytics_lab: bool = False,
+        allow_non_production_models: bool = False,
     ):
         self.market_data = market_data or MarketDataService()
         self.governance = governance or GovernanceService()
         self.audit = audit or AuditService()
         self.allow_analytics_lab = allow_analytics_lab
+        self.allow_non_production_models = allow_non_production_models
 
     def _market_data_warnings(self, snapshot: MarketDataSnapshot | None) -> list[str]:
         if snapshot is None:
@@ -157,6 +159,7 @@ class PricingService:
         return self.governance.enforce_model(
             model_id,
             allow_analytics_lab=self.allow_analytics_lab,
+            allow_non_production=self.allow_non_production_models,
         )
 
     def price_vanilla_option(
@@ -505,6 +508,99 @@ class PricingService:
                 return (float(surface["median_vol"]),
                         "Vol surface too thin to calibrate a smile; using median vol.")
         raise ValueError(f"Unsupported vol surface object: {type(surface).__name__}")
+
+    def resolve_vol_surface(
+        self,
+        surface_id: str,
+        K: float,
+        T: float,
+        *,
+        S: float | None = None,
+        snapshot: MarketDataSnapshot | None = None,
+    ) -> tuple[float, str | None]:
+        """Resolve one governed strike/expiry node without a DEMO fallback.
+
+        Portfolio valuation uses this strict entry point because a captured
+        surface ID is an executable market-data dependency, not an optional
+        display label.  Scenario code may then apply a parallel vol move to the
+        resolved current node; historical surface-node dynamics remain a
+        separate methodology/data requirement.
+        """
+        if snapshot is None:
+            raise ValueError(
+                f"vol surface '{surface_id}' requires a bound market-data snapshot")
+        surface = self.market_data.get_vol_surface(surface_id, snapshot)
+        self._require_surface_support(surface_id, surface, K=float(K), T=float(T))
+        sigma, warning = self._vol_from_surface(surface, K, T, S=S)
+        sigma = float(sigma)
+        if not 0.0 < sigma < 5.0:
+            raise ValueError(
+                f"vol surface '{surface_id}' resolved invalid sigma {sigma}")
+        return sigma, warning
+
+    @staticmethod
+    def _require_surface_support(surface_id: str, surface, *, K: float, T: float) -> None:
+        """Reject implicit strike/tenor clipping or extrapolation.
+
+        Captured surface IDs are governed market-data dependencies.  The
+        underlying interpolators intentionally support display-friendly flat
+        extrapolation, but portfolio valuation must stay inside the calibrated
+        native strike/expiry support unless the object is explicitly declared
+        flat.
+        """
+        if K <= 0 or T <= 0:
+            raise ValueError(
+                f"vol surface '{surface_id}' requires positive K and T")
+        if isinstance(surface, dict):
+            surface_type = surface.get("type")
+            if surface_type in {"flat", "rr_bf"}:
+                return
+            # A listed-option grid reaches this branch only when calibration
+            # could not build even one usable smile slice.  Median fallback is
+            # suitable for display, not for governed K/T valuation.
+            raise ValueError(
+                f"vol surface '{surface_id}' has no calibrated strike/tenor support")
+
+        slices = getattr(surface, "slices", None)
+        if slices is not None:
+            if not slices:
+                raise ValueError(f"vol surface '{surface_id}' has no calibrated slices")
+            ordered = sorted(slices, key=lambda item: float(item["T"]))
+            lo_t, hi_t = float(ordered[0]["T"]), float(ordered[-1]["T"])
+            if T < lo_t - 1e-12 or T > hi_t + 1e-12:
+                raise ValueError(
+                    f"vol surface '{surface_id}' tenor support is "
+                    f"[{lo_t:.6g}, {hi_t:.6g}]Y; requested {T:.6g}Y")
+            relevant = [item for item in ordered
+                        if abs(float(item["T"]) - T) <= 1e-12]
+            if not relevant:
+                lower = [item for item in ordered if float(item["T"]) < T]
+                upper = [item for item in ordered if float(item["T"]) > T]
+                relevant = [max(lower, key=lambda item: float(item["T"])),
+                            min(upper, key=lambda item: float(item["T"]))]
+            k_lo = max(float(item["kmin"]) for item in relevant)
+            k_hi = min(float(item["kmax"]) for item in relevant)
+            if k_lo > k_hi or K < k_lo - 1e-12 or K > k_hi + 1e-12:
+                raise ValueError(
+                    f"vol surface '{surface_id}' strike support at {T:.6g}Y is "
+                    f"[{k_lo:.6g}, {k_hi:.6g}]; requested {K:.6g}")
+            return
+
+        strikes = getattr(surface, "K", None)
+        tenors = getattr(surface, "T", None)
+        if strikes is None or tenors is None or not len(strikes) or not len(tenors):
+            raise ValueError(
+                f"vol surface '{surface_id}' does not expose native K/T support")
+        k_lo, k_hi = min(map(float, strikes)), max(map(float, strikes))
+        t_lo, t_hi = min(map(float, tenors)), max(map(float, tenors))
+        if K < k_lo - 1e-12 or K > k_hi + 1e-12:
+            raise ValueError(
+                f"vol surface '{surface_id}' strike support is "
+                f"[{k_lo:.6g}, {k_hi:.6g}]; requested {K:.6g}")
+        if T < t_lo - 1e-12 or T > t_hi + 1e-12:
+            raise ValueError(
+                f"vol surface '{surface_id}' tenor support is "
+                f"[{t_lo:.6g}, {t_hi:.6g}]Y; requested {T:.6g}Y")
 
     @staticmethod
     def _surface_from_rr_bf(surface: dict, S0: float):

@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 import threading
-from datetime import date, datetime
+from contextlib import contextmanager
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 # Reference fields that define an instrument *version* (excludes daily-changing
@@ -32,6 +35,23 @@ def _iso(value: Any) -> str:
     if isinstance(value, (date, datetime)):
         return value.isoformat()
     return str(value)
+
+
+def _iso_day(value: Any) -> str:
+    """Normalise an ISO date/datetime without silently accepting bad input."""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if not isinstance(value, str):
+        raise ValueError(f"expected ISO date or datetime, got {value!r}")
+    raw = value.strip()
+    try:
+        if len(raw) == 10:
+            return date.fromisoformat(raw).isoformat()
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).date().isoformat()
+    except ValueError as exc:
+        raise ValueError(f"expected ISO date or datetime, got {value!r}") from exc
 
 
 # table -> (columns, conflict-key columns) for upserts
@@ -58,6 +78,19 @@ _TABLES = {
     "time_series": (["factor_id", "dt", "value", "kind"], ["factor_id", "dt", "kind"]),
     "vol_points": (["snapshot_id", "underlying", "expiry", "strike", "iv", "snapshot_key"],
                    ["snapshot_id", "underlying", "expiry", "strike"]),
+    # Detailed lineage for self-implied FORTS volatility points.  This is a
+    # separate additive table instead of extra ``vol_points`` columns so an
+    # existing PostgreSQL deployment gets it through CREATE TABLE IF NOT
+    # EXISTS as well (the legacy additive migrator is intentionally SQLite
+    # only).  ``vol_points`` remains the stable surface-consumption contract.
+    "vol_point_observations": (
+        ["snapshot_id", "underlying", "expiry", "strike", "iv", "forward",
+         "tenor_days", "open_interest", "observation_date", "source", "method",
+         "observation_status", "option_price_date", "forward_date",
+         "option_price_source", "forward_source", "option_price_basis",
+         "forward_basis", "snapshot_key"],
+        ["snapshot_id", "underlying", "expiry", "strike"],
+    ),
     "bond_coupons": (["secid", "coupon_date", "value", "value_prc"],
                      ["secid", "coupon_date"]),
     "bond_amortizations": (["secid", "amort_date", "value", "face_remaining"],
@@ -97,7 +130,67 @@ _TABLES = {
 # Snapshot-bound fact tables that carry a lightweight integer snapshot_key
 # alongside the text snapshot_id (additive surrogate; see _migrate).
 _SNAPSHOT_KEYED = ("yield_curves", "curve_points", "fx_rates", "bond_quotes",
-                   "equity_quotes", "index_values", "vol_points", "commodity_quotes")
+                   "equity_quotes", "index_values", "vol_points",
+                   "vol_point_observations", "commodity_quotes")
+
+_VOL_OBSERVATION_PROVENANCE_COLUMNS = (
+    "option_price_date", "forward_date", "option_price_source",
+    "forward_source", "option_price_basis", "forward_basis",
+)
+
+
+def _postgres_additive_migration_statements() -> list[str]:
+    """Idempotent upgrade contract for PostgreSQL databases created pre-Phase E."""
+    statements = [
+        "ALTER TABLE market_data_snapshots "
+        "ADD COLUMN IF NOT EXISTS snapshot_key INTEGER",
+    ]
+    statements.extend(
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS snapshot_key INTEGER"
+        for table in _SNAPSHOT_KEYED
+    )
+    statements.append(
+        "ALTER TABLE option_quotes ADD COLUMN IF NOT EXISTS snapshot_key INTEGER"
+    )
+    statements.extend(
+        "ALTER TABLE vol_point_observations "
+        f"ADD COLUMN IF NOT EXISTS {column} TEXT"
+        for column in _VOL_OBSERVATION_PROVENANCE_COLUMNS
+    )
+    statements.extend([
+        """WITH missing AS (
+               SELECT snapshot_id,
+                      COALESCE((SELECT MAX(snapshot_key)
+                                FROM market_data_snapshots), 0)
+                      + ROW_NUMBER() OVER (
+                            ORDER BY valuation_date, snapshot_id) AS new_key
+               FROM market_data_snapshots
+               WHERE snapshot_key IS NULL
+           )
+           UPDATE market_data_snapshots AS target
+           SET snapshot_key=missing.new_key
+           FROM missing
+           WHERE target.snapshot_id=missing.snapshot_id""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_snap_key "
+        "ON market_data_snapshots(snapshot_key)",
+    ])
+    for table in _SNAPSHOT_KEYED:
+        statements.extend([
+            f"UPDATE {table} AS target SET snapshot_key=manifest.snapshot_key "
+            "FROM market_data_snapshots AS manifest "
+            "WHERE target.snapshot_key IS NULL "
+            "AND target.snapshot_id=manifest.snapshot_id",
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_snapkey "
+            f"ON {table}(snapshot_key)",
+        ])
+    statements.extend([
+        "UPDATE option_quotes SET snapshot_key=("
+        "SELECT MAX(snapshot_key) FROM market_data_snapshots) "
+        "WHERE snapshot_key IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_option_quotes_snapkey "
+        "ON option_quotes(snapshot_key)",
+    ])
+    return statements
 
 
 def _schema_statements(dialect: str) -> list[str]:
@@ -111,38 +204,47 @@ def _schema_statements(dialect: str) -> list[str]:
         """CREATE TABLE IF NOT EXISTS market_data_snapshots (
             snapshot_id TEXT PRIMARY KEY, valuation_date TEXT NOT NULL, source TEXT NOT NULL,
             quality TEXT NOT NULL, created_at TEXT NOT NULL, fetch_ts TEXT NOT NULL,
-            iss_request_urls TEXT, metadata TEXT)""",
+            iss_request_urls TEXT, metadata TEXT, snapshot_key INTEGER UNIQUE)""",
         """CREATE TABLE IF NOT EXISTS yield_curves (
             snapshot_id TEXT NOT NULL, curve_id TEXT NOT NULL, method TEXT, nss_params TEXT,
-            as_of TEXT, PRIMARY KEY (snapshot_id, curve_id))""",
+            as_of TEXT, snapshot_key INTEGER, PRIMARY KEY (snapshot_id, curve_id))""",
         """CREATE TABLE IF NOT EXISTS curve_points (
             snapshot_id TEXT NOT NULL, curve_id TEXT NOT NULL, tenor REAL NOT NULL,
-            zero_rate REAL NOT NULL, discount_factor REAL,
+            zero_rate REAL NOT NULL, discount_factor REAL, snapshot_key INTEGER,
             PRIMARY KEY (snapshot_id, curve_id, tenor))""",
         """CREATE TABLE IF NOT EXISTS fx_rates (
             snapshot_id TEXT NOT NULL, pair TEXT NOT NULL, rate REAL NOT NULL, source TEXT,
-            trade_time TEXT, PRIMARY KEY (snapshot_id, pair))""",
+            trade_time TEXT, snapshot_key INTEGER, PRIMARY KEY (snapshot_id, pair))""",
         """CREATE TABLE IF NOT EXISTS bond_quotes (
             snapshot_id TEXT NOT NULL, secid TEXT NOT NULL, clean_price REAL, dirty_price REAL,
-            wap_price REAL, accruedint REAL, ytm REAL, volume REAL, board TEXT,
+            wap_price REAL, accruedint REAL, ytm REAL, volume REAL, board TEXT, snapshot_key INTEGER,
             PRIMARY KEY (snapshot_id, secid))""",
         """CREATE TABLE IF NOT EXISTS equity_quotes (
             snapshot_id TEXT NOT NULL, secid TEXT NOT NULL, last REAL, prevprice REAL,
-            board TEXT, volume REAL, PRIMARY KEY (snapshot_id, secid))""",
+            board TEXT, volume REAL, snapshot_key INTEGER, PRIMARY KEY (snapshot_id, secid))""",
         # DEPRECATED: index levels now live in `time_series` (kind='index'). Kept
         # for backward compatibility with old snapshots; not written by current
         # ingest and excluded from data-health completeness. Drop in a migration.
         """CREATE TABLE IF NOT EXISTS index_values (
             snapshot_id TEXT NOT NULL, indexid TEXT NOT NULL, value REAL, trade_date TEXT,
-            PRIMARY KEY (snapshot_id, indexid))""",
+            snapshot_key INTEGER, PRIMARY KEY (snapshot_id, indexid))""",
         """CREATE TABLE IF NOT EXISTS time_series (
             factor_id TEXT NOT NULL, dt TEXT NOT NULL, value REAL, kind TEXT NOT NULL,
             PRIMARY KEY (factor_id, dt, kind))""",
         "CREATE INDEX IF NOT EXISTS idx_time_series_factor ON time_series (factor_id, dt)",
         """CREATE TABLE IF NOT EXISTS vol_points (
             snapshot_id TEXT NOT NULL, underlying TEXT NOT NULL, expiry TEXT NOT NULL,
-            strike REAL NOT NULL, iv REAL,
+            strike REAL NOT NULL, iv REAL, snapshot_key INTEGER,
             PRIMARY KEY (snapshot_id, underlying, expiry, strike))""",
+        """CREATE TABLE IF NOT EXISTS vol_point_observations (
+            snapshot_id TEXT NOT NULL, underlying TEXT NOT NULL, expiry TEXT NOT NULL,
+            strike REAL NOT NULL, iv REAL, forward REAL, tenor_days INTEGER,
+            open_interest REAL, observation_date TEXT, source TEXT, method TEXT,
+            observation_status TEXT, option_price_date TEXT, forward_date TEXT,
+            option_price_source TEXT, forward_source TEXT, option_price_basis TEXT,
+            forward_basis TEXT, snapshot_key INTEGER,
+            PRIMARY KEY (snapshot_id, underlying, expiry, strike))""",
+        "CREATE INDEX IF NOT EXISTS idx_vol_obs_snapshot ON vol_point_observations (snapshot_id, observation_date)",
         """CREATE TABLE IF NOT EXISTS bond_coupons (
             secid TEXT NOT NULL, coupon_date TEXT NOT NULL, value REAL, value_prc REAL,
             PRIMARY KEY (secid, coupon_date))""",
@@ -154,7 +256,7 @@ def _schema_statements(dialect: str) -> list[str]:
             PRIMARY KEY (secid, offer_date))""",
         """CREATE TABLE IF NOT EXISTS commodity_quotes (
             snapshot_id TEXT NOT NULL, asset TEXT NOT NULL, secid TEXT NOT NULL,
-            expiry TEXT, settle REAL, open_interest REAL, volume REAL,
+            expiry TEXT, settle REAL, open_interest REAL, volume REAL, snapshot_key INTEGER,
             PRIMARY KEY (snapshot_id, secid))""",
         """CREATE TABLE IF NOT EXISTS dividends (
             secid TEXT NOT NULL, registry_date TEXT NOT NULL, value REAL, currency TEXT,
@@ -178,7 +280,7 @@ def _schema_statements(dialect: str) -> list[str]:
         """CREATE TABLE IF NOT EXISTS option_quotes (
             secid TEXT PRIMARY KEY, asset_code TEXT, expiry TEXT, strike REAL,
             opt_type TEXT, last REAL, settle REAL, oi REAL, volume REAL,
-            central_strike REAL, underlying TEXT)""",
+            central_strike REAL, underlying TEXT, snapshot_key INTEGER)""",
         "CREATE INDEX IF NOT EXISTS idx_option_quotes_asset ON option_quotes (asset_code, expiry, strike)",
         f"""CREATE TABLE IF NOT EXISTS ingest_log (
             run_id {serial_pk}, endpoint TEXT, status TEXT, rows INTEGER,
@@ -229,8 +331,81 @@ _SOURCE_NAMES = {"MOEX": "Московская биржа", "CBR": "Банк Р�
 class MarketDataDB:
     """Dialect-aware persistence (SQLite default, PostgreSQL-compatible)."""
 
+    @classmethod
+    def from_sqlite_readonly(cls, path: str | Path) -> "MarketDataDB":
+        """Open an existing SQLite database without schema writes or migrations.
+
+        ``mode=ro`` is the primary write barrier; ``query_only`` is an additional
+        connection-level guard against accidental mutations through this handle.
+        The regular constructor is deliberately bypassed because it always runs
+        ``init_schema`` and additive migrations.
+        """
+        if str(path) == ":memory:":
+            raise ValueError("read-only SQLite requires an existing file path")
+        resolved = Path(path).expanduser().resolve()
+        wal_path = Path(f"{resolved}-wal")
+        shm_path = Path(f"{resolved}-shm")
+        has_wal = wal_path.exists() and wal_path.stat().st_size > 0
+        if has_wal and not shm_path.exists():
+            raise RuntimeError(
+                "read-only SQLite cannot open an active WAL database without "
+                "an existing -shm sidecar; refusing to create files"
+            )
+        # Keep normal SQLite locking/change detection even when no WAL is
+        # currently present. ``immutable=1`` would be unsafe for this live-DB
+        # probe: a concurrent rollback-journal writer could otherwise produce
+        # a mixed multi-table bundle that never existed at one point in time.
+        uri = f"{resolved.as_uri()}?mode=ro"
+        conn = sqlite3.connect(
+            uri,
+            uri=True,
+            check_same_thread=False,
+        )
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only=ON")
+            query_only = conn.execute("PRAGMA query_only").fetchone()
+            if query_only is None or int(query_only[0]) != 1:
+                raise RuntimeError("failed to enable SQLite query_only mode")
+
+            db = cls.__new__(cls)
+            db.conn = conn
+            db.dialect = "sqlite"
+            db.ph = "?"
+            db._lock = threading.RLock()
+            db._read_snapshot_depth = 0
+            return db
+        except Exception:
+            conn.close()
+            raise
+
+    @classmethod
+    def from_postgres_dsn(cls, dsn: str, **connect_kwargs) -> "MarketDataDB":
+        """Open the production dialect explicitly, without a hard dependency.
+
+        ``psycopg`` remains optional for the local SQLite application and test
+        suite.  Operational deployments (and the opt-in integration test) call
+        this factory only when a PostgreSQL DSN has deliberately been supplied.
+        """
+        try:
+            import psycopg
+        except ImportError as exc:  # pragma: no cover - environment dependent
+            raise RuntimeError(
+                "PostgreSQL support requires the optional 'psycopg' package"
+            ) from exc
+        if connect_kwargs.get("autocommit"):
+            raise ValueError("MarketDataDB requires PostgreSQL autocommit=False")
+        conn = psycopg.connect(dsn, **connect_kwargs)
+        try:
+            return cls(conn=conn, dialect="postgres")
+        except Exception:
+            conn.close()
+            raise
+
     def __init__(self, path: str = ":memory:", *, conn=None, dialect: str = "sqlite"):
         if conn is not None:
+            if dialect == "postgres" and getattr(conn, "autocommit", False):
+                raise ValueError("MarketDataDB requires PostgreSQL autocommit=False")
             self.conn = conn
             self.dialect = dialect
         else:
@@ -246,6 +421,7 @@ class MarketDataDB:
         # two threads interleave → empty results / "recursive use of cursors").
         # Serialize every statement; RLock because writes re-enter via helpers.
         self._lock = threading.RLock()
+        self._read_snapshot_depth = 0
         self.init_schema()
 
     def init_schema(self) -> None:
@@ -269,12 +445,36 @@ class MarketDataDB:
         every existing getter is unchanged — and idempotent (only NULLs filled),
         so it is safe to run on every connect.
         """
+        if self.dialect == "postgres":
+            self._migrate_postgres_additive()
+            self._migrate_instrument_versions()
+            self._migrate_schedule_versions()
+            self._migrate_refdata()
+            return
         if self.dialect != "sqlite":
             return
+        self._migrate_vol_observation_provenance()
         self._migrate_snapshot_key()
         self._migrate_instrument_versions()
         self._migrate_schedule_versions()
         self._migrate_refdata()
+
+    def _migrate_vol_observation_provenance(self) -> None:
+        """Add independently auditable option/forward lineage to old SQLite DBs."""
+        for column in _VOL_OBSERVATION_PROVENANCE_COLUMNS:
+            self._add_column("vol_point_observations", column, "TEXT")
+
+    def _migrate_postgres_additive(self) -> None:
+        """Upgrade old PostgreSQL schemas atomically before normal writes."""
+        with self._lock:
+            cur = self.conn.cursor()
+            try:
+                for statement in _postgres_additive_migration_statements():
+                    cur.execute(statement)
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def _migrate_snapshot_key(self) -> None:
         # 1. surrogate key on the snapshot manifest
@@ -318,18 +518,27 @@ class MarketDataDB:
         for r in self._query("SELECT DISTINCT board, market FROM instrument_ref WHERE board IS NOT NULL"):
             self._ref_board(r["board"], r.get("market"))
         for code, name in _SOURCE_NAMES.items():
-            self._exec(f"INSERT OR IGNORE INTO ref_sources (code, name) VALUES ({self._placeholders(2)})",
-                       (code, name))
+            self._exec(
+                self._insert_ignore_sql(
+                    "ref_sources", ["code", "name"], ["code"]),
+                (code, name),
+            )
 
     def _ref_currency(self, code) -> None:
         if code:
-            self._exec(f"INSERT OR IGNORE INTO ref_currencies (code, name) VALUES ({self._placeholders(2)})",
-                       (code, _CURRENCY_NAMES.get(str(code), str(code))))
+            self._exec(
+                self._insert_ignore_sql(
+                    "ref_currencies", ["code", "name"], ["code"]),
+                (code, _CURRENCY_NAMES.get(str(code), str(code))),
+            )
 
     def _ref_board(self, board, market=None) -> None:
         if board:
-            self._exec(f"INSERT OR IGNORE INTO ref_boards (board, market) VALUES ({self._placeholders(2)})",
-                       (board, market))
+            self._exec(
+                self._insert_ignore_sql(
+                    "ref_boards", ["board", "market"], ["board"]),
+                (board, market),
+            )
 
     def list_ref_currencies(self) -> list[dict]:
         return self._query("SELECT code, name FROM ref_currencies ORDER BY code")
@@ -346,7 +555,7 @@ class MarketDataDB:
             "SELECT DISTINCT secid FROM ("
             "  SELECT secid FROM bond_coupons UNION"
             "  SELECT secid FROM bond_amortizations UNION"
-            "  SELECT secid FROM bond_offers) "
+            "  SELECT secid FROM bond_offers) AS schedules "
             "WHERE secid NOT IN (SELECT DISTINCT secid FROM bond_schedule_versions)")
         for r in rows:
             self._record_schedule_version(r["secid"])
@@ -379,6 +588,46 @@ class MarketDataDB:
     def close(self) -> None:
         self.conn.close()
 
+    @contextmanager
+    def read_snapshot(self):
+        """Hold one repeatable, read-only database view across many getters.
+
+        High-level valuation/readiness operations combine several normalized
+        tables.  Per-statement commits previously allowed a concurrent ingest
+        to produce a bundle that never existed at one point in time.  The
+        re-entrant context also holds the local connection lock, while the DB
+        transaction protects against writers using other connections/processes.
+        """
+        with self._lock:
+            if self._read_snapshot_depth:
+                self._read_snapshot_depth += 1
+                try:
+                    yield self
+                finally:
+                    self._read_snapshot_depth -= 1
+                return
+
+            cursor = self.conn.cursor()
+            if self.dialect == "postgres":
+                # With psycopg autocommit=False the first execute implicitly
+                # opens the transaction.  A literal BEGIN here would therefore
+                # be a nested BEGIN whose isolation/read-only options PostgreSQL
+                # ignores.  SET TRANSACTION is the first statement and applies
+                # the required characteristics before any data read.
+                cursor.execute(
+                    "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
+                )
+            else:
+                cursor.execute("BEGIN")
+            self._read_snapshot_depth = 1
+            try:
+                yield self
+            finally:
+                try:
+                    self.conn.rollback()
+                finally:
+                    self._read_snapshot_depth = 0
+
     # -- dialect-aware primitives -----------------------------------------
     def _placeholders(self, n: int) -> str:
         return ",".join([self.ph] * n)
@@ -392,6 +641,19 @@ class MarketDataDB:
                     if updates else f" ON CONFLICT ({','.join(conflict)}) DO NOTHING")
             return f"INSERT INTO {table} ({cols}) VALUES ({vals}){tail}"
         return f"INSERT OR REPLACE INTO {table} ({cols}) VALUES ({vals})"
+
+    def _insert_ignore_sql(
+        self, table: str, columns: list[str], conflict: list[str],
+    ) -> str:
+        """Backend-native insert-if-absent used by reference look-ups."""
+        cols = ",".join(columns)
+        values = self._placeholders(len(columns))
+        if self.dialect == "postgres":
+            return (
+                f"INSERT INTO {table} ({cols}) VALUES ({values}) "
+                f"ON CONFLICT ({','.join(conflict)}) DO NOTHING"
+            )
+        return f"INSERT OR IGNORE INTO {table} ({cols}) VALUES ({values})"
 
     def _upsert(self, table: str, row: dict) -> None:
         row = self._with_snapshot_key(table, row)
@@ -412,14 +674,16 @@ class MarketDataDB:
         with self._lock:
             cur = self.conn.cursor()
             cur.execute(sql, params)
-            self.conn.commit()
+            if not self._read_snapshot_depth:
+                self.conn.commit()
             return cur
 
     def _execmany(self, sql: str, rows):
         with self._lock:
             cur = self.conn.cursor()
             cur.executemany(sql, rows)
-            self.conn.commit()
+            if not self._read_snapshot_depth:
+                self.conn.commit()
             return cur
 
     @staticmethod
@@ -451,24 +715,89 @@ class MarketDataDB:
                            fetch_ts, iss_request_urls=None, metadata=None) -> None:
         # Keep the snapshot's integer key stable across re-saves (INSERT OR REPLACE
         # rewrites the row, so the surrogate must be carried explicitly).
+        existing = self.get_snapshot_meta(snapshot_id)
         self._upsert("market_data_snapshots", {
             "snapshot_id": snapshot_id, "valuation_date": _iso(valuation_date),
-            "source": source, "quality": quality, "created_at": datetime.now().isoformat(),
+            "source": source, "quality": quality,
+            "created_at": (
+                (existing or {}).get("created_at") or datetime.now().isoformat()),
             "fetch_ts": _iso(fetch_ts), "iss_request_urls": json.dumps(iss_request_urls or []),
             "metadata": json.dumps(metadata or {}),
             "snapshot_key": self._resolve_snapshot_key(snapshot_id),
         })
 
     def save_curve(self, snapshot_id, curve_id, *, method, nss_params, as_of, points) -> None:
-        self._upsert("yield_curves", {
+        """Atomically replace one complete curve header and native node grid."""
+        snapshot_id = str(snapshot_id)
+        curve_id = str(curve_id)
+        if not snapshot_id or not curve_id:
+            raise ValueError("snapshot_id and curve_id are required")
+        normalised = []
+        seen_tenors = set()
+        for point in points:
+            try:
+                tenor, zero_rate, discount_factor = point
+                tenor = float(tenor)
+                zero_rate = float(zero_rate)
+                discount_factor = (
+                    float(discount_factor) if discount_factor is not None else None)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    f"curve '{curve_id}' contains an invalid node") from exc
+            if (not math.isfinite(tenor) or tenor <= 0
+                    or not math.isfinite(zero_rate)
+                    or abs(zero_rate) > 5.0
+                    or (discount_factor is not None
+                        and (not math.isfinite(discount_factor)
+                             or discount_factor <= 0))):
+                raise ValueError(
+                    f"curve '{curve_id}' contains an invalid {tenor!r}Y node")
+            if tenor in seen_tenors:
+                raise ValueError(
+                    f"curve '{curve_id}' contains duplicate tenor {tenor:g}Y")
+            seen_tenors.add(tenor)
+            normalised.append((tenor, zero_rate, discount_factor))
+        if not normalised:
+            raise ValueError(f"curve '{curve_id}' must contain at least one node")
+        normalised.sort(key=lambda item: item[0])
+
+        snapshot_key = self._resolve_snapshot_key(snapshot_id)
+        header = {
             "snapshot_id": snapshot_id, "curve_id": curve_id, "method": method,
             "nss_params": json.dumps(nss_params or {}), "as_of": _iso(as_of) if as_of else None,
-        })
-        self._upsert_many("curve_points", [
+            "snapshot_key": snapshot_key,
+        }
+        node_rows = [
             {"snapshot_id": snapshot_id, "curve_id": curve_id, "tenor": float(t),
-             "zero_rate": float(z), "discount_factor": (float(df) if df is not None else None)}
-            for (t, z, df) in points
-        ])
+             "zero_rate": float(z), "discount_factor": df,
+             "snapshot_key": snapshot_key}
+            for (t, z, df) in normalised
+        ]
+        header_columns, header_conflict = _TABLES["yield_curves"]
+        node_columns, node_conflict = _TABLES["curve_points"]
+        header_sql = self._upsert_sql(
+            "yield_curves", header_columns, header_conflict)
+        node_sql = self._upsert_sql(
+            "curve_points", node_columns, node_conflict)
+        with self._lock:
+            cur = self.conn.cursor()
+            try:
+                cur.execute(
+                    f"DELETE FROM curve_points WHERE snapshot_id={self.ph} "
+                    f"AND curve_id={self.ph}",
+                    (snapshot_id, curve_id),
+                )
+                cur.execute(
+                    header_sql, [header.get(column) for column in header_columns])
+                cur.executemany(
+                    node_sql,
+                    [[row.get(column) for column in node_columns]
+                     for row in node_rows],
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def delete_curve(self, snapshot_id, curve_id) -> None:
         """Drop a curve and its points so a re-ingest with different tenors
@@ -503,11 +832,187 @@ class MarketDataDB:
                                     "expiry": str(expiry), "strike": float(strike),
                                     "iv": (float(iv) if iv is not None else None)})
 
+    def _prepare_vol_rows(self, snapshot_id, points: list[dict]) -> tuple[list[dict], list[dict]]:
+        """Validate/normalise a complete raw surface before opening a transaction."""
+        snapshot_key = self._resolve_snapshot_key(snapshot_id)
+        raw_rows: list[dict] = []
+        observation_rows: list[dict] = []
+        for point in points:
+            strike = point.get("strike")
+            if strike is None:
+                continue
+            underlying = str(point.get("underlying") or "UNKNOWN")
+            expiry = str(point.get("expiry") or "")
+            strike = float(strike)
+            iv = float(point["iv"]) if point.get("iv") is not None else None
+            tenor_days = point.get("tenor_days")
+            if tenor_days is None and point.get("T") is not None:
+                tenor_days = round(float(point["T"]) * 365.0)
+            if tenor_days is not None:
+                raw_tenor_days = float(tenor_days)
+                if (not math.isfinite(raw_tenor_days)
+                        or raw_tenor_days <= 0
+                        or not raw_tenor_days.is_integer()):
+                    raise ValueError(
+                        "vol point tenor_days must be a positive integer")
+                tenor_days = int(raw_tenor_days)
+            observation_date = point.get("observation_date")
+            forward_source = point.get("forward_source")
+            raw_rows.append({
+                "snapshot_id": snapshot_id,
+                "underlying": underlying,
+                "expiry": expiry,
+                "strike": strike,
+                "iv": iv,
+                "snapshot_key": snapshot_key,
+            })
+            observation_rows.append({
+                "snapshot_id": snapshot_id,
+                "underlying": underlying,
+                "expiry": expiry,
+                "strike": strike,
+                "iv": iv,
+                "forward": (float(point["forward"])
+                            if point.get("forward") is not None else None),
+                "tenor_days": tenor_days,
+                "open_interest": (
+                    float(point.get("open_interest", point.get("oi")))
+                    if point.get("open_interest", point.get("oi")) is not None else None
+                ),
+                "observation_date": observation_date,
+                "source": point.get("source") or forward_source,
+                "method": point.get("method"),
+                "observation_status": point.get("observation_status"),
+                "option_price_date": point.get("option_price_date"),
+                "forward_date": point.get("forward_date"),
+                "option_price_source": point.get("option_price_source"),
+                "forward_source": forward_source,
+                "option_price_basis": point.get("option_price_basis"),
+                "forward_basis": point.get("forward_basis"),
+                "snapshot_key": snapshot_key,
+            })
+        return raw_rows, observation_rows
+
+    def _replace_snapshot_tables(self, snapshot_id, rows_by_table: dict[str, list[dict]]) -> None:
+        """Delete and repopulate snapshot slices in one backend transaction."""
+        prepared = []
+        for table, rows in rows_by_table.items():
+            columns, conflict = _TABLES[table]
+            sql = self._upsert_sql(table, columns, conflict)
+            values = [[row.get(column) for column in columns] for row in rows]
+            prepared.append((table, sql, values))
+        with self._lock:
+            cur = self.conn.cursor()
+            try:
+                for table, _, _ in prepared:
+                    cur.execute(
+                        f"DELETE FROM {table} WHERE snapshot_id={self.ph}",
+                        (snapshot_id,),
+                    )
+                for _, sql, values in prepared:
+                    if values:
+                        cur.executemany(sql, values)
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+
+    def replace_vol_surface(self, snapshot_id, points: list[dict]) -> None:
+        """Atomically replace both the consumable grid and its point lineage."""
+        raw_rows, observation_rows = self._prepare_vol_rows(snapshot_id, points)
+        self._replace_snapshot_tables(
+            snapshot_id,
+            {"vol_points": raw_rows, "vol_point_observations": observation_rows},
+        )
+
+    def replace_vol_point_observations(self, snapshot_id, points: list[dict]) -> None:
+        """Replace detailed IV-point lineage for one snapshot.
+
+        The public method keeps ingestion code away from backend-specific SQL:
+        the placeholder and upsert form are supplied by this DB adapter.  Rows
+        are prepared completely by the ingestor before this method is called,
+        so a repeated run cannot retain provenance for strikes that disappeared
+        from the refreshed chain.
+        """
+        _, rows = self._prepare_vol_rows(snapshot_id, points)
+        self._replace_snapshot_tables(
+            snapshot_id, {"vol_point_observations": rows})
+
     def save_time_series(self, factor_id, kind, points) -> None:
         self._upsert_many("time_series", [
             {"factor_id": factor_id, "dt": dt, "value": float(v), "kind": kind}
             for (dt, v) in points
         ])
+
+    def replace_factor_levels_for_date(self, kind: str, prefix: str, dt,
+                                       values: dict[str, float]) -> None:
+        """Atomically replace one governed factor namespace for one date.
+
+        Mapping keys may be full IDs (already beginning with ``prefix``) or
+        suffixes.  Values are normalised before the transaction starts, so a
+        conversion/duplicate error cannot delete an existing date slice.
+        ``LIKE`` metacharacters in the namespace are escaped and therefore
+        cannot widen the delete beyond the literal prefix.
+        """
+        kind = str(kind).strip()
+        prefix = str(prefix)
+        if not kind:
+            raise ValueError("factor kind must be non-empty")
+        if not prefix:
+            raise ValueError("factor prefix must be non-empty")
+        day = _iso_day(dt)
+        end_exclusive = (
+            date.fromisoformat(day) + timedelta(days=1)
+        ).isoformat()
+        rows = []
+        factor_ids: set[str] = set()
+        for name, value in sorted(values.items(), key=lambda item: str(item[0])):
+            name = str(name)
+            factor_id = name if name.startswith(prefix) else f"{prefix}{name}"
+            if factor_id in factor_ids:
+                raise ValueError(f"duplicate factor id after prefix normalisation: {factor_id}")
+            factor_ids.add(factor_id)
+            try:
+                normalised_value = float(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    f"factor '{factor_id}' value must be finite") from exc
+            if not math.isfinite(normalised_value):
+                raise ValueError(
+                    f"factor '{factor_id}' value must be finite")
+            rows.append({
+                "factor_id": factor_id,
+                "dt": day,
+                "value": normalised_value,
+                "kind": kind,
+            })
+        columns, conflict = _TABLES["time_series"]
+        sql = self._upsert_sql("time_series", columns, conflict)
+        like_prefix = (prefix.replace("\\", "\\\\")
+                       .replace("%", "\\%")
+                       .replace("_", "\\_")) + "%"
+        with self._lock:
+            cur = self.conn.cursor()
+            try:
+                cur.execute(
+                    f"DELETE FROM time_series WHERE kind={self.ph} "
+                    f"AND dt>={self.ph} AND dt<{self.ph} "
+                    f"AND factor_id LIKE {self.ph} ESCAPE '\\'",
+                    (kind, day, end_exclusive, like_prefix),
+                )
+                if rows:
+                    cur.executemany(
+                        sql,
+                        [[row.get(column) for column in columns] for row in rows],
+                    )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+
+    def replace_iv30_for_date(self, valuation_date, values: dict[str, float]) -> None:
+        """Atomically replace/revoke every canonical IV30 value for one date."""
+        self.replace_factor_levels_for_date("vol", "IV30:", valuation_date, values)
 
     def save_bond_schedule(self, secid, *, coupons=None, amortizations=None,
                            offers=None) -> None:
@@ -665,6 +1170,191 @@ class MarketDataDB:
             f"WHERE snapshot_id={self.ph} AND curve_id={self.ph} ORDER BY tenor",
             (snapshot_id, curve_id))
 
+    def get_curve_history(self, curve_id, frm=None, till=None) -> list[dict]:
+        """Return complete snapshot-bound curve grids by actual observation date.
+
+        ``yield_curves.as_of`` is authoritative; snapshot valuation date is a
+        fallback only for newer rows with an explicit manifest. Legacy holiday
+        placeholder headers without nodes are not observations and are ignored;
+        a required date containing only such a header still fails later through
+        calendar coverage. Repeated snapshots of one observation are
+        deduplicated only when their node grids are identical. Conflicting
+        same-date observations fail closed.
+        """
+        clauses = [f"y.curve_id={self.ph}"]
+        params: list[Any] = [str(curve_id)]
+        observed = "COALESCE(y.as_of, m.valuation_date)"
+        if frm is not None:
+            clauses.append(f"{observed}>={self.ph}")
+            params.append(_iso_day(frm))
+        if till is not None:
+            clauses.append(f"{observed}<={self.ph}")
+            params.append(_iso_day(till) + "T23:59:59")
+        rows = self._query(
+            "SELECT y.snapshot_id, y.method, y.as_of, m.valuation_date, "
+            "p.tenor, p.zero_rate, p.discount_factor "
+            "FROM yield_curves y "
+            "LEFT JOIN market_data_snapshots m ON m.snapshot_id=y.snapshot_id "
+            "LEFT JOIN curve_points p ON p.snapshot_id=y.snapshot_id "
+            "AND p.curve_id=y.curve_id "
+            f"WHERE {' AND '.join(clauses)} "
+            f"ORDER BY {observed}, y.snapshot_id, p.tenor",
+            tuple(params),
+        )
+
+        snapshots: dict[str, dict] = {}
+        for row in rows:
+            raw_date = row.get("as_of") or row.get("valuation_date")
+            if not raw_date:
+                raise ValueError(
+                    f"curve '{curve_id}' snapshot '{row.get('snapshot_id')}' "
+                    "has no observation date")
+            try:
+                dt = _iso_day(raw_date)
+            except ValueError as exc:
+                raise ValueError(
+                    f"curve '{curve_id}' snapshot '{row.get('snapshot_id')}' "
+                    "has an invalid observation date") from exc
+            snapshot_id = str(row["snapshot_id"])
+            observation = snapshots.setdefault(snapshot_id, {
+                "dt": dt,
+                "snapshot_id": snapshot_id,
+                "method": str(row.get("method") or "unknown"),
+                "points": [],
+            })
+            if row.get("tenor") is not None:
+                observation["points"].append({
+                    "tenor": float(row["tenor"]),
+                    "zero_rate": float(row["zero_rate"]),
+                    "discount_factor": (
+                        float(row["discount_factor"])
+                        if row.get("discount_factor") is not None else None),
+                })
+
+        by_date: dict[str, dict] = {}
+        for observation in snapshots.values():
+            points = sorted(observation["points"], key=lambda item: item["tenor"])
+            if not points:
+                continue
+            signature = tuple(
+                (point["tenor"], point["zero_rate"], point["discount_factor"])
+                for point in points
+            )
+            existing = by_date.get(observation["dt"])
+            if existing is not None:
+                def method_family(method: str) -> str:
+                    normalised = str(method or "unknown").lower()
+                    return (
+                        "zero_curve_points"
+                        if normalised in {"nss", "points", "zcyc"}
+                        else normalised
+                    )
+
+                if method_family(observation["method"]) != method_family(
+                        existing["method"]):
+                    raise ValueError(
+                        f"curve '{curve_id}' has conflicting methodologies for "
+                        f"observation date {observation['dt']}")
+                existing_signature = tuple(
+                    (point["tenor"], point["zero_rate"], point["discount_factor"])
+                    for point in existing["points"]
+                )
+                if signature != existing_signature:
+                    raise ValueError(
+                        f"curve '{curve_id}' has conflicting snapshots for "
+                        f"observation date {observation['dt']}")
+                continue
+            by_date[observation["dt"]] = {**observation, "points": points}
+        return [by_date[dt] for dt in sorted(by_date)]
+
+    def get_vol_surface_history(self, surface_id, frm=None, till=None) -> list[dict]:
+        """Return governed FORTS surface observations grouped by actual date.
+
+        Historical risk consumes only the detailed provenance table.  The
+        display-oriented ``vol_points`` grid is intentionally not a fallback.
+        v1 accepts the explicit ``{UNDERLYING}_FORTS`` identity contract; flat
+        and RR/BF parameter sets require their own governed history source.
+        """
+        identity = str(surface_id).strip()
+        if not identity.endswith("_FORTS") or len(identity) <= len("_FORTS"):
+            raise ValueError(
+                f"vol surface '{identity}' has no governed historical identity mapping")
+        underlying = identity[:-len("_FORTS")]
+        clauses = [f"underlying={self.ph}"]
+        params: list[Any] = [underlying]
+        if frm is not None:
+            clauses.append(f"observation_date>={self.ph}")
+            params.append(_iso_day(frm))
+        if till is not None:
+            clauses.append(f"observation_date<={self.ph}")
+            params.append(_iso_day(till) + "T23:59:59")
+        rows = self._query(
+            "SELECT snapshot_id, underlying, expiry, strike, iv, forward, "
+            "tenor_days, open_interest, observation_date, source, method, "
+            "observation_status, option_price_date, forward_date, "
+            "option_price_source, forward_source, option_price_basis, forward_basis "
+            "FROM vol_point_observations "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY observation_date, snapshot_id, expiry, strike",
+            tuple(params),
+        )
+        snapshots: dict[str, dict] = {}
+        for row in rows:
+            raw_date = row.get("observation_date")
+            if not raw_date:
+                raise ValueError(
+                    f"vol surface '{identity}' contains a point without observation_date")
+            try:
+                dt = _iso_day(raw_date)
+            except ValueError as exc:
+                raise ValueError(
+                    f"vol surface '{identity}' snapshot "
+                    f"'{row.get('snapshot_id')}' has an invalid observation date") from exc
+            snapshot_id = str(row["snapshot_id"])
+            observation = snapshots.setdefault(snapshot_id, {
+                "dt": dt,
+                "snapshot_id": snapshot_id,
+                "surface_id": identity,
+                "underlying": underlying,
+                "points": [],
+            })
+            observation["points"].append({
+                key: row.get(key)
+                for key in (
+                    "underlying", "expiry", "strike", "iv", "forward",
+                    "tenor_days", "open_interest", "observation_date", "source",
+                    "method", "observation_status", "option_price_date",
+                    "forward_date", "option_price_source", "forward_source",
+                    "option_price_basis", "forward_basis",
+                )
+            })
+
+        def point_signature(point: dict) -> tuple:
+            return tuple(point.get(key) for key in (
+                "underlying", "expiry", "strike", "iv", "forward",
+                "tenor_days", "open_interest", "observation_date", "source",
+                "method", "observation_status", "option_price_date",
+                "forward_date", "option_price_source", "forward_source",
+                "option_price_basis", "forward_basis",
+            ))
+
+        by_date: dict[str, dict] = {}
+        for observation in snapshots.values():
+            points = sorted(
+                observation["points"],
+                key=lambda point: (str(point.get("expiry")), float(point.get("strike"))),
+            )
+            existing = by_date.get(observation["dt"])
+            if existing is not None:
+                if ([point_signature(point) for point in points]
+                        != [point_signature(point) for point in existing["points"]]):
+                    raise ValueError(
+                        f"vol surface '{identity}' has conflicting snapshots for "
+                        f"observation date {observation['dt']}")
+                continue
+            by_date[observation["dt"]] = {**observation, "points": points}
+        return [by_date[dt] for dt in sorted(by_date)]
+
     def list_curve_ids(self, snapshot_id) -> list[str]:
         return [r["curve_id"] for r in self._query(
             f"SELECT curve_id FROM yield_curves WHERE snapshot_id={self.ph}", (snapshot_id,))]
@@ -687,6 +1377,23 @@ class MarketDataDB:
         return self._query(
             "SELECT snapshot_id, valuation_date, source, quality FROM market_data_snapshots "
             "ORDER BY valuation_date DESC")
+
+    def list_snapshots_between(self, from_date, till_date, *,
+                               source: str | None = None) -> list[dict]:
+        """Snapshot manifests in an inclusive date range, oldest first."""
+        start = date.fromisoformat(_iso_day(from_date))
+        end_exclusive = date.fromisoformat(_iso_day(till_date)) + timedelta(days=1)
+        sql = (
+            "SELECT snapshot_id, valuation_date, source, quality "
+            f"FROM market_data_snapshots WHERE valuation_date>={self.ph} "
+            f"AND valuation_date<{self.ph}"
+        )
+        params = [start.isoformat(), end_exclusive.isoformat()]
+        if source is not None:
+            sql += f" AND source={self.ph}"
+            params.append(source)
+        sql += " ORDER BY valuation_date, snapshot_id"
+        return self._query(sql, tuple(params))
 
     def get_bond_quotes(self, snapshot_id) -> list[dict]:
         return self._query(f"SELECT * FROM bond_quotes WHERE snapshot_id={self.ph}", (snapshot_id,))
@@ -742,6 +1449,18 @@ class MarketDataDB:
             f"SELECT underlying, expiry, strike, iv FROM vol_points WHERE snapshot_id={self.ph} "
             f"ORDER BY underlying, expiry, strike", (snapshot_id,))
 
+    def get_vol_point_observations(self, snapshot_id) -> list[dict]:
+        """Detailed self-implied point lineage for governed IV histories."""
+        return self._query(
+            f"SELECT underlying, expiry, strike, iv, forward, tenor_days, "
+            f"open_interest, observation_date, source, method, observation_status, "
+            f"option_price_date, forward_date, option_price_source, forward_source, "
+            f"option_price_basis, forward_basis "
+            f"FROM vol_point_observations WHERE snapshot_id={self.ph} "
+            f"ORDER BY underlying, expiry, strike",
+            (snapshot_id,),
+        )
+
     def latest_vol_snapshot(self) -> str | None:
         row = self._query_one("SELECT MAX(snapshot_id) AS s FROM vol_points")
         return row["s"] if row and row.get("s") else None
@@ -770,6 +1489,20 @@ class MarketDataDB:
                 (factor_id, kind))
         return self._query(
             f"SELECT dt, value FROM time_series WHERE factor_id={self.ph} ORDER BY dt", (factor_id,))
+
+    def get_time_series_window(self, factor_id, kind, from_date, till_date) -> list[dict]:
+        """One factor's inclusive date window using backend-native placeholders."""
+        start = _iso_day(from_date)
+        end_exclusive = (
+            date.fromisoformat(_iso_day(till_date)) + timedelta(days=1)
+        ).isoformat()
+        if start >= end_exclusive:
+            raise ValueError("from_date must be on or before till_date")
+        return self._query(
+            f"SELECT dt, value FROM time_series WHERE factor_id={self.ph} "
+            f"AND kind={self.ph} AND dt>={self.ph} AND dt<{self.ph} ORDER BY dt",
+            (factor_id, kind, start, end_exclusive),
+        )
 
     def dividend_sums_since(self, frm: str) -> dict:
         """secid → sum of dividends with registry_date ≥ frm (for trailing yield)."""
@@ -942,6 +1675,14 @@ class MarketDataDB:
     def table_columns(self, table: str) -> list[dict]:
         if not table.isidentifier():
             return []
+        if self.dialect == "postgres":
+            return self._query(
+                "SELECT column_name AS name, data_type AS type "
+                "FROM information_schema.columns "
+                "WHERE table_schema=current_schema() AND table_name=%s "
+                "ORDER BY ordinal_position",
+                (table,),
+            )
         return [{"name": r["name"], "type": r["type"]}
                 for r in self._query(f"PRAGMA table_info({table})")]
 
@@ -954,7 +1695,9 @@ class MarketDataDB:
     def table_rows(self, table: str, limit: int = 200, *, newest_first: bool = False) -> list[dict]:
         if not table.isidentifier():
             return []
-        order = "ORDER BY rowid DESC" if newest_first else "ORDER BY rowid"
+        physical_id = "ctid" if self.dialect == "postgres" else "rowid"
+        order = (f"ORDER BY {physical_id} DESC" if newest_first
+                 else f"ORDER BY {physical_id}")
         return self._query(f"SELECT * FROM {table} {order} LIMIT {int(limit)}")
 
     def count_instrument_refs(self, category, *, active_only=False) -> int:

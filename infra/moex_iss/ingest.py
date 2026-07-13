@@ -565,9 +565,10 @@ class MoexIngestor:
                     row.update(md.get(sec.get("SECID"), {}))
                     merged.append(row)
                 points = normalise_option_rows(merged)
-            for p in points:
-                self.db.save_vol_point(snapshot_id, p["underlying"], p["expiry"],
-                                       p["strike"], p["iv"])
+            # Replace the consumer grid and its detailed lineage in one
+            # transaction.  A repeated same-date run cannot retain disappeared
+            # strikes or expose raw/provenance slices from different chains.
+            self.db.replace_vol_surface(snapshot_id, points)
             self.db.log_ingest(endpoint, "ok", len(points), started, datetime.now())
             return len(points)
         except Exception as exc:
@@ -779,4 +780,12 @@ class MoexIngestor:
             "bonds": self.ingest_bonds(sid, valuation_date, board=board),
         }
         result["corporate"] = self.ingest_corporate_curves(sid, valuation_date)
+        # Manifest publication is an explicit ingestion mutation. Ordinary
+        # MarketDataService reads are deliberately non-mutating.
+        from services.market_data_service import MarketDataService
+        MarketDataService(market_db=self.db).moex_snapshot(
+            valuation_date,
+            fallback_to_demo=False,
+            persist_manifest=True,
+        )
         return result

@@ -11,6 +11,41 @@ from services.governance_service import GovernanceService
 from services.market_data_service import MarketDataService
 
 
+def _validated_reprice_pnl(result, *, context: str) -> float:
+    """Fail closed on a partial/invalid full-reprice observation."""
+    if not isinstance(result, dict) or not result:
+        raise ValueError(f"{context}: empty or invalid reprice result")
+    raw_errors = result.get("errors") or []
+    if isinstance(raw_errors, str):
+        raw_errors = [raw_errors]
+    errors = [str(error) for error in raw_errors if error not in (None, "")]
+    if errors:
+        raise ValueError(f"{context}: " + "; ".join(errors))
+    if result.get("valid") is False:
+        raise ValueError(f"{context}: reprice result is marked invalid")
+    if "pnl" not in result:
+        raise ValueError(f"{context}: reprice result has no P&L")
+
+    def finite_scalar(value, label: str) -> float:
+        try:
+            array = np.asarray(value)
+            if array.ndim != 0:
+                raise TypeError
+            number = float(array)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"{context}: {label} is not a scalar") from exc
+        if not np.isfinite(number):
+            raise ValueError(f"{context}: {label} is non-finite")
+        return number
+
+    pnl = finite_scalar(result["pnl"], "P&L")
+    for key, label in (("base_value", "base value"),
+                       ("shocked_value", "shocked value")):
+        if key in result:
+            finite_scalar(result[key], label)
+    return pnl
+
+
 class RiskService:
     def __init__(
         self,
@@ -18,11 +53,13 @@ class RiskService:
         governance: GovernanceService | None = None,
         audit: AuditService | None = None,
         allow_analytics_lab: bool = False,
+        allow_non_production_models: bool = False,
     ):
         self.market_data = market_data or MarketDataService()
         self.governance = governance or GovernanceService()
         self.audit = audit or AuditService()
         self.allow_analytics_lab = allow_analytics_lab
+        self.allow_non_production_models = allow_non_production_models
 
     def _market_data_warnings(self, snapshot: MarketDataSnapshot | None) -> list[str]:
         if snapshot is None:
@@ -118,6 +155,7 @@ class RiskService:
         return self.governance.enforce_model(
             model_id,
             allow_analytics_lab=self.allow_analytics_lab,
+            allow_non_production=self.allow_non_production_models,
         )
 
     # ── Full-reprice VaR (Phase 4) ────────────────────────
@@ -131,6 +169,9 @@ class RiskService:
         fx_returns=None,
         confidence: float = 0.99,
         snapshot: MarketDataSnapshot | None = None,
+        spot_return_convention: str = "simple",
+        curve_changes_by_id: dict | None = None,
+        surface_changes_by_position: dict | None = None,
     ) -> dict:
         """
         Historical full-reprice portfolio VaR: every joint historical scenario
@@ -138,31 +179,165 @@ class RiskService:
         to position parameters and the whole book is REPRICED through its
         actual pricers — no delta-gamma approximation, so option convexity and
         exotic nonlinearity enter the P&L distribution exactly.
+        ``spot_return_convention`` is explicit because callers may supply
+        either ordinary relative returns or log-returns. Rates and volatility
+        remain absolute changes in both cases. Named curve/surface positions
+        require their exact historical maps; the generic rate/vol arrays are
+        retained only for legacy scalar dependencies.
         """
         model_id = "var_full_reprice"
+        try:
+            input_scenarios = len(eq_returns)
+        except TypeError:
+            input_scenarios = None
+
+        def input_keys(values) -> list[str]:
+            if not isinstance(values, dict):
+                return []
+            return sorted(str(key) for key in values)
+
         inputs = {
-            "n_scenarios": len(eq_returns),
+            "n_scenarios": input_scenarios,
             "confidence": confidence,
             "positions": len(portfolio_service.positions),
+            "spot_return_convention": spot_return_convention,
+            "named_curve_histories": input_keys(curve_changes_by_id),
+            "named_surface_histories": input_keys(surface_changes_by_position),
         }
         try:
             self._enforce_model(model_id)
-            eq = np.asarray(eq_returns, dtype=float)
-            ir = np.asarray(rate_changes, dtype=float)
+            if spot_return_convention not in {"simple", "log"}:
+                raise ValueError(
+                    "spot_return_convention must be 'simple' or 'log'")
+            if (not isinstance(confidence, (int, float))
+                    or isinstance(confidence, bool)
+                    or not np.isfinite(float(confidence))
+                    or not 0.0 < float(confidence) < 1.0):
+                raise ValueError("confidence must be finite and between 0 and 1")
+            if (curve_changes_by_id is not None
+                    and not isinstance(curve_changes_by_id, dict)):
+                raise ValueError("named curve histories must be a mapping")
+            if (surface_changes_by_position is not None
+                    and not isinstance(surface_changes_by_position, dict)):
+                raise ValueError("named surface histories must be a mapping")
+
+            def scenario_array(values, label: str) -> np.ndarray:
+                try:
+                    array = np.asarray(values, dtype=float)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError(f"{label} history must be numeric") from exc
+                if array.ndim != 1:
+                    raise ValueError(f"{label} history must be one-dimensional")
+                if not np.all(np.isfinite(array)):
+                    raise ValueError(f"{label} history contains non-finite values")
+                return array
+
+            eq = scenario_array(eq_returns, "equity")
+            ir = scenario_array(rate_changes, "rate")
             vol = (np.zeros_like(eq) if vol_changes is None
-                   else np.asarray(vol_changes, dtype=float))
+                   else scenario_array(vol_changes, "volatility"))
             fx = (np.zeros_like(eq) if fx_returns is None
-                  else np.asarray(fx_returns, dtype=float))
-            n = min(len(eq), len(ir), len(vol), len(fx))
+                  else scenario_array(fx_returns, "FX"))
+            lengths = {
+                "equity": len(eq), "rate": len(ir),
+                "volatility": len(vol), "FX": len(fx),
+            }
+            if len(set(lengths.values())) != 1:
+                detail = ", ".join(
+                    f"{label}={length}" for label, length in lengths.items())
+                raise ValueError(
+                    "joint factor histories must have exactly equal lengths: "
+                    + detail)
+            n = len(eq)
             if n < 30:
                 raise ValueError("full_reprice_var needs at least 30 joint scenarios")
+            named_curve_ids = {
+                str(curve_id)
+                for position in portfolio_service.positions
+                for key in ("curve_id", "proj_curve_id")
+                if (curve_id := (position.params or {}).get(key))
+            }
+            named_surface_positions = {
+                position.id for position in portfolio_service.positions
+                if (position.params or {}).get("vol_surface_id")
+            }
+            if named_curve_ids - set((curve_changes_by_id or {}).keys()):
+                missing = sorted(
+                    named_curve_ids - set((curve_changes_by_id or {}).keys()))
+                raise ValueError(
+                    "named curve histories are required: " + ", ".join(missing))
+            if named_surface_positions - set((surface_changes_by_position or {}).keys()):
+                missing = sorted(
+                    named_surface_positions
+                    - set((surface_changes_by_position or {}).keys()))
+                raise ValueError(
+                    "named surface histories are required for positions: "
+                    + ", ".join(missing))
+
+            curve_arrays = {}
+            for curve_id, nodes in (curve_changes_by_id or {}).items():
+                normalised_curve_id = str(curve_id)
+                if normalised_curve_id in curve_arrays:
+                    raise ValueError(
+                        f"duplicate named curve identity '{normalised_curve_id}'")
+                if not isinstance(nodes, dict) or not nodes:
+                    raise ValueError(
+                        f"named curve '{curve_id}' history has no nodes")
+                curve_arrays[normalised_curve_id] = {}
+                for tenor, values in nodes.items():
+                    try:
+                        node_tenor = float(tenor)
+                    except (TypeError, ValueError, OverflowError) as exc:
+                        raise ValueError(
+                            f"named curve '{curve_id}' has an invalid node {tenor}") from exc
+                    if not np.isfinite(node_tenor) or node_tenor <= 0:
+                        raise ValueError(
+                            f"named curve '{curve_id}' has an invalid node {tenor}")
+                    if node_tenor in curve_arrays[normalised_curve_id]:
+                        raise ValueError(
+                            f"named curve '{curve_id}' has duplicate node {node_tenor}")
+                    array = scenario_array(
+                        values, f"named curve '{curve_id}' node {tenor}")
+                    if len(array) != n:
+                        raise ValueError(
+                            f"named curve '{curve_id}' node {tenor} history is "
+                            f"incomplete or misaligned: expected exactly {n} scenarios, "
+                            f"got {len(array)}")
+                    curve_arrays[normalised_curve_id][node_tenor] = array
+            surface_arrays = {}
+            for position_id, values in (surface_changes_by_position or {}).items():
+                normalised_position_id = str(position_id)
+                if normalised_position_id in surface_arrays:
+                    raise ValueError(
+                        f"duplicate named surface position '{normalised_position_id}'")
+                array = scenario_array(
+                    values, f"named surface history for '{position_id}'")
+                if len(array) != n:
+                    raise ValueError(
+                        f"named surface history for '{position_id}' is incomplete "
+                        f"or misaligned: expected exactly {n} scenarios, got {len(array)}")
+                surface_arrays[normalised_position_id] = array
             pnl = np.empty(n)
-            reprice_errors: list[str] = []
             for i in range(n):
-                res = portfolio_service.full_reprice_pnl(
-                    dS=eq[i], dr=ir[i], dvol=vol[i], dfx=fx[i])
-                pnl[i] = res["pnl"]
-                reprice_errors.extend(res["errors"])
+                context = f"full_reprice_var scenario {i}"
+                try:
+                    res = portfolio_service.full_reprice_pnl(
+                        dS=eq[i], dr=ir[i], dvol=vol[i], dfx=fx[i],
+                        dr_curves={
+                            curve_id: [(tenor, float(values[i]))
+                                       for tenor, values in nodes.items()]
+                            for curve_id, nodes in curve_arrays.items()
+                        } if curve_arrays else None,
+                        dvol_by_position={
+                            position_id: float(values[i])
+                            for position_id, values in surface_arrays.items()
+                        } if surface_arrays else None,
+                        spot_shock_convention=spot_return_convention)
+                except Exception as exc:
+                    raise ValueError(f"{context}: {exc}") from exc
+                pnl[i] = _validated_reprice_pnl(res, context=context)
+            if not np.all(np.isfinite(pnl)):
+                raise ValueError("full_reprice_var P&L series contains non-finite values")
             losses = -pnl
             var = float(np.quantile(losses, confidence))
             tail = losses[losses >= var]
@@ -171,12 +346,11 @@ class RiskService:
                        n_scenarios=n, pnl_mean=float(pnl.mean()),
                        pnl_std=float(pnl.std()), worst=float(pnl.min()),
                        best=float(pnl.max()),
-                       reprice_errors=sorted(set(reprice_errors)))
-            warnings = ([f"{len(set(reprice_errors))} positions failed to reprice"]
-                        if reprice_errors else [])
+                       spot_return_convention=spot_return_convention,
+                       reprice_errors=[])
             return self._result(
                 value=var, model_id=model_id, raw=raw, snapshot=snapshot,
-                warnings=warnings, calculation_type="full_reprice_var",
+                warnings=[], calculation_type="full_reprice_var",
                 inputs=inputs, user_action="Full-reprice portfolio VaR")
         except Exception as exc:
             return self._error_result(model_id=model_id, error=exc,

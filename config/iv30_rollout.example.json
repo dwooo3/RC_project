@@ -1,0 +1,25 @@
+{
+  "source": "MOEX",
+  "from": "2026-07-06",
+  "till": "2026-07-10",
+  "expected_dates": [
+    "2026-07-06",
+    "2026-07-07",
+    "2026-07-08",
+    "2026-07-09",
+    "2026-07-10"
+  ],
+  "required_underlyings": [
+    "MIX"
+  ],
+  "stress_dates": [
+    "2026-07-06",
+    "2026-07-10"
+  ],
+  "min_shocks": 4,
+  "max_staleness_days": 4,
+  "schedule": {
+    "run_time": "19:45",
+    "weekdays_only": true
+  }
+}

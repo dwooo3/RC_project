@@ -128,6 +128,9 @@ extension ContractDecodeTests {
         XCTAssertGreaterThan(mc.varValue, 0)
         XCTAssertFalse(mc.histogram.isEmpty)
         XCTAssertTrue(mc.factors.contains { $0.contains("eq") || $0.contains("equity") || $0.contains("IMOEX") })
+        XCTAssertEqual(mc.method, "matrix_transform_full_reprice")
+        XCTAssertTrue(mc.factors.contains("equity:SBER"))
+        XCTAssertTrue(mc.factors.contains("fx:EUR/RUB"))
     }
 
     func testDecodePortfolioBooks() throws {
@@ -140,6 +143,10 @@ extension ContractDecodeTests {
         let ov = try JSONDecoder().decode(MROverview.self, from: load("marketrisk_overview"))
         XCTAssertEqual(ov.book, "Trading")
         XCTAssertGreaterThan(ov.varValue, 0)
+        let evt = try XCTUnwrap(ov.methods.first { $0.method == "evt" })
+        XCTAssertEqual(evt.nExceedances, 30)
+        XCTAssertEqual(evt.xiGrid?.count, 3)
+        XCTAssertEqual(evt.es, 2864588.61)
     }
 
     func testDecodeMarketRiskBacktestActual() throws {

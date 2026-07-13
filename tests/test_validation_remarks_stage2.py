@@ -143,8 +143,10 @@ def test_overview_overlapping_horizon():
     from api import marketrisk
     marketrisk.invalidate_cache()
     ov = marketrisk.overview(CONTEXT, 0.99, 300, horizon=10)
-    assert ov["horizon_method"] == "overlapping"
+    assert ov["horizon_method"] == "factor_aggregation_full_reprice"
     assert ov["n_scenarios"] < 300                     # окна короче ряда
+    assert ov["hyppl"][0]["date"] == marketrisk.factor_shifts(
+        CONTEXT, 300)["dates"][9]                      # дата конца 10d-окна
     ov1 = marketrisk.overview(CONTEXT, 0.99, 300, horizon=1)
     assert ov["var"] > ov1["var"]
 
@@ -168,5 +170,5 @@ def test_mc_matrix_var_coherent():
     mc = mc_var_matrix(CONTEXT, 0.99, 300, n_sims=200, seed=1)
     assert mc["var"] > 0
     assert mc["es"] >= mc["var"]
-    assert len(mc["factors"]) == 8                     # eq + 5 rates + vol + fx
+    assert len(mc["factors"]) >= 8                    # base 8 + granular book factors
     assert abs(mc["corr_eq_rates5y"]) <= 1.0

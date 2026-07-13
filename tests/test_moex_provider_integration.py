@@ -2,7 +2,7 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -79,6 +79,51 @@ def test_moex_snapshot_recorded_in_lineage_and_store():
     # snapshot meta persisted to DB for reproducibility
     meta = db.get_snapshot_meta(snap.snapshot_id)
     assert meta["source"] == "MOEX" and meta["quality"] == "OK"
+
+
+def test_snapshot_read_preserves_authoritative_manifest_and_quality():
+    db = _ingested_db()
+    sid = f"moex-{VAL.isoformat()}"
+    db.save_snapshot_meta(
+        snapshot_id=sid,
+        valuation_date=VAL,
+        source="MOEX",
+        quality="WARN",
+        fetch_ts=datetime(2020, 1, 2, 3, 4, 5),
+        iss_request_urls=["https://iss.moex.com/original"],
+        metadata={"lineage": "authoritative", "production_eligible": False},
+    )
+    before = db.get_snapshot_meta(sid)
+
+    snap = MarketDataService(market_db=db).moex_snapshot(VAL)
+    after = db.get_snapshot_meta(sid)
+
+    assert snap.quality == "WARN"
+    assert snap.metadata["lineage"] == "authoritative"
+    for field in (
+        "quality", "created_at", "fetch_ts", "iss_request_urls", "metadata",
+    ):
+        assert after[field] == before[field]
+
+
+def test_production_rejects_non_ok_or_missing_authoritative_manifest():
+    db = _ingested_db()
+    sid = f"moex-{VAL.isoformat()}"
+    db.save_snapshot_meta(
+        snapshot_id=sid,
+        valuation_date=VAL,
+        source="MOEX",
+        quality="STALE",
+        fetch_ts=datetime(2020, 1, 2, 3, 4, 5),
+    )
+    service = MarketDataService(market_db=db, mode="production")
+
+    with pytest.raises(Exception):
+        service.moex_snapshot(VAL)
+
+    db._exec("DELETE FROM market_data_snapshots WHERE snapshot_id=?", (sid,))
+    with pytest.raises(Exception):
+        service.moex_snapshot(VAL)
 
 
 def test_fallback_to_demo_when_db_empty():

@@ -63,7 +63,11 @@ def equity_swap(S: float, notional: float, T: float, r: float, q: float = 0.0,
         fair_spread=0.0,                       # ноги паритетны без спреда
         breakeven_spread=(equity_leg - floating_leg) / (notional * annuity)
         if annuity > 0 else 0.0,
-        delta=sign * notional * np.exp(-q * T),   # экспозиция к споту через equity-ногу
+        # In this par-start continuous-reset approximation both legs are
+        # expressed on the same fixed notional and cancel before the spread
+        # leg. NPV is therefore spot-independent; reporting a forward-like
+        # delta was inconsistent with the implemented value function.
+        delta=0.0,
         notional=notional, T=T,
     )
 

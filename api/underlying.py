@@ -10,6 +10,7 @@ risk-free rate. Each workstation product declares its own fill map
 from __future__ import annotations
 
 import datetime as _dt
+import math
 
 from api import market_entity
 
@@ -57,13 +58,46 @@ EQUITY_TO_FORTS = {
 }
 
 
-def _iv_history_last(ctx, code: str | None) -> float | None:
-    """Последняя точка накопленной ATM-IV истории (time_series IV:{code})."""
+def _iv_history_last(ctx, code: str | None, *, max_age_days: int = 4) -> float | None:
+    """Latest fresh IV level: canonical 30d ATM-forward, then legacy.
+
+    Workstation defaults are tied to the active snapshot date.  A historic
+    ``time_series`` tail must not silently seed a current trade; weekend gaps
+    are allowed, but future or older observations are ignored.
+    """
     if not code:
         return None
     try:
+        as_of = getattr(ctx.snapshot, "valuation_date", None) or _dt.date.today()
+        if isinstance(as_of, str):
+            as_of = _dt.date.fromisoformat(as_of[:10])
+        from infra.jobs.iv30_operational import governed_iv30_level
+
+        try:
+            governed = governed_iv30_level(
+                ctx.market_db,
+                code,
+                as_of=as_of,
+                max_staleness_days=max_age_days,
+            )
+        except Exception:
+            governed = None
+        if governed is not None:
+            return round(governed, 4)
+
+        # Compatibility only: the legacy nearest-expiry series is explicitly
+        # distinct from canonical IV30 and cannot confer IV30 governance.
         rows = ctx.market_db.get_time_series(f"IV:{code}", "vol")
-        return round(float(rows[-1]["value"]), 4) if rows else None
+        for row in reversed(rows):
+            try:
+                observed = _dt.date.fromisoformat(str(row["dt"])[:10])
+                age = (as_of - observed).days
+                value = float(row["value"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if 0 <= age <= max_age_days and math.isfinite(value):
+                return round(value, 4)
+        return None
     except Exception:
         return None
 
@@ -80,6 +114,20 @@ def _atm_iv(ctx, asset_code: str | None, spot: float | None) -> float | None:
         if sid not in (surfaces or {}):
             continue
         try:
+            from infra.moex_iss.vol_surface import governed_snapshot_surface_error
+
+            raw = ctx.market_db.get_vol_points(ctx.snapshot.snapshot_id)
+            observations = ctx.market_db.get_vol_point_observations(
+                ctx.snapshot.snapshot_id)
+            lineage_error = governed_snapshot_surface_error(
+                raw,
+                observations,
+                sid,
+                surfaces[sid],
+                ctx.snapshot.valuation_date,
+            )
+            if lineage_error:
+                continue
             surface = ctx.market.get_vol_surface(sid, ctx.snapshot)
             if hasattr(surface, "get_vol") and spot:
                 return round(float(surface.get_vol(spot, 0.25)), 4)

@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 /// Minimal CSV export via a save panel. Used by Market Data tables (instrument
 /// lists, history) — the doc's P0 "Export" without a heavy import/export module.
 enum CSVExport {
+    @MainActor
     static func save(suggestedName: String, header: [String], rows: [[String]]) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = suggestedName.hasSuffix(".csv") ? suggestedName : suggestedName + ".csv"

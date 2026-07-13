@@ -87,7 +87,12 @@ def assess_quality(
     quality = QUALITY_OK
 
     if as_of is not None:
-        stale_days = abs((valuation_date - as_of).days)
+        if as_of > valuation_date:
+            warnings.append(
+                f"market data trade date {as_of} is after valuation {valuation_date}"
+            )
+            return QUALITY_REJECTED, warnings
+        stale_days = (valuation_date - as_of).days
         if stale_days > max_stale_days:
             warnings.append(
                 f"market data trade date {as_of} is {stale_days}d from valuation {valuation_date}"

@@ -1,6 +1,7 @@
 """Market data platform service."""
 
-from datetime import date
+import json
+from datetime import date, datetime
 from typing import Any, Protocol
 
 import numpy as np
@@ -14,7 +15,12 @@ from domain.market_data import (
     MarketDataStore,
 )
 from infra.moex_iss.validation import (
-    QUALITY_REJECTED, assess_quality, validate_curve_points, validate_fx,
+    QUALITY_OK,
+    QUALITY_REJECTED,
+    assess_quality,
+    is_production_quality,
+    validate_curve_points,
+    validate_fx,
 )
 
 
@@ -45,24 +51,77 @@ class MoexProvider(ProviderInterface):
     """Assemble a governed MOEX snapshot from the local market-data DB.
 
     Reads curve points + FX written by the ingestion ETL, validates them,
-    derives a quality verdict, persists snapshot lineage metadata, and returns a
-    MarketDataSnapshot(source=MOEX). REJECTED data raises so the service falls
-    back to DEMO (it must not feed production valuations). Without a DB the
-    provider stays a no-op (NotImplementedError -> DEMO fallback)."""
+    derives a quality verdict, and returns a MarketDataSnapshot(source=MOEX).
+    Normal loads are read-only: an existing authoritative manifest is preserved
+    byte-for-byte.  Ingestion jobs may explicitly request manifest publication.
+    REJECTED data raises so it cannot feed valuations. Without a DB the provider
+    stays a no-op (NotImplementedError -> DEMO fallback)."""
 
     source = MarketDataSource.MOEX
 
     def __init__(self, db=None):
         self.db = db
 
-    def load_snapshot(self, valuation_date: date | None = None, *, db=None, **kwargs) -> MarketDataSnapshot:
-        from datetime import datetime, date as _date
-
+    def load_snapshot(
+        self,
+        valuation_date: date | None = None,
+        *,
+        db=None,
+        persist_manifest: bool = False,
+        require_manifest: bool = False,
+        **kwargs,
+    ) -> MarketDataSnapshot:
         db = db or self.db
         if db is None:
             raise NotImplementedError("MOEX provider requires a local market-data DB")
-        valuation_date = valuation_date or _date.today()
+        inside_read_snapshot = bool(kwargs.pop("_inside_read_snapshot", False))
+        read_snapshot = getattr(db, "read_snapshot", None)
+        if require_manifest and persist_manifest:
+            raise ValueError(
+                "production snapshot validation cannot persist its manifest")
+        if (require_manifest and not inside_read_snapshot
+                and callable(read_snapshot)):
+            with read_snapshot():
+                return self.load_snapshot(
+                    valuation_date,
+                    db=db,
+                    persist_manifest=False,
+                    require_manifest=True,
+                    _inside_read_snapshot=True,
+                    **kwargs,
+                )
+        valuation_date = valuation_date or date.today()
         snapshot_id = f"moex-{valuation_date.isoformat()}"
+
+        def strict_day(value, label: str) -> date:
+            if isinstance(value, datetime):
+                return value.date()
+            if isinstance(value, date):
+                return value
+            if not isinstance(value, str):
+                raise ValueError(f"{label} is not a valid ISO date")
+            raw = value.strip()
+            try:
+                return (
+                    date.fromisoformat(raw)
+                    if len(raw) == 10
+                    else datetime.fromisoformat(
+                        raw.replace("Z", "+00:00")
+                    ).date()
+                )
+            except ValueError as exc:
+                raise ValueError(f"{label} is not a valid ISO date") from exc
+
+        def json_value(raw, fallback):
+            if raw in (None, ""):
+                return fallback
+            if isinstance(raw, type(fallback)):
+                return raw
+            try:
+                decoded = json.loads(raw)
+            except (TypeError, ValueError):
+                return fallback
+            return decoded if isinstance(decoded, type(fallback)) else fallback
 
         curve_ids = db.list_curve_ids(snapshot_id)
         if not curve_ids:
@@ -70,11 +129,25 @@ class MoexProvider(ProviderInterface):
 
         curves: dict[str, YieldCurve] = {}
         curve_errors: list[str] = []
-        as_of: _date | None = None
+        as_of: date | None = None
         for curve_id in curve_ids:
             points = db.get_curve_points(snapshot_id, curve_id)
             triples = [(p["tenor"], p["zero_rate"], p["discount_factor"]) for p in points]
             errs = validate_curve_points(triples)
+            curve_meta = db.get_curve(snapshot_id, curve_id) or {}
+            curve_as_of = None
+            if curve_meta.get("as_of") in (None, ""):
+                errs.append("curve observation date is missing")
+            else:
+                try:
+                    curve_as_of = strict_day(
+                        curve_meta["as_of"], f"{curve_id} observation date")
+                except ValueError as exc:
+                    errs.append(str(exc))
+                if curve_as_of is not None and curve_as_of > valuation_date:
+                    errs.append(
+                        f"curve observation date {curve_as_of.isoformat()} is after "
+                        f"valuation date {valuation_date.isoformat()}")
             curve_errors.extend(f"{curve_id}: {e}" for e in errs)
             if not errs:
                 curves[curve_id] = YieldCurve(
@@ -83,16 +156,17 @@ class MoexProvider(ProviderInterface):
                     label=curve_id,
                     interp="cubic" if len(points) >= 3 else "linear",
                     source=MarketDataSource.MOEX,
-                    valuation_date=valuation_date,
+                    valuation_date=curve_as_of,
                     rate_type="zero",
-                    metadata={"source": "MOEX"},
+                    metadata={
+                        "source": "MOEX",
+                        "snapshot_id": snapshot_id,
+                        "as_of": curve_as_of.isoformat(),
+                    },
                 )
-            meta = db.get_curve(snapshot_id, curve_id)
-            if meta and meta.get("as_of") and as_of is None:
-                try:
-                    as_of = _date.fromisoformat(str(meta["as_of"])[:10])
-                except ValueError:
-                    as_of = None
+            if curve_as_of is not None and (
+                    curve_id == "GCURVE_RUB" or as_of is None):
+                as_of = curve_as_of
 
         fx_rates = db.get_fx_rates(snapshot_id)
         fx_errors = validate_fx(fx_rates)
@@ -116,29 +190,95 @@ class MoexProvider(ProviderInterface):
         if quality == QUALITY_REJECTED:
             raise ValueError(f"MOEX snapshot rejected: {'; '.join(warnings)}")
 
-        db.get_snapshot_meta(snapshot_id) or {}
-        iss_urls = []
-        metadata = {
+        manifest = db.get_snapshot_meta(snapshot_id)
+        if require_manifest and manifest is None:
+            raise ValueError(f"MOEX snapshot {snapshot_id} has no authoritative manifest")
+        computed_metadata = {
             "quality_warnings": warnings,
-            "iss_request_urls": iss_urls,
+            "iss_request_urls": [],
             "trade_date": as_of.isoformat() if as_of else "",
         }
         if warnings:
-            metadata["warning"] = "; ".join(warnings)
-        db.save_snapshot_meta(
-            snapshot_id=snapshot_id, valuation_date=valuation_date,
-            source=MarketDataSource.MOEX.value, quality=quality,
-            fetch_ts=datetime.now(), iss_request_urls=iss_urls, metadata=metadata,
-        )
+            computed_metadata["warning"] = "; ".join(warnings)
+
+        if manifest is not None:
+            manifest_date = strict_day(
+                manifest.get("valuation_date"), "manifest valuation date")
+            if manifest_date != valuation_date:
+                raise ValueError(
+                    f"manifest valuation date {manifest_date.isoformat()} does not "
+                    f"match requested {valuation_date.isoformat()}")
+            if str(manifest.get("source") or "").upper() != "MOEX":
+                raise ValueError("snapshot manifest source is not MOEX")
+            manifest_quality = str(manifest.get("quality") or "").upper()
+            if manifest_quality == QUALITY_REJECTED:
+                raise ValueError("snapshot manifest is REJECTED")
+            # Never promote an authoritative WARN/STALE/PARTIAL manifest merely
+            # because a later read can still reconstruct curve and FX objects.
+            effective_quality = (
+                quality if quality != QUALITY_OK else manifest_quality
+            )
+            metadata = json_value(manifest.get("metadata"), {})
+            iss_urls = json_value(manifest.get("iss_request_urls"), [])
+        else:
+            effective_quality = quality
+            metadata = computed_metadata
+            iss_urls = []
+
+        if require_manifest:
+            from infra.jobs.data_quality import (
+                QUALITY_CONTRACT_VERSION,
+                snapshot_quality_report,
+            )
+            quality_report = db.latest_validation_report(snapshot_id)
+            report_checks = json_value(
+                (quality_report or {}).get("checks_json"), {})
+            current_report = snapshot_quality_report(
+                db, snapshot_id, valuation_date=date.today())
+            current_checks = current_report.get("checks") or {}
+            if (not quality_report
+                    or str(quality_report.get("status") or "").upper() != "OK"
+                    or not bool(quality_report.get("production_eligible"))
+                    or report_checks.get("contract_version")
+                    != QUALITY_CONTRACT_VERSION
+                    or report_checks.get("snapshot_fingerprint")
+                    != current_checks.get("snapshot_fingerprint")
+                    or str(current_report.get("status") or "").upper() != "OK"
+                    or not bool(current_report.get("production_eligible"))):
+                raise ValueError(
+                    f"MOEX snapshot {snapshot_id} has no current production-eligible "
+                    "validation report")
+
+        if persist_manifest:
+            persisted_metadata = dict(metadata)
+            persisted_metadata.setdefault("quality_warnings", warnings)
+            persisted_metadata.setdefault(
+                "trade_date", as_of.isoformat() if as_of else "")
+            db.save_snapshot_meta(
+                snapshot_id=snapshot_id,
+                valuation_date=valuation_date,
+                source=MarketDataSource.MOEX.value,
+                quality=effective_quality,
+                fetch_ts=(manifest or {}).get("fetch_ts") or datetime.now(),
+                iss_request_urls=iss_urls,
+                metadata=persisted_metadata,
+            )
+            metadata = persisted_metadata
+
         return MarketDataSnapshot(
             snapshot_id=snapshot_id,
             valuation_date=valuation_date,
             source=MarketDataSource.MOEX,
-            quality=quality,
+            quality=effective_quality,
             curves=curves,
             fx_rates=fx_rates,
             vol_surfaces=vol_surfaces,
-            source_details={"provider": "MOEX ISS", "trade_date": metadata["trade_date"]},
+            source_details={
+                "provider": "MOEX ISS",
+                "trade_date": metadata.get(
+                    "trade_date", as_of.isoformat() if as_of else ""),
+                "manifest_present": manifest is not None or persist_manifest,
+            },
             metadata=metadata,
         )
 
@@ -391,6 +531,7 @@ class MarketDataService:
         valuation_date: date | None = None,
         *,
         fallback_to_demo: bool | None = None,
+        persist_manifest: bool = False,
     ) -> MarketDataSnapshot:
         """
         Return a production MOEX snapshot from the local DB, or fall back to the
@@ -401,7 +542,16 @@ class MarketDataService:
         if fallback_to_demo is None:
             fallback_to_demo = self.mode != MarketDataMode.PRODUCTION
         try:
-            snap = self.load_provider_snapshot(MarketDataSource.MOEX, valuation_date)
+            snap = self.load_provider_snapshot(
+                MarketDataSource.MOEX,
+                valuation_date,
+                persist_manifest=persist_manifest,
+                require_manifest=(self.mode == MarketDataMode.PRODUCTION),
+            )
+            if (self.mode == MarketDataMode.PRODUCTION
+                    and not is_production_quality(snap.quality)):
+                raise ValueError(
+                    f"MOEX snapshot quality '{snap.quality}' is not production-ready")
             self.last_fallback_used = False
             return snap
         except Exception:

@@ -1322,17 +1322,26 @@ def get(model_id: str) -> dict:
     }))
     workflow_layer = "Research" if model_id in ANALYTICS_LAB_MODELS else "Production"
     analytics_lab_only = model_id in ANALYTICS_LAB_MODELS
-    entry.setdefault("workflow_layer", workflow_layer)
-    entry.setdefault("analytics_lab_only", analytics_lab_only)
-    # Production rule (2026-07, решение юзера): любой Validated-прайсер
-    # допущен в прод; Analytics-Lab модели исключены всегда (research-контур);
-    # PRODUCTION_MODELS остаётся списком Approximation-исключений.
     if analytics_lab_only:
-        entry.setdefault("production_allowed", False)
+        # Analytics-Lab membership is an authoritative hard invariant.  A
+        # stale/hand-written entry must not opt a research model into a
+        # production workflow by overriding these derived fields.
+        entry["workflow_layer"] = "Research"
+        entry["analytics_lab_only"] = True
+        entry["production_allowed"] = False
+    else:
+        entry.setdefault("workflow_layer", workflow_layer)
+        entry.setdefault("analytics_lab_only", False)
+    # Production rule (2026-07): Validated-модель допущена по умолчанию;
+    # Analytics-Lab всегда исключён. Любой иной статус, включая Approximation,
+    # требует ЯВНОГО ``production_allowed=True`` в записи реестра — одного
+    # присутствия в legacy-списке PRODUCTION_MODELS недостаточно.
+    if analytics_lab_only:
+        entry["production_allowed"] = False
     elif entry.get("status") == ModelStatus.VALIDATED:
         entry.setdefault("production_allowed", True)
-    elif model_id in PRODUCTION_MODELS:
-        entry.setdefault("production_allowed", entry.get("status") in {ModelStatus.VALIDATED, ModelStatus.APPROXIMATION})
+    else:
+        entry.setdefault("production_allowed", False)
     # M0: enrich with taxonomy axes (asset_class / model_family / method / kind)
     try:
         from models.taxonomy import classify

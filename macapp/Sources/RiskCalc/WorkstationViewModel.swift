@@ -175,7 +175,9 @@ final class WorkstationViewModel {
         if let appendKey = spec.appendTo {
             // basket-style products: append SECID to a schedule text field
             let current = choiceValues[appendKey] ?? ""
-            let token = "\(facts.secid):1.0"
+            let token = appendKey == "component_secids"
+                ? facts.secid
+                : "\(facts.secid):1.0"
             choiceValues[appendKey] = current.isEmpty ? token : current + ", " + token
             autofilledKeys.append(appendKey)
             return
@@ -202,6 +204,12 @@ final class WorkstationViewModel {
         var params: [String: BridgeValue] = [:]
         for (key, value) in numericValues { params[key] = BridgeValue(kind: .number(value)) }
         for (key, value) in choiceValues { params[key] = BridgeValue(kind: .string(value)) }
+        // Preserve the selected market identity through capture/incremental
+        // requests. The bridge resolves FX futures (Si/Eu/CNY) to a pair and
+        // equity-like instruments to their own historical factor series.
+        if let secid = selectedUnderlying?.secid {
+            params["secid"] = BridgeValue(kind: .string(secid))
+        }
         return params
     }
 

@@ -427,6 +427,25 @@ def cds_index_option(notional: float, strike_spread: float, current_spread: floa
     """
     from scipy.stats import norm as _norm
 
+    numeric_inputs = (notional, strike_spread, current_spread, sigma, T_opt,
+                      T_index, freq, r, recovery)
+    if not all(np.isfinite(value) for value in numeric_inputs):
+        raise ValueError("CDS index option inputs must be finite")
+    if notional <= 0:
+        raise ValueError("notional must be positive")
+    if strike_spread <= 0 or current_spread <= 0:
+        raise ValueError("strike_spread and current_spread must be positive")
+    if sigma <= 0:
+        raise ValueError("sigma must be positive")
+    if T_opt <= 0 or T_index <= T_opt:
+        raise ValueError("require 0 < T_opt < T_index")
+    if int(freq) != freq or freq <= 0:
+        raise ValueError("freq must be a positive integer")
+    if not 0 <= recovery < 1:
+        raise ValueError("recovery must be in [0, 1)")
+    if option not in {"payer", "receiver"}:
+        raise ValueError("option must be 'payer' or 'receiver'")
+
     h = isda_flat_hazard(current_spread, T_index, freq, r, recovery)
     rpv01_index = isda_cds_legs(h, 0.0, T_index, freq, r, recovery)["rpv01"]
     rpv01_opt = (isda_cds_legs(h, 0.0, T_opt, freq, r, recovery)["rpv01"]

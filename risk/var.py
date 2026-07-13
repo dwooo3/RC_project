@@ -216,7 +216,20 @@ def evt_var(returns: np.ndarray, position_value: float,
     excesses = losses[losses > u] - u
 
     if len(excesses) < 20:
-        return {"error": "Too few exceedances; lower threshold_pct"}
+        warning = (
+            f"мало превышений порога ({len(excesses)} < 20) — "
+            "EVT fit не выполнен")
+        return {
+            "error": "Too few exceedances; lower threshold_pct",
+            "threshold_pct": float(threshold_pct),
+            "threshold": float(u),
+            "n_exceedances": int(len(excesses)),
+            "xi_by_threshold": {},
+            "xi_spread": None,
+            "warnings": [warning],
+            "method": "evt_pot",
+            "confidence": confidence,
+        }
 
     xi, loc, beta = genpareto.fit(excesses, floc=0)
     n  = len(losses); Nu = len(excesses)
@@ -357,19 +370,54 @@ def kupiec_test(n_obs: int, n_exceptions: int, confidence: float = 0.95) -> dict
     Kupiec (1995) Proportion of Failures (POF) test.
     H0: model is correctly specified (exception rate = 1-confidence).
     """
+    confidence = _validate_confidence(confidence)
+    counts = {"n_obs": n_obs, "n_exceptions": n_exceptions}
+    normalized = {}
+    for name, value in counts.items():
+        if isinstance(value, (bool, np.bool_)):
+            raise ValueError(f"{name} must be an integer count")
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must be an integer count") from exc
+        if not np.isfinite(number) or not number.is_integer():
+            raise ValueError(f"{name} must be an integer count")
+        normalized[name] = int(number)
+    n_obs = normalized["n_obs"]
+    n_exceptions = normalized["n_exceptions"]
+    if n_obs < 0:
+        raise ValueError("n_obs must be non-negative")
+    if not 0 <= n_exceptions <= n_obs:
+        raise ValueError("n_exceptions must be between 0 and n_obs")
+    if n_obs == 0:
+        return dict(
+            lr_stat=None,
+            p_value=None,
+            reject=False,
+            applicable=False,
+            reason="Kupiec test needs at least one out-of-sample observation",
+            expected_exceptions=0.0,
+            actual_exceptions=n_exceptions,
+            n_obs=0,
+        )
+
     p    = 1 - confidence
     p_hat= n_exceptions / n_obs
-    if p_hat == 0:
-        lr = 2*n_obs*np.log(1/(1-p))
-    elif p_hat == 1:
-        lr = 2*n_obs*np.log(1/p)
+    # Work directly in log-likelihood space. Multiplying p**x terms first
+    # underflows for realistic large backtest samples and used to yield NaN.
+    ll_null = ((n_obs - n_exceptions) * np.log1p(-p)
+               + n_exceptions * np.log(p))
+    if p_hat in (0.0, 1.0):
+        ll_alt = 0.0
     else:
-        lr = -2*(np.log((1-p)**(n_obs-n_exceptions)*p**n_exceptions)
-                -np.log((1-p_hat)**(n_obs-n_exceptions)*p_hat**n_exceptions))
+        ll_alt = ((n_obs - n_exceptions) * np.log1p(-p_hat)
+                  + n_exceptions * np.log(p_hat))
+    lr = max(0.0, float(-2.0 * (ll_null - ll_alt)))
     from scipy.stats import chi2
     p_val   = 1 - chi2.cdf(lr, df=1)
     critical= chi2.ppf(0.95, df=1)
-    return dict(lr_stat=lr, p_value=p_val, reject=(lr > critical),
+    return dict(lr_stat=lr, p_value=p_val, reject=bool(lr > critical),
+                applicable=True,
                 expected_exceptions=n_obs*p,
                 actual_exceptions=n_exceptions, n_obs=n_obs)
 

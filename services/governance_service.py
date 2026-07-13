@@ -7,7 +7,6 @@ from services.audit_service import AuditService
 
 _PRODUCTION_ALLOWED = {
     registry.ModelStatus.VALIDATED,
-    registry.ModelStatus.APPROXIMATION,
 }
 
 _QUANT_REVIEW_STATUS = {
@@ -114,6 +113,7 @@ class GovernanceService:
         model_id: str,
         *,
         allow_analytics_lab: bool = False,
+        allow_non_production: bool = False,
     ) -> ModelRegistryEntry:
         """Validate whether a model may be used for a service calculation."""
         model = self.get_model(model_id)
@@ -124,6 +124,16 @@ class GovernanceService:
         if model.is_research_only and not allow_analytics_lab:
             raise ValueError(
                 f"Model {model_id} belongs to Analytics Lab and requires explicit allow_analytics_lab=True."
+            )
+        # Approximation is the production-policy regression addressed by P0:
+        # it must be an explicit analytical opt-in. Existing Prototype
+        # workflows remain callable with governed warnings (unless separately
+        # blocked as Analytics Lab), preserving the research workstation.
+        if (model.status == registry.ModelStatus.APPROXIMATION.value
+                and not model.production_allowed
+                and not allow_non_production):
+            raise ValueError(
+                f"Model {model_id} is not production allowed: {model.status}."
             )
         return model
 
@@ -164,7 +174,7 @@ class GovernanceService:
         """Return model ids allowed to appear in production workflows."""
         return [
             model_id
-            for model_id in registry.PRODUCTION_MODELS
+            for model_id in registry.MODEL_REGISTRY
             if self.get_model(model_id).production_allowed and not self.get_model(model_id).is_research_only
         ]
 
