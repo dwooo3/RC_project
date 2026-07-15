@@ -235,8 +235,20 @@ final class WorkstationViewModel {
         errorMessage = nil
         do {
             catalogue = try await client.wsCatalogue()
-            if productID == nil { productID = products.first?.id }
+            if productID == nil {
+                if !restoreDraft() { productID = products.first?.id }
+            }
             resetForSelection()
+            if let draft = pendingDraftValues {
+                // re-apply after resetForSelection seeded the defaults
+                for (key, value) in draft.numeric where numericValues[key] != nil {
+                    numericValues[key] = value
+                }
+                for (key, value) in draft.choice where choiceValues[key] != nil {
+                    choiceValues[key] = value
+                }
+                pendingDraftValues = nil
+            }
             // контуры — не критично: без них прайсим в дефолтном FO
             environments = (try? await client.environments()) ?? []
         } catch {
@@ -244,6 +256,50 @@ final class WorkstationViewModel {
             errorMessage = error.localizedDescription
         }
         isLoading = false
+    }
+
+    // MARK: workspace draft persistence (spec §21.6)
+
+    private struct WorkspaceDraft: Codable {
+        var product: String
+        var engine: String?
+        var env: String
+        var numeric: [String: Double]
+        var choice: [String: String]
+    }
+
+    private static let draftKey = "pricing.workspace.draft"
+    private var pendingDraftValues: WorkspaceDraft?
+
+    /// Called after a successful run — the draft survives an app restart.
+    private func persistDraft() {
+        guard let product = productID else { return }
+        let draft = WorkspaceDraft(product: product, engine: engineID,
+                                   env: envID, numeric: numericValues,
+                                   choice: choiceValues)
+        if let data = try? JSONEncoder().encode(draft) {
+            UserDefaults.standard.set(data, forKey: Self.draftKey)
+        }
+    }
+
+    /// Restore the last workspace draft; values re-apply after the schema
+    /// seeds defaults (unknown keys are dropped — schema stays authoritative).
+    private func restoreDraft() -> Bool {
+        guard let data = UserDefaults.standard.data(forKey: Self.draftKey),
+              let draft = try? JSONDecoder().decode(WorkspaceDraft.self,
+                                                    from: data),
+              products.contains(where: { $0.id == draft.product })
+        else { return false }
+        productID = draft.product
+        if let engine = draft.engine,
+           selectedProduct?.engines.contains(where: { $0.id == engine }) == true {
+            engineID = engine
+        } else {
+            engineID = selectedProduct?.engines.first?.id
+        }
+        envID = draft.env
+        pendingDraftValues = draft
+        return true
     }
 
     func selectProduct(_ id: String) {
@@ -474,6 +530,7 @@ final class WorkstationViewModel {
             runHistory.insert(record, at: 0)
             if runHistory.count > 20 { runHistory.removeLast(runHistory.count - 20) }
             techState = .idle
+            persistDraft()
         } catch {
             errorMessage = error.localizedDescription
             techState = .failed(error.localizedDescription)

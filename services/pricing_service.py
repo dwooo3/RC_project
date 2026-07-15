@@ -239,6 +239,8 @@ class PricingService:
         n_sims: int | None = None,
         steps: int | None = None,
         seed: int | None = None,
+        ns: int | None = None,
+        nt: int | None = None,
     ) -> dict:
         """
         Price a vanilla option. sigma may be omitted when vol_surface_id names a
@@ -276,14 +278,16 @@ class PricingService:
                     note += f" · SABR fit RMSE {rmse:.2%}"
                 vol_warnings.append(note)
             raw = european(S, K, T, r, sigma, q, opt, model,
-                           n=n, n_sims=n_sims, steps=steps, seed=seed)
+                           n=n, n_sims=n_sims, steps=steps, seed=seed,
+                           ns=ns, nt=nt)
             if vol_surface_id is not None and isinstance(raw, dict):
                 raw["vol_surface_id"] = vol_surface_id
                 raw["sigma_used"] = sigma
             inputs = {"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q, "opt": opt,
                       "model": model, "vol_surface_id": vol_surface_id}
             for key, val in (("n", n), ("n_sims", n_sims),
-                             ("steps", steps), ("seed", seed)):
+                             ("steps", steps), ("seed", seed),
+                             ("ns", ns), ("nt", nt)):
                 if val is not None:      # numericals are part of the evidence
                     inputs[key] = val
             return self._result(
@@ -1889,14 +1893,16 @@ class PricingService:
 
     def price_barrier_option_pde(self, S, K, H, T, r, sigma, q=0.0, opt="call",
                                  barrier_type="down-out", rebate=0.0,
-                                 snapshot=None) -> dict:
+                                 ns=None, nt=None, snapshot=None) -> dict:
         """Barrier option via the Crank-Nicolson PDE (cross-check to closed form)."""
         from models.pde import cn_barrier
         return self._priced(
             model_id="pde_cn", calculation_type="barrier_option_pde_pricing",
-            engine=lambda: cn_barrier(S, K, H, T, r, sigma, q, opt, barrier_type, rebate),
+            engine=lambda: cn_barrier(S, K, H, T, r, sigma, q, opt, barrier_type,
+                                      rebate, Ns=int(ns or 400), Nt=int(nt or 400)),
             inputs={"S": S, "K": K, "H": H, "T": T, "r": r, "sigma": sigma, "q": q,
-                    "opt": opt, "barrier_type": barrier_type, "rebate": rebate},
+                    "opt": opt, "barrier_type": barrier_type, "rebate": rebate,
+                    "ns": ns, "nt": nt},
             snapshot=snapshot, user_action="Price barrier option (PDE)")
 
     def price_merton_option(self, S, K, T, r, sigma, q=0.0, lam=0.1, mu_j=-0.1,

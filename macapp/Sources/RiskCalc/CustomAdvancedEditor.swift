@@ -18,7 +18,7 @@ struct ExprKindInfo {
 let exprKindOrder: [String] = [
     "const", "param", "state", "perf", "time", "accrual",
     "path_min", "path_max",
-    "asset", "worst_of", "best_of", "basket_avg", "nth_worst",
+    "asset", "worst_of", "best_of", "basket_avg", "weighted", "nth_worst",
     "worst_path_min",
     "add", "sub", "mul", "div", "neg", "min", "max", "if",
     "ge", "gt", "le", "lt", "and", "or", "not",
@@ -37,6 +37,7 @@ let exprKinds: [String: ExprKindInfo] = [
     "worst_of": .init(label: "худший актив", args: [], result: .number),
     "best_of":  .init(label: "лучший актив", args: [], result: .number),
     "basket_avg": .init(label: "среднее корзины", args: [], result: .number),
+    "weighted": .init(label: "взвешенная корзина", args: [], result: .number),
     "nth_worst": .init(label: "n-й худший", args: [], result: .number),
     "worst_path_min": .init(label: "min худшего по пути", args: [],
                             result: .number),
@@ -67,13 +68,15 @@ final class ENode: Identifiable {
     var kind: String
     var value: Double
     var name: String
+    var weights: [Double]
     var children: [ENode]
 
     init(_ kind: String, value: Double = 1.0, name: String = "",
-         children: [ENode] = []) {
+         weights: [Double] = [], children: [ENode] = []) {
         self.kind = kind
         self.value = value
         self.name = name
+        self.weights = weights
         self.children = children
     }
 
@@ -109,6 +112,8 @@ final class ENode: Identifiable {
             return ["node": "asset", "index": Int(value)]
         case "nth_worst":
             return ["node": "nth_worst", "rank": Int(value)]
+        case "weighted":
+            return ["node": "weighted", "weights": weights]
         default:
             var out: [String: Any] = ["node": kind]
             if !children.isEmpty { out["args"] = children.map { $0.toJSON() } }
@@ -121,6 +126,7 @@ final class ENode: Identifiable {
         node.value = (dict["value"] as? NSNumber)?.doubleValue ?? 1.0
         if let index = dict["index"] as? NSNumber { node.value = index.doubleValue }
         if let rank = dict["rank"] as? NSNumber { node.value = rank.doubleValue }
+        node.weights = (dict["weights"] as? [NSNumber])?.map(\.doubleValue) ?? []
         node.name = dict["name"] as? String ?? ""
         node.children = (dict["args"] as? [[String: Any]])?.map(fromJSON) ?? []
         return node
@@ -399,6 +405,26 @@ struct ExprTreeEditor: View {
             ), format: .number)
                 .textFieldStyle(.roundedBorder).monospacedDigit()
                 .frame(width: 44)
+        case "weighted":
+            // Locale-independent: always dot-decimal, comma separates weights.
+            TextField("веса через запятую", text: Binding(
+                get: { node.weights.map { "\($0)" }.joined(separator: ", ") },
+                set: { text in
+                    node.weights = text.split(separator: ",").compactMap {
+                        Double($0.trimmingCharacters(in: .whitespaces))
+                    }
+                }
+            ))
+                .textFieldStyle(.roundedBorder).monospacedDigit()
+                .frame(width: 140)
+                .help("Нужно \(defn.assets.count) весов — по одному на актив")
+                .onAppear {
+                    if node.weights.count != defn.assets.count {
+                        node.weights = Array(
+                            repeating: 1.0 / Double(max(defn.assets.count, 1)),
+                            count: defn.assets.count)
+                    }
+                }
         default:
             EmptyView()
         }

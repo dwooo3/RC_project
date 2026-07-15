@@ -177,6 +177,60 @@ def test_unsupported_product_fails_before_book_mutation():
     assert not book.added
 
 
+# ── replay parity (acceptance §27.11) ────────────────────
+
+def test_replay_parity_within_tolerance_passes():
+    book = _Book()
+    outcome = atomic_capture(
+        reprice=lambda: {**_envelope(), "value": 10.0},
+        map_position=lambda: ("eq_opt", {}, "d"),
+        add_position=book.add, remove_position=book.remove,
+        reprice_book=book.reprice, approvals=ApprovalRegistry(),
+        quantity=3.0, expected_inputs_hash=HASH, requested_by="alice",
+        position_value=lambda p: 30.3)          # 1% off run value 30.0
+    replay = outcome["replay"]
+    assert replay["ok"] is True
+    assert replay["run_value"] == 30.0 and replay["book_value"] == 30.3
+    assert replay["diff_pct"] == pytest.approx(1.0)
+    assert not book.removed
+
+
+def test_replay_mismatch_rolls_capture_back():
+    book = _Book()
+    with pytest.raises(CaptureError) as err:
+        atomic_capture(
+            reprice=lambda: {**_envelope(), "value": 10.0},
+            map_position=lambda: ("eq_opt", {}, "d"),
+            add_position=book.add, remove_position=book.remove,
+            reprice_book=book.reprice, approvals=ApprovalRegistry(),
+            quantity=3.0, expected_inputs_hash=HASH, requested_by="alice",
+            position_value=lambda p: 40.0)      # 33% off — book disagrees
+    assert err.value.code == "CAPTURE_REPLAY_MISMATCH"
+    assert err.value.status == 500
+    assert book.removed == [book.added[0]["id"]]
+
+
+def test_replay_unvaluable_position_rolls_back():
+    book = _Book()
+    with pytest.raises(CaptureError) as err:
+        atomic_capture(
+            reprice=lambda: {**_envelope(), "value": 10.0},
+            map_position=lambda: ("eq_opt", {}, "d"),
+            add_position=book.add, remove_position=book.remove,
+            reprice_book=book.reprice, approvals=ApprovalRegistry(),
+            quantity=1.0, expected_inputs_hash=HASH, requested_by="alice",
+            position_value=lambda p: None)
+    assert err.value.code == "CAPTURE_REPLAY_MISMATCH"
+    assert book.removed
+
+
+def test_replay_skipped_when_book_cannot_value():
+    # position_value=None → replay check not applicable (legacy books)
+    book = _Book()
+    outcome = _capture(book)
+    assert outcome["replay"] is None
+
+
 # ── approval registry ────────────────────────────────────
 
 def test_approval_registry_is_idempotent_and_persistent(tmp_path):

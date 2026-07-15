@@ -1,0 +1,82 @@
+{
+ "algorithm": "pricing-fingerprint-v1",
+ "cases": [
+  {
+   "name": "bs_call_basic",
+   "product": "european_option",
+   "engine": "black_scholes",
+   "env": null,
+   "secid": null,
+   "numeric": {
+    "S": 100.0,
+    "K": 100.0,
+    "T": 1.0,
+    "r": 0.05,
+    "q": 0.0,
+    "sigma": 0.2
+   },
+   "choice": {
+    "opt": "call"
+   },
+   "expected": "84aa5bf6ffd7b1b04824e8609d1e3898d12ccc6a702bb24bee6d665eb1d7aa75"
+  },
+  {
+   "name": "with_env_and_secid",
+   "product": "european_option",
+   "engine": "binomial_crr",
+   "env": "FO",
+   "secid": "SBER",
+   "numeric": {
+    "S": 305.5,
+    "K": 300.0,
+    "N": 4000.0
+   },
+   "choice": {
+    "opt": "put"
+   },
+   "expected": "2400614c84a4e3a83c31ead5083458a8a7fac3049010d6dac1d9d19531013f45"
+  },
+  {
+   "name": "tricky_numbers",
+   "product": "irs",
+   "engine": "dcf",
+   "env": "RISK",
+   "secid": null,
+   "numeric": {
+    "a": 0.3333333333333333,
+    "b": -0.0,
+    "c": 100000000000000.0,
+    "d": 100.5,
+    "e": 2.5e-07,
+    "f": -42.0
+   },
+   "choice": {},
+   "expected": "86b03af876eac05db15da0d98ac7933139109efeca8ec202357a7afa95ed4027"
+  },
+  {
+   "name": "empty_params",
+   "product": "fx_forward",
+   "engine": "cip",
+   "env": null,
+   "secid": null,
+   "numeric": {},
+   "choice": {},
+   "expected": "4df527d51758471b013d694058c5f5aac00c7c42cde30517449b5fe6f7f35835"
+  },
+  {
+   "name": "unicode_choice",
+   "product": "custom",
+   "engine": "custom_mc_gbm",
+   "env": "EOD",
+   "secid": "GAZP",
+   "numeric": {
+    "T": 2.0
+   },
+   "choice": {
+    "curve_id": "— флэт r —",
+    "mode": "worst-of"
+   },
+   "expected": "ba5dce0d3b59610cc7007331cc3195c6876d842e506395b53de97bbc7f3e7ca3"
+  }
+ ]
+}

@@ -10,7 +10,8 @@ import numpy as np
 
 
 def european(S, K, T, r, sigma, q=0.0, opt="call", model="bsm",
-             n=None, n_sims=None, steps=None, seed=None) -> dict:
+             n=None, n_sims=None, steps=None, seed=None,
+             ns=None, nt=None) -> dict:
     """
     European option.
     model: bsm | black76 | gk | bachelier | binomial | trinomial | mc
@@ -54,7 +55,8 @@ def european(S, K, T, r, sigma, q=0.0, opt="call", model="bsm",
                         seed=int(seed) if seed is not None else 42)
     elif model == "pde":
         from models.pde import cn_vanilla
-        return cn_vanilla(S, K, T, r, sigma, q, opt, "european")
+        return cn_vanilla(S, K, T, r, sigma, q, opt, "european",
+                          Ns=int(ns or 400), Nt=int(nt or 400))
     else:
         raise ValueError(f"Unknown model: {model}")
 

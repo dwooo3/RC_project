@@ -125,6 +125,9 @@ struct PricingWorkstationView: View {
                         .frame(width: 360)
                     }
                     if vm.result != nil {
+                        analyticsSection(
+                            "Desk Risk · чувствительность и сценарии",
+                            help: "Полная переоценка текущего инструмента: лестницы, исторические сценарии, payoff и what-if сетка")
                         HStack(alignment: .top, spacing: Theme.s4) {
                             LadderCard(vm: vm)
                             ScenarioCard(vm: vm)
@@ -133,12 +136,18 @@ struct PricingWorkstationView: View {
                         if vm.gridKeys != nil {
                             Grid2DCard(vm: vm)
                         }
+                        analyticsSection(
+                            "Диагностика модели",
+                            help: "Сравнение движков на замороженном контексте, сходимость, break-even")
                         ModelComparisonCard(vm: vm)
                         HStack(alignment: .top, spacing: Theme.s4) {
                             ConvergenceCard(vm: vm)
                             SolveForCard(vm: vm)
                         }
                         if vm.supportsSimLab {
+                            analyticsSection(
+                                "Симуляция",
+                                help: "Иллюстративный GBM-превью траекторий — не расчёт выбранного движка")
                             SimulationLabCard(vm: vm)
                         }
                     }
@@ -151,6 +160,19 @@ struct PricingWorkstationView: View {
         } else {
             ContentUnavailableView("Select an instrument", systemImage: "function")
         }
+    }
+
+    /// Section divider grouping the analytics cards (workspace structure).
+    private func analyticsSection(_ title: String, help: String) -> some View {
+        HStack(spacing: Theme.s2) {
+            Text(title.uppercased())
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .fixedSize()
+            Rectangle().fill(.quaternary).frame(height: 1)
+        }
+        .padding(.top, Theme.s3)
+        .help(help)
     }
 
     private func governanceLine(_ engine: WsEngineModel) -> String {
@@ -1467,6 +1489,7 @@ private struct SolveForCard: View {
 
 private struct SimulationLabCard: View {
     @Bindable var vm: WorkstationViewModel
+    @State private var showTable = false
 
     var body: some View {
         GlassCard {
@@ -1475,6 +1498,15 @@ private struct SimulationLabCard: View {
                     BlockTitle("Simulation Lab", icon: "waveform.path")
                     Pill(text: "illustrative preview", color: Theme.warning)
                     Spacer()
+                    if vm.simLab != nil {
+                        ChartTableToggle(showTable: $showTable)
+                        Button { exportCSV() } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 11))
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .help("Экспорт CSV (веер + распределение)")
+                    }
                     Text("seed").font(.system(size: 10)).foregroundStyle(.secondary)
                     TextField("seed", value: $vm.simLabSeed, format: .number)
                         .textFieldStyle(.roundedBorder).frame(width: 64).monospacedDigit()
@@ -1490,9 +1522,13 @@ private struct SimulationLabCard: View {
                     .disabled(vm.isLoadingSimLab)
                 }
                 if let lab = vm.simLab {
-                    HStack(alignment: .top, spacing: Theme.s4) {
-                        fanChart(lab)
-                        histogram(lab)
+                    if showTable {
+                        fanTable(lab)
+                    } else {
+                        HStack(alignment: .top, spacing: Theme.s4) {
+                            fanChart(lab)
+                            histogram(lab)
+                        }
                     }
                     statsLine(lab)
                     ForEach(lab.warnings, id: \.self) { warning in
@@ -1506,6 +1542,36 @@ private struct SimulationLabCard: View {
                 }
             }
         }
+    }
+
+    /// Table fallback (§21.5): the percentile fan as data, one row per grid
+    /// time — the same series the chart draws.
+    private func fanTable(_ lab: WsSimLab) -> some View {
+        let bands = lab.fan.sorted { $0.p < $1.p }
+        let stride = max(1, lab.times.count / 20)
+        let rows: [[String]] = lab.times.indices
+            .filter { $0 % stride == 0 || $0 == lab.times.count - 1 }
+            .map { t in
+                [Fmt.number(lab.times[t], digits: 3)]
+                + bands.map { Fmt.number($0.values[t], digits: 4) }
+            }
+        return FallbackTable(header: ["t"] + bands.map { "P\($0.p)" },
+                             rows: rows)
+    }
+
+    private func exportCSV() {
+        guard let lab = vm.simLab else { return }
+        let bands = lab.fan.sorted { $0.p < $1.p }
+        var rows: [[String]] = lab.times.indices.map { t in
+            ["fan", "\(lab.times[t])"] + bands.map { "\($0.values[t])" }
+        }
+        rows += lab.terminal.bins.map {
+            ["hist", "\(($0.lo + $0.hi) / 2)", "\($0.count)"]
+        }
+        CSVExport.save(
+            suggestedName: "simlab_\(vm.productID ?? "product")_seed\(lab.seed)",
+            header: ["series", "x"] + bands.map { "p\($0.p)" },
+            rows: rows)
     }
 
     private func fanChart(_ lab: WsSimLab) -> some View {

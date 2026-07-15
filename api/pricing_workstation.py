@@ -287,7 +287,8 @@ def _european(svc, v, snapshot):
             S, K, T, r, None if use_surface else sig, q, opt, model=analytic[eng],
             snapshot=snapshot, vol_surface_id=surf if use_surface else None,
             n=_opt_int("N"), n_sims=_opt_int("n_sims"),
-            steps=_opt_int("steps"), seed=_opt_int("seed"))
+            steps=_opt_int("steps"), seed=_opt_int("seed"),
+            ns=_opt_int("Ns"), nt=_opt_int("Nt"))
     if eng == "heston_cf":
         return svc.price_heston_option(S, K, T, r, q, _num(v, "v0", .04), _num(v, "kappa", 1.5),
                                        _num(v, "theta", .04), _num(v, "xi", .5),
@@ -377,7 +378,9 @@ def _barrier(svc, v, snapshot):
             _num(v, "r", .05), _num(v, "sigma", .2), _num(v, "q", 0),
             v.get("opt", "call"), v.get("barrier_type", "down-out"))
     if v.get("engine") == "pde_cn":
-        return svc.price_barrier_option_pde(*args, snapshot=snapshot)
+        return svc.price_barrier_option_pde(
+            *args, ns=int(_num(v, "Ns", 400)), nt=int(_num(v, "Nt", 400)),
+            snapshot=snapshot)
     return svc.price_barrier_option(*args, _num(v, "rebate", 0.0), snapshot=snapshot)
 
 
@@ -542,6 +545,7 @@ def _convertible(svc, v, snapshot):
                                          int(_num(v, "N", 400)), snapshot=snapshot)
     return svc.price_convertible_bond(S, sig, q, face, cpn, freq, T, ratio,
                                       _num(v, "credit_spread", .02),
+                                      N=int(_num(v, "N", 400)),
                                       curve=_curve(svc, v, snapshot), snapshot=snapshot)
 
 

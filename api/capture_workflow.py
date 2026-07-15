@@ -36,8 +36,12 @@ class CaptureError(ValueError):
 
 
 # Policy (spec §20): quantities at/above the threshold require an approval
-# of the same run by a different user before capture.
-DEFAULT_POLICY = {"approval_min_quantity": 100.0}
+# of the same run by a different user before capture. replay_tolerance_pct
+# bounds how far the book's own revaluation may deviate from the captured
+# run (acceptance §27.11) — the book engine may legitimately differ from the
+# run engine, but a large gap means the capture does not replay.
+DEFAULT_POLICY = {"approval_min_quantity": 100.0,
+                  "replay_tolerance_pct": 2.0}
 
 
 class ApprovalRegistry:
@@ -94,13 +98,18 @@ def atomic_capture(*, reprice, map_position, add_position, remove_position,
                    reprice_book, approvals: ApprovalRegistry,
                    quantity: float, expected_inputs_hash: str,
                    requested_by: str = "user",
-                   policy: dict | None = None) -> dict:
+                   policy: dict | None = None,
+                   position_value=None) -> dict:
     """Capture the CURRENT completed run into the book — atomically.
 
     ``reprice()`` re-executes the exact pricing request on the frozen
     context and returns the normalized result envelope (with provenance).
     ``map_position()`` returns (instrument, params, description) or None.
     ``add_position/remove_position/reprice_book`` mutate the book.
+    ``position_value(position)`` (optional) returns the book's own value of
+    the freshly repriced position — enabling the replay-parity check: the
+    book must reproduce the captured run within policy tolerance, otherwise
+    the capture rolls back (acceptance §27.11, §26 captured price parity).
     """
     policy = {**DEFAULT_POLICY, **(policy or {})}
     if not expected_inputs_hash:
@@ -169,8 +178,38 @@ def atomic_capture(*, reprice, map_position, add_position, remove_position,
             f"книга не переоценилась с новой позицией — capture откатен: {exc}",
             status=500) from exc
 
+    # Replay parity (acceptance §27.11): the book's own valuation of the new
+    # position must reproduce the captured run within tolerance.
+    replay = None
+    run_value = result.get("value")
+    if position_value is not None and run_value is not None:
+        expected_value = float(run_value) * float(quantity)
+        book_value = position_value(position)
+        tolerance = float(policy["replay_tolerance_pct"])
+        if book_value is None:
+            diff_pct = None
+            ok = False
+        else:
+            scale = max(abs(expected_value), 1e-9)
+            diff_pct = abs(float(book_value) - expected_value) / scale * 100.0
+            ok = diff_pct <= tolerance
+        replay = {"run_value": expected_value, "book_value": book_value,
+                  "diff_pct": diff_pct, "tolerance_pct": tolerance, "ok": ok}
+        if not ok:
+            try:
+                remove_position(position)
+            finally:
+                pass
+            raise CaptureError(
+                "CAPTURE_REPLAY_MISMATCH",
+                "переоценка книги не воспроизводит захваченный расчёт "
+                f"(расхождение {diff_pct if diff_pct is not None else '∅'}"
+                f"% > {tolerance}%) — capture откатен",
+                status=500, details={"replay": replay})
+
     return {
         "position": position,
+        "replay": replay,
         "lineage": {
             "calculation_id": prov.get("calculation_id", ""),
             "inputs_hash": actual_hash,

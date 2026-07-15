@@ -51,9 +51,14 @@ from services.pricing_service import PricingService
 VERSION = "0.2.0"
 
 app = FastAPI(title="RiskCalc Bridge", version=VERSION)
+# Local desktop bridge: only browser clients on this machine may call it
+# (the Swift app uses URLSession and is unaffected). No wildcard in line
+# with spec §23/§27.16; auth/entitlements remain a known gap (см. отчёт).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    allow_origins=["http://127.0.0.1", "http://localhost",
+                   "http://127.0.0.1:8765", "http://localhost:8765"],
+    allow_methods=["*"], allow_headers=["*"],
 )
 
 _svc = PricingService(
@@ -895,6 +900,8 @@ def portfolio_books() -> dict:
 # ── trade capture: workstation -> persistent book ────────
 @app.post("/portfolio/add")
 def portfolio_add(req: WsCaptureRequest) -> dict:
+    """DEPRECATED: без hash-гейта и approval-политики. Новый клиентский путь —
+    POST /portfolio/capture (атомарный, exact-run, replay-паритет)."""
     try:
         quantity = pricing_workstation.portfolio_quantity(req.quantity)
         mapped = pricing_workstation.to_position(
@@ -984,13 +991,16 @@ def portfolio_capture(req: WsAtomicCaptureRequest) -> dict:
     def reprice_book():
         CONTEXT.portfolio.price_all()
 
+    def position_value(position):
+        return position.market_value
+
     try:
         outcome = capture_workflow.atomic_capture(
             reprice=reprice, map_position=map_position,
             add_position=add_position, remove_position=remove_position,
             reprice_book=reprice_book, approvals=_APPROVALS,
             quantity=quantity, expected_inputs_hash=req.expected_inputs_hash,
-            requested_by=req.requested_by)
+            requested_by=req.requested_by, position_value=position_value)
     except capture_workflow.CaptureError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.payload())
     except (KeyError, ValueError, TypeError) as exc:
@@ -1003,6 +1013,7 @@ def portfolio_capture(req: WsAtomicCaptureRequest) -> dict:
         "market_value": position.market_value,
         "positions": len(CONTEXT.portfolio.positions),
         "lineage": outcome["lineage"],
+        "replay": outcome["replay"],
     })
 
 
