@@ -278,9 +278,16 @@ def _european(svc, v, snapshot):
     if eng in analytic:
         surf = v.get("vol_surface_id")
         use_surface = bool(surf) and surf != MANUAL_VOL
+
+        def _opt_int(key):
+            val = v.get(key)
+            return int(val) if isinstance(val, (int, float)) else None
+
         return svc.price_vanilla_option(
             S, K, T, r, None if use_surface else sig, q, opt, model=analytic[eng],
-            snapshot=snapshot, vol_surface_id=surf if use_surface else None)
+            snapshot=snapshot, vol_surface_id=surf if use_surface else None,
+            n=_opt_int("N"), n_sims=_opt_int("n_sims"),
+            steps=_opt_int("steps"), seed=_opt_int("seed"))
     if eng == "heston_cf":
         return svc.price_heston_option(S, K, T, r, q, _num(v, "v0", .04), _num(v, "kappa", 1.5),
                                        _num(v, "theta", .04), _num(v, "xi", .5),
@@ -2491,3 +2498,332 @@ def scenarios_ws(svc, snapshot, product_id: str, engine_id: str | None,
             hook(len(rows), total, rows[-1])
     return {"product": base["product"], "engine": base["engine"],
             "base_value": base_value, "rows": rows}
+
+
+# ── Phase 3: model comparison / convergence / solve-for / simulation lab ──
+
+def _engine_param_filter(product: WsProduct, engine: Engine, params: dict,
+                         curve_ids, surface_ids) -> dict:
+    """Restrict a shared param dict to the keys this engine declares —
+    engine-specific numericals of OTHER engines fall back to defaults."""
+    specs = product.params_for(engine, curve_ids or [], surface_ids or [])
+    allowed = {s.key for s in specs} | _EXTRA_PARAM_KEYS
+    return {k: v for k, v in params.items() if k in allowed}
+
+
+def _measure_value(result: dict, *keys: str):
+    for item in result.get("measures") or []:
+        if isinstance(item, dict) and item.get("key") in keys:
+            return item.get("value")
+    return None
+
+
+def compare_ws(svc, snapshot, product_id: str, reference_engine: str | None,
+               params: dict, *, env=None,
+               curve_ids: list[str] | None = None,
+               surface_ids: list[str] | None = None,
+               hook=None) -> dict:
+    """Run every engine of the product on ONE frozen context (spec §15).
+
+    The shared intent (contract/market params, environment, snapshot) is
+    hashed once; every row carries that same context_hash — the visible
+    proof that no engine ran on different inputs. Engine-specific numerical
+    params of the currently selected engine are filtered away for engines
+    that do not declare them (their own defaults apply).
+    """
+    import hashlib as _hashlib
+    import json as _json
+    import time as _time
+
+    product = find_product(product_id)
+    if product is None:
+        raise ValueError(f"unknown product '{product_id}'")
+    engines = list(product.engines)
+    engine_ids = [e.id for e in engines]
+    ref_id = reference_engine or engine_ids[0]
+    if ref_id not in engine_ids:
+        raise ValueError(f"unknown engine '{ref_id}' for product '{product_id}'")
+
+    context = {
+        "product": product_id,
+        "env": getattr(env, "env_id", None) or "",
+        "snapshot": str(getattr(snapshot, "snapshot_id", "") or ""),
+        "params": {k: params[k] for k in sorted(params)},
+    }
+    context_hash = _hashlib.sha256(_json.dumps(
+        context, sort_keys=True, separators=(",", ":"),
+        default=str).encode()).hexdigest()
+
+    rows = []
+    for engine in engines:
+        gov = _engine_governance(product, engine)
+        row = {
+            "engine": engine.id, "name": engine.name,
+            "model_id": engine.model_id,
+            "status": gov.get("status", ""),
+            "production_allowed": bool(gov.get("production_allowed", False)),
+            "context_hash": context_hash,
+            "value": None, "delta": None, "stderr": None,
+            "runtime_ms": None, "inputs_hash": "", "snapshot_id": "",
+            "error": None,
+        }
+        filtered = _engine_param_filter(product, engine, params,
+                                        curve_ids, surface_ids)
+        t0 = _time.perf_counter()
+        try:
+            result = price_ws(svc, snapshot, product_id, engine.id, filtered,
+                              env=env, curve_ids=curve_ids,
+                              surface_ids=surface_ids)
+        except (KeyError, ValueError, TypeError) as exc:
+            row["runtime_ms"] = (_time.perf_counter() - t0) * 1000.0
+            row["error"] = str(exc)
+        else:
+            row["runtime_ms"] = (_time.perf_counter() - t0) * 1000.0
+            row["value"] = result.get("value")
+            row["stderr"] = _measure_value(result, "stderr", "std_error")
+            for greek in result.get("greeks") or []:
+                if isinstance(greek, dict) and greek.get("key") == "delta":
+                    row["delta"] = greek.get("value")
+            prov = result.get("provenance") or {}
+            row["inputs_hash"] = prov.get("inputs_hash", "")
+            row["snapshot_id"] = prov.get("snapshot_id", "")
+            if result.get("errors"):
+                row["error"] = result["errors"][0]
+        rows.append(row)
+        if hook is not None:
+            hook(len(rows), len(engines), row)
+
+    ref_value = next((r["value"] for r in rows if r["engine"] == ref_id), None)
+    for row in rows:
+        ok = row["value"] is not None and ref_value is not None
+        row["diff"] = (row["value"] - ref_value) if ok else None
+        row["diff_pct"] = ((row["value"] - ref_value) / abs(ref_value)
+                           if ok and ref_value else None)
+    return {"product": product_id, "reference": ref_id,
+            "reference_value": ref_value,
+            "context": context, "context_hash": context_hash, "rows": rows}
+
+
+# Effort knobs recognized for convergence ladders, most specific first.
+_EFFORT_KEYS = ("n_sims", "n_paths", "n_z", "n", "steps", "N", "NS", "Nt")
+
+
+def convergence_ws(svc, snapshot, product_id: str, engine_id: str | None,
+                   params: dict, *, levels: list[int] | None = None,
+                   env=None, curve_ids: list[str] | None = None,
+                   surface_ids: list[str] | None = None,
+                   hook=None) -> dict:
+    """Reprice the SAME frozen request at increasing numerical effort
+    (paths/steps/grid) — estimate, engine stderr and runtime per level;
+    the highest level is the reference (spec §14 convergence)."""
+    import time as _time
+
+    product = find_product(product_id)
+    if product is None:
+        raise ValueError(f"unknown product '{product_id}'")
+    engine = next((e for e in product.engines
+                   if e.id == (engine_id or product.engines[0].id)), None)
+    if engine is None:
+        raise ValueError(f"unknown engine '{engine_id}' for '{product_id}'")
+    specs = {s.key: s for s in product.params_for(
+        engine, curve_ids or [], surface_ids or [])}
+    effort_key = next((k for k in _EFFORT_KEYS if k in specs), None)
+    if effort_key is None:
+        raise ValueError(
+            f"'{engine.id}' не имеет параметра сходимости (пути/шаги) — "
+            "convergence неприменим")
+    spec = specs[effort_key]
+    base = int(params.get(effort_key) or spec.default or 1000)
+    if levels is None:
+        levels = [max(int(base * f), 2)
+                  for f in (0.0625, 0.125, 0.25, 0.5, 1.0, 2.0)]
+    lo_bound = int(spec.minimum) if spec.minimum is not None else 2
+    hi_bound = int(spec.maximum) if spec.maximum is not None else None
+    clipped = set()
+    for level in levels:
+        level = max(int(level), lo_bound)
+        if hi_bound is not None:
+            level = min(level, hi_bound)
+        clipped.add(level)
+    levels = sorted(clipped)
+
+    rows = []
+    for level in levels:
+        shocked = dict(params)
+        shocked[effort_key] = level
+        t0 = _time.perf_counter()
+        r = price_ws(svc, snapshot, product_id, engine.id, shocked, env=env,
+                     curve_ids=curve_ids, surface_ids=surface_ids)
+        rows.append({
+            "effort": level,
+            "value": r.get("value"),
+            "stderr": _measure_value(r, "stderr", "std_error"),
+            "runtime_ms": (_time.perf_counter() - t0) * 1000.0,
+            "error": (r.get("errors") or [None])[0],
+        })
+        if hook is not None:
+            hook(len(rows), len(levels), rows[-1])
+
+    reference = rows[-1]["value"] if rows else None
+    for row in rows:
+        ok = row["value"] is not None and reference is not None
+        row["error_vs_ref"] = (row["value"] - reference) if ok else None
+    return {"product": product_id, "engine": engine.id,
+            "effort_key": effort_key, "reference": reference, "rows": rows}
+
+
+def solve_ws(svc, snapshot, product_id: str, engine_id: str | None,
+             params: dict, solve_key: str, target: float,
+             lo: float, hi: float, *, tol: float = 1e-9, max_iter: int = 80,
+             env=None, curve_ids: list[str] | None = None,
+             surface_ids: list[str] | None = None) -> dict:
+    """Break-even / solve-for (spec §13.2): bisection on one numeric input so
+    that PV equals `target`, always through the real pricer on the frozen
+    context. Fails loudly when the bracket does not straddle the target."""
+    product = find_product(product_id)
+    if product is None:
+        raise ValueError(f"unknown product '{product_id}'")
+    engine = next((e for e in product.engines
+                   if e.id == (engine_id or product.engines[0].id)), None)
+    if engine is None:
+        raise ValueError(f"unknown engine '{engine_id}' for '{product_id}'")
+    specs = {s.key: s for s in product.params_for(
+        engine, curve_ids or [], surface_ids or [])}
+    if solve_key not in specs or specs[solve_key].dtype not in ("float", "int"):
+        raise ValueError(f"'{solve_key}' не числовой параметр движка "
+                         f"'{engine.id}' — solve-for неприменим")
+    if not lo < hi:
+        raise ValueError(f"пустой интервал поиска [{lo}, {hi}]")
+
+    evaluations = 0
+
+    def pv(x: float):
+        nonlocal evaluations
+        evaluations += 1
+        shocked = dict(params)
+        shocked[solve_key] = x
+        return price_ws(svc, snapshot, product_id, engine.id, shocked,
+                        env=env, curve_ids=curve_ids,
+                        surface_ids=surface_ids).get("value")
+
+    f_lo, f_hi = pv(lo), pv(hi)
+    if f_lo is None or f_hi is None:
+        raise ValueError("прайсер не вернул значение на границах интервала")
+    g_lo, g_hi = f_lo - target, f_hi - target
+    if g_lo == 0.0:
+        return {"solve_key": solve_key, "target": target, "root": lo,
+                "achieved": f_lo, "residual": 0.0, "iterations": 0,
+                "evaluations": evaluations, "engine": engine.id}
+    if g_hi == 0.0:
+        return {"solve_key": solve_key, "target": target, "root": hi,
+                "achieved": f_hi, "residual": 0.0, "iterations": 0,
+                "evaluations": evaluations, "engine": engine.id}
+    if g_lo * g_hi > 0:
+        raise ValueError(
+            f"цель {target} вне интервала: PV({lo})={f_lo:.6g}, "
+            f"PV({hi})={f_hi:.6g} — нет смены знака, расширь границы")
+
+    a, b, ga = lo, hi, g_lo
+    iterations = 0
+    mid, achieved = a, f_lo
+    for iterations in range(1, max_iter + 1):
+        mid = 0.5 * (a + b)
+        achieved = pv(mid)
+        if achieved is None:
+            raise ValueError(f"прайсер не вернул значение в точке {mid}")
+        g_mid = achieved - target
+        if abs(g_mid) <= tol * (1.0 + abs(target)) or (b - a) <= 1e-12 * (1.0 + abs(mid)):
+            break
+        if ga * g_mid < 0:
+            b = mid
+        else:
+            a, ga = mid, g_mid
+    return {"solve_key": solve_key, "target": target, "root": mid,
+            "achieved": achieved, "residual": achieved - target,
+            "iterations": iterations, "evaluations": evaluations,
+            "engine": engine.id}
+
+
+def simlab_ws(product_id: str, params: dict, n_paths: int = 2000,
+              n_steps: int = 60, seed: int = 42) -> dict:
+    """Simulation Lab (spec §14): risk-neutral GBM path fan + terminal and
+    payoff distributions with a deterministic seed.
+
+    This is an ILLUSTRATIVE PATH PREVIEW of the underlying under flat
+    lognormal dynamics — explicitly not the selected engine's pricing
+    simulation; the `nature` field keeps the two from being conflated."""
+    import numpy as np
+
+    spot_key = _PAYOFF_SPOT_KEY.get(product_id)
+    if spot_key is None:
+        raise ValueError(
+            f"simulation lab не определён для '{product_id}' (нет спот-входа)")
+    s0 = float(params.get(spot_key) or 100.0)
+    sigma = float(params.get("sigma") or params.get("vol") or 0.2)
+    T = float(params.get("T") or 1.0)
+    r = float(params.get("r") if params.get("r") is not None
+              else params.get("r_d") or 0.05)
+    q = float(params.get("q") if params.get("q") is not None
+              else params.get("r_f") or 0.0)
+    if s0 <= 0 or sigma <= 0 or T <= 0:
+        raise ValueError("нужны положительные спот, вола и срок")
+    n_paths = max(200, min(int(n_paths), 20000))
+    n_steps = max(10, min(int(n_steps), 250))
+
+    rng = np.random.default_rng(int(seed))
+    dt = T / n_steps
+    z = rng.standard_normal((n_paths, n_steps))
+    increments = (r - q - 0.5 * sigma ** 2) * dt + sigma * np.sqrt(dt) * z
+    paths = s0 * np.exp(np.hstack([np.zeros((n_paths, 1)),
+                                   np.cumsum(increments, axis=1)]))
+    times = np.linspace(0.0, T, n_steps + 1)
+
+    fan = [{"p": p, "values": np.percentile(paths, p, axis=0).tolist()}
+           for p in (5, 25, 50, 75, 95)]
+    sample_paths = paths[:24].tolist()
+
+    terminal = paths[:, -1]
+    counts, edges = np.histogram(terminal, bins=40)
+    mean = float(terminal.mean())
+    std = float(terminal.std(ddof=1))
+    centered = terminal - mean
+    skew = float((centered ** 3).mean() / std ** 3) if std > 0 else 0.0
+    kurtosis = float((centered ** 4).mean() / std ** 4 - 3.0) if std > 0 else 0.0
+    percentiles = {str(p): float(np.percentile(terminal, p))
+                   for p in (1, 5, 25, 50, 75, 95, 99)}
+
+    payoff_block = None
+    strike = params.get("K")
+    if strike is not None:
+        strike = float(strike)
+        opt = str(params.get("opt") or "call")
+        intrinsic = (np.maximum(terminal - strike, 0.0) if opt == "call"
+                     else np.maximum(strike - terminal, 0.0))
+        disc = float(np.exp(-r * T))
+        payoff_block = {
+            "opt": opt, "strike": strike,
+            "mc_price": disc * float(intrinsic.mean()),
+            "mc_stderr": disc * float(intrinsic.std(ddof=1)
+                                      / np.sqrt(n_paths)),
+            "prob_itm": float((intrinsic > 0).mean()),
+            "mean_payoff": float(intrinsic.mean()),
+        }
+
+    return {
+        "nature": "illustrative_path_preview",
+        "product": product_id, "seed": int(seed),
+        "n_paths": n_paths, "n_steps": n_steps,
+        "spot": s0, "sigma": sigma, "T": T, "r": r, "q": q,
+        "times": times.tolist(),
+        "fan": fan,
+        "sample_paths": sample_paths,
+        "terminal": {
+            "bins": [{"lo": float(edges[i]), "hi": float(edges[i + 1]),
+                      "count": int(counts[i])} for i in range(len(counts))],
+            "mean": mean, "std": std, "skew": skew, "kurtosis": kurtosis,
+            "percentiles": percentiles,
+        },
+        "payoff": payoff_block,
+        "warnings": ["GBM risk-neutral preview — иллюстрация динамики, "
+                     "не расчёт выбранного движка"],
+    }

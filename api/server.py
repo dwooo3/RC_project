@@ -385,9 +385,13 @@ class WsJobRequest(BaseModel):
     y_hi: float | None = None
     nx: int = 9
     ny: int = 7
+    # compare / convergence (phase 3)
+    reference_engine: str | None = None
+    levels: list[int] | None = None
 
 
-_JOB_KINDS = {"ladder", "grid2d", "scenarios", "payoff"}
+_JOB_KINDS = {"ladder", "grid2d", "scenarios", "payoff", "compare",
+              "convergence"}
 _JOB_REQUIRED = {"ladder": ("bump_key", "lo", "hi"),
                  "grid2d": ("x_key", "y_key", "x_lo", "x_hi", "y_lo", "y_hi")}
 
@@ -431,6 +435,16 @@ def ws_job_submit(req: WsJobRequest) -> dict:
         if kind == "payoff":
             return pricing_workstation.payoff_ws(
                 svc, snapshot, req.product, req.engine, req.params, env=env,
+                curve_ids=curve_ids, surface_ids=surface_ids, hook=hook)
+        if kind == "compare":
+            return pricing_workstation.compare_ws(
+                svc, snapshot, req.product,
+                req.reference_engine or req.engine, req.params, env=env,
+                curve_ids=curve_ids, surface_ids=surface_ids, hook=hook)
+        if kind == "convergence":
+            return pricing_workstation.convergence_ws(
+                svc, snapshot, req.product, req.engine, req.params,
+                levels=req.levels, env=env,
                 curve_ids=curve_ids, surface_ids=surface_ids, hook=hook)
         return pricing_workstation.scenarios_ws(
             svc, snapshot, req.product, req.engine, req.params, env=env,
@@ -499,6 +513,50 @@ def ws_job_stream(job_id: str, request: Request) -> StreamingResponse:
                 yield ": keepalive\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# ── Phase 3 sync analytics: solve-for and simulation lab ──
+class WsSolveRequest(BaseModel):
+    product: str
+    engine: str | None = None
+    params: dict[str, float | int | str | None] = {}
+    solve_key: str
+    target: float
+    lo: float
+    hi: float
+    env_id: str | None = None
+
+
+@app.post("/pricing/solve")
+def ws_solve(req: WsSolveRequest) -> dict:
+    try:
+        env, snapshot, svc, curve_ids, surface_ids = _workstation_runtime(
+            req.env_id)
+        return jsonable(pricing_workstation.solve_ws(
+            svc, snapshot, req.product, req.engine, req.params,
+            req.solve_key, req.target, req.lo, req.hi, env=env,
+            curve_ids=curve_ids, surface_ids=surface_ids))
+    except (KeyError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=404 if "unknown product" in str(exc)
+                            else 400, detail=str(exc))
+
+
+class WsSimLabRequest(BaseModel):
+    product: str
+    params: dict[str, float | int | str | None] = {}
+    n_paths: int = 2000
+    n_steps: int = 60
+    seed: int = 42
+
+
+@app.post("/pricing/simlab")
+def ws_simlab(req: WsSimLabRequest) -> dict:
+    try:
+        return jsonable(pricing_workstation.simlab_ws(
+            req.product, req.params, req.n_paths, req.n_steps, req.seed))
+    except (KeyError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=404 if "unknown product" in str(exc)
+                            else 400, detail=str(exc))
 
 
 # ── Market Risk workstation (ERS-style: HypPL / VaR / backtesting) ──

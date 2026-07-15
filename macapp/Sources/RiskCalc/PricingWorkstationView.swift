@@ -133,6 +133,14 @@ struct PricingWorkstationView: View {
                         if vm.gridKeys != nil {
                             Grid2DCard(vm: vm)
                         }
+                        ModelComparisonCard(vm: vm)
+                        HStack(alignment: .top, spacing: Theme.s4) {
+                            ConvergenceCard(vm: vm)
+                            SolveForCard(vm: vm)
+                        }
+                        if vm.supportsSimLab {
+                            SimulationLabCard(vm: vm)
+                        }
                     }
                     conventionsFooter
                 }
@@ -1155,6 +1163,413 @@ private struct PayoffCard: View {
             header: ["spot", "value_today", "payoff_at_expiry"],
             rows: p.value.map { ["\($0.x)", "\($0.y)",
                                  expiry[$0.x].map { "\($0)" } ?? ""] })
+    }
+}
+
+// MARK: - Phase 3: model comparison (spec §15)
+
+/// Every engine of the product on ONE frozen context; the visible
+/// context hash on the header and on each row proves nothing ran on
+/// different inputs — the phase 3 exit criterion.
+private struct ModelComparisonCard: View {
+    @Bindable var vm: WorkstationViewModel
+
+    var body: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s3) {
+                HStack {
+                    BlockTitle("Model comparison", icon: "scale.3d")
+                    Spacer()
+                    if vm.comparison != nil || !vm.comparisonPartial.isEmpty {
+                        Button { exportCSV() } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 11))
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .help("Экспорт CSV")
+                    }
+                    Button {
+                        Task { await vm.runComparison() }
+                    } label: {
+                        if vm.isComparing {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text(vm.comparison == nil ? "Сравнить движки" : "Обновить")
+                        }
+                    }
+                    .disabled(vm.isComparing)
+                }
+                AnalyticsJobBar(vm: vm, kind: "compare")
+                if let cmp = vm.comparison {
+                    contextLine(hash: cmp.contextHash,
+                                snapshot: cmp.rows.first(where: { !$0.snapshotID.isEmpty })?.snapshotID)
+                    rowsTable(cmp.rows, reference: cmp.reference)
+                    Text("Один замороженный контекст для всех движков; Δ против референса \(cmp.reference). Численные параметры чужих движков — их собственные дефолты.")
+                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                } else if !vm.comparisonPartial.isEmpty {
+                    contextLine(hash: vm.comparisonPartial[0].contextHash,
+                                snapshot: vm.comparisonPartial.first(where: { !$0.snapshotID.isEmpty })?.snapshotID)
+                    rowsTable(vm.comparisonPartial, reference: vm.engineID ?? "")
+                } else {
+                    Text("Прогнать все движки продукта на текущих inputs: цена, Δ к референсу, время, governance-статус — на одном замороженном контексте.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                }
+            }
+        }
+    }
+
+    private func contextLine(hash: String, snapshot: String?) -> some View {
+        HStack(spacing: Theme.s2) {
+            Label("Замороженный контекст \(String(hash.prefix(12)))",
+                  systemImage: "checkmark.shield.fill")
+                .font(.system(size: 10, weight: .medium)).monospacedDigit()
+                .foregroundStyle(Theme.positive)
+            if let snapshot, !snapshot.isEmpty {
+                Text("snapshot \(snapshot)")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            Text("идентичен для всех строк")
+                .font(.system(size: 10)).foregroundStyle(.tertiary)
+        }
+    }
+
+    private func rowsTable(_ rows: [WsCompareRow], reference: String) -> some View {
+        VStack(spacing: 2) {
+            ForEach(rows) { row in
+                HStack(spacing: Theme.s2) {
+                    Text(row.name)
+                        .font(.system(size: 11,
+                                      weight: row.engine == reference ? .semibold : .regular))
+                        .lineLimit(1)
+                    if row.engine == reference {
+                        Pill(text: "реф", color: Theme.accent)
+                    }
+                    Pill(text: row.status,
+                         color: row.productionAllowed ? Theme.positive : .secondary)
+                    Spacer()
+                    if let error = row.error, row.value == nil {
+                        Text(error)
+                            .font(.system(size: 9)).foregroundStyle(Theme.negative)
+                            .lineLimit(1).frame(maxWidth: 320, alignment: .trailing)
+                    } else {
+                        Text(row.value.map { Fmt.number($0, digits: 4) } ?? "—")
+                            .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                            .frame(width: 90, alignment: .trailing)
+                        Text(row.diff.map { Fmt.number($0, digits: 4) } ?? "")
+                            .font(.system(size: 10)).monospacedDigit()
+                            .foregroundStyle(Theme.trendColor(-(abs(row.diff ?? 0))))
+                            .frame(width: 76, alignment: .trailing)
+                        Text(row.diffPct.map { Fmt.signedPercent($0 * 100) } ?? "")
+                            .font(.system(size: 10)).monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 60, alignment: .trailing)
+                    }
+                    Text(row.runtimeMs.map { String(format: "%.0f мс", $0) } ?? "")
+                        .font(.system(size: 9)).monospacedDigit()
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 56, alignment: .trailing)
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    private func exportCSV() {
+        let rows = vm.comparison?.rows ?? vm.comparisonPartial
+        CSVExport.save(
+            suggestedName: "model_comparison_\(vm.productID ?? "product")",
+            header: ["engine", "status", "production", "value", "diff",
+                     "diff_pct", "stderr", "runtime_ms", "inputs_hash",
+                     "context_hash", "error"],
+            rows: rows.map { [$0.engine, $0.status, "\($0.productionAllowed)",
+                              $0.value.map { "\($0)" } ?? "",
+                              $0.diff.map { "\($0)" } ?? "",
+                              $0.diffPct.map { "\($0)" } ?? "",
+                              $0.stderr.map { "\($0)" } ?? "",
+                              $0.runtimeMs.map { "\($0)" } ?? "",
+                              $0.inputsHash, $0.contextHash,
+                              $0.error ?? ""] })
+    }
+}
+
+// MARK: - Phase 3: convergence (spec §14)
+
+private struct ConvergenceCard: View {
+    @Bindable var vm: WorkstationViewModel
+    @State private var showTable = false
+
+    var body: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s3) {
+                HStack {
+                    BlockTitle("Convergence", icon: "point.bottomleft.forward.to.point.topright.scurvepath")
+                    Spacer()
+                    if vm.convergence != nil {
+                        ChartTableToggle(showTable: $showTable)
+                        Button { exportCSV() } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 11))
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .help("Экспорт CSV")
+                    }
+                    Button {
+                        Task { await vm.runConvergence() }
+                    } label: {
+                        if vm.isConverging {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("Run")
+                        }
+                    }
+                    .disabled(vm.isConverging || !vm.canRunSelectedEngine)
+                }
+                AnalyticsJobBar(vm: vm, kind: "convergence")
+                if let conv = vm.convergence {
+                    content(conv)
+                    Text("Тот же запрос при растущем \(conv.effortKey); референс — максимальное усилие (\(conv.reference.map { Fmt.number($0, digits: 4) } ?? "—")).")
+                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                } else if !vm.convergencePartial.isEmpty {
+                    partialList(vm.convergencePartial)
+                } else {
+                    Text("Оценка сходимости движка: цена и погрешность при растущем числе шагов/путей.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func content(_ conv: WsConvergence) -> some View {
+        if showTable {
+            FallbackTable(
+                header: [conv.effortKey, "Value", "Δ к реф.", "мс"],
+                rows: conv.rows.map { ["\($0.effort)",
+                                       $0.value.map { Fmt.number($0, digits: 5) } ?? "—",
+                                       $0.errorVsRef.map { Fmt.number($0, digits: 5) } ?? "—",
+                                       $0.runtimeMs.map { String(format: "%.0f", $0) } ?? ""] })
+        } else {
+            let pts = conv.rows.enumerated().filter { $0.element.value != nil }
+            Chart {
+                ForEach(pts, id: \.offset) { idx, row in
+                    LineMark(x: .value("Effort", "\(row.effort)"),
+                             y: .value("Value", row.value ?? 0))
+                        .foregroundStyle(Theme.accent)
+                    PointMark(x: .value("Effort", "\(row.effort)"),
+                              y: .value("Value", row.value ?? 0))
+                        .foregroundStyle(Theme.accent)
+                    if let se = row.stderr, let v = row.value {
+                        RectangleMark(x: .value("Effort", "\(row.effort)"),
+                                      yStart: .value("lo", v - 2 * se),
+                                      yEnd: .value("hi", v + 2 * se),
+                                      width: .fixed(8))
+                            .foregroundStyle(Theme.accent.opacity(0.2))
+                    }
+                }
+                if let ref = conv.reference {
+                    RuleMark(y: .value("ref", ref))
+                        .foregroundStyle(.tertiary)
+                        .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [3]))
+                }
+            }
+            .frame(height: 160)
+        }
+    }
+
+    private func partialList(_ rows: [WsConvergenceRow]) -> some View {
+        FallbackTable(
+            header: ["Effort", "Value"],
+            rows: rows.map { ["\($0.effort)",
+                              $0.value.map { Fmt.number($0, digits: 5) } ?? "—"] })
+    }
+
+    private func exportCSV() {
+        guard let conv = vm.convergence else { return }
+        CSVExport.save(
+            suggestedName: "convergence_\(conv.engine)",
+            header: [conv.effortKey, "value", "stderr", "error_vs_ref",
+                     "runtime_ms"],
+            rows: conv.rows.map { ["\($0.effort)",
+                                   $0.value.map { "\($0)" } ?? "",
+                                   $0.stderr.map { "\($0)" } ?? "",
+                                   $0.errorVsRef.map { "\($0)" } ?? "",
+                                   $0.runtimeMs.map { "\($0)" } ?? ""] })
+    }
+}
+
+// MARK: - Phase 3: solve-for (spec §13.2)
+
+private struct SolveForCard: View {
+    @Bindable var vm: WorkstationViewModel
+
+    var body: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s3) {
+                BlockTitle("Solve for · break-even", icon: "function")
+                HStack(spacing: Theme.s2) {
+                    Picker("", selection: Binding(
+                        get: { vm.solveKey ?? "" },
+                        set: { vm.solveKey = $0.isEmpty ? nil : $0 }
+                    )) {
+                        Text("— параметр —").tag("")
+                        ForEach(vm.ladderableParams) { spec in
+                            Text(spec.label).tag(spec.key)
+                        }
+                    }
+                    .labelsHidden().pickerStyle(.menu).fixedSize()
+                    Text("PV =").font(.system(size: 11)).foregroundStyle(.secondary)
+                    TextField("цель", value: $vm.solveTarget, format: .number)
+                        .textFieldStyle(.roundedBorder).frame(width: 90).monospacedDigit()
+                    Button {
+                        Task { await vm.runSolve() }
+                    } label: {
+                        if vm.isSolving {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("Solve")
+                        }
+                    }
+                    .disabled(vm.solveKey == nil || vm.isSolving
+                              || !vm.canRunSelectedEngine)
+                    Spacer()
+                }
+                if let res = vm.solveResult {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(res.solveKey) = \(Fmt.number(res.root, digits: 6))")
+                            .font(.system(size: 15, weight: .semibold)).monospacedDigit()
+                            .foregroundStyle(Theme.accent)
+                        Text("PV \(Fmt.number(res.achieved, digits: 6)) при цели \(Fmt.number(res.target, digits: 4)) · невязка \(String(format: "%.2e", res.residual)) · \(res.iterations) итераций, \(res.evaluations) вызовов прайсера")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                        Button("Подставить в форму") {
+                            if let key = vm.solveKey {
+                                vm.numericValues[key] = res.root
+                            }
+                        }
+                        .controlSize(.small)
+                    }
+                } else if let message = vm.solveMessage {
+                    Label(message, systemImage: "xmark.octagon.fill")
+                        .font(.system(size: 10)).foregroundStyle(Theme.negative)
+                        .lineLimit(3)
+                } else {
+                    Text("Бисекция по одному числовому входу тем же прайсером: break-even страйк, implied-параметр, целевой PV.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Phase 3: simulation lab (spec §14)
+
+private struct SimulationLabCard: View {
+    @Bindable var vm: WorkstationViewModel
+
+    var body: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s3) {
+                HStack {
+                    BlockTitle("Simulation Lab", icon: "waveform.path")
+                    Pill(text: "illustrative preview", color: Theme.warning)
+                    Spacer()
+                    Text("seed").font(.system(size: 10)).foregroundStyle(.secondary)
+                    TextField("seed", value: $vm.simLabSeed, format: .number)
+                        .textFieldStyle(.roundedBorder).frame(width: 64).monospacedDigit()
+                    Button {
+                        Task { await vm.runSimLab() }
+                    } label: {
+                        if vm.isLoadingSimLab {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text(vm.simLab == nil ? "Построить" : "Обновить")
+                        }
+                    }
+                    .disabled(vm.isLoadingSimLab)
+                }
+                if let lab = vm.simLab {
+                    HStack(alignment: .top, spacing: Theme.s4) {
+                        fanChart(lab)
+                        histogram(lab)
+                    }
+                    statsLine(lab)
+                    ForEach(lab.warnings, id: \.self) { warning in
+                        Label(warning, systemImage: "info.circle")
+                            .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    }
+                } else {
+                    Text("Risk-neutral GBM: веер перцентилей траекторий и распределение на экспирации с детерминированным seed. Иллюстрация — не расчёт выбранного движка.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                }
+            }
+        }
+    }
+
+    private func fanChart(_ lab: WsSimLab) -> some View {
+        Chart {
+            ForEach(lab.samplePaths.indices.prefix(16), id: \.self) { i in
+                ForEach(lab.times.indices, id: \.self) { t in
+                    LineMark(x: .value("t", lab.times[t]),
+                             y: .value("S", lab.samplePaths[i][t]),
+                             series: .value("path", "p\(i)"))
+                        .foregroundStyle(.gray.opacity(0.18))
+                        .lineStyle(StrokeStyle(lineWidth: 0.6))
+                }
+            }
+            ForEach(lab.fan, id: \.p) { band in
+                ForEach(lab.times.indices, id: \.self) { t in
+                    LineMark(x: .value("t", lab.times[t]),
+                             y: .value("S", band.values[t]),
+                             series: .value("pct", "P\(band.p)"))
+                        .foregroundStyle(band.p == 50 ? Theme.accent
+                                         : Theme.accent.opacity(0.45))
+                        .lineStyle(StrokeStyle(lineWidth: band.p == 50 ? 1.6 : 0.9,
+                                               dash: band.p == 50 ? [] : [4, 3]))
+                }
+            }
+        }
+        .chartXAxisLabel("t, лет").chartYAxisLabel("S")
+        .frame(height: 190)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func histogram(_ lab: WsSimLab) -> some View {
+        Chart(lab.terminal.bins, id: \.self) { bin in
+            BarMark(x: .value("S(T)", (bin.lo + bin.hi) / 2),
+                    y: .value("count", bin.count),
+                    width: .fixed(4))
+                .foregroundStyle(Theme.accent.opacity(0.7))
+        }
+        .chartXAxisLabel("S(T)").chartYAxisLabel("частота")
+        .frame(height: 190)
+        .frame(width: 320)
+    }
+
+    private func statsLine(_ lab: WsSimLab) -> some View {
+        HStack(spacing: Theme.s4) {
+            stat("mean", Fmt.number(lab.terminal.mean, digits: 2))
+            stat("std", Fmt.number(lab.terminal.std, digits: 2))
+            stat("skew", Fmt.number(lab.terminal.skew, digits: 3))
+            stat("kurt", Fmt.number(lab.terminal.kurtosis, digits: 3))
+            if let payoff = lab.payoff {
+                Divider().frame(height: 14)
+                stat("MC price", "\(Fmt.number(payoff.mcPrice, digits: 4)) ± \(Fmt.number(2 * payoff.mcStderr, digits: 4))")
+                stat("P(ITM)", Fmt.signedPercent(payoff.probItm * 100))
+            }
+            Spacer()
+            stat("paths", "\(lab.nPaths)")
+            stat("seed", "\(lab.seed)")
+        }
+    }
+
+    private func stat(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label).font(.system(size: 8)).foregroundStyle(.tertiary)
+            Text(value).font(.system(size: 11, weight: .medium)).monospacedDigit()
+        }
     }
 }
 

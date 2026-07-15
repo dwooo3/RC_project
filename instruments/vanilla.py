@@ -9,12 +9,15 @@ from models.monte_carlo import mc_price, lsm
 import numpy as np
 
 
-def european(S, K, T, r, sigma, q=0.0, opt="call", model="bsm") -> dict:
+def european(S, K, T, r, sigma, q=0.0, opt="call", model="bsm",
+             n=None, n_sims=None, steps=None, seed=None) -> dict:
     """
     European option.
     model: bsm | black76 | gk | bachelier | binomial | trinomial | mc
     For black76: S is treated as forward F.
     For gk: pass q as r_f.
+    n / n_sims / steps / seed: optional numerical overrides (lattice size,
+    MC paths/time steps/seed); the engine defaults apply when omitted.
     """
     if model == "bsm":
         g = bsm(S, K, T, r, sigma, q, opt)
@@ -29,17 +32,26 @@ def european(S, K, T, r, sigma, q=0.0, opt="call", model="bsm") -> dict:
         g = bachelier(S, K, T, r, sigma, opt)
         return g.as_dict()
     elif model == "binomial":
-        return binomial_crr(S, K, T, r, sigma, q, N=500, opt=opt, exercise="european")
+        return binomial_crr(S, K, T, r, sigma, q, N=int(n or 500), opt=opt,
+                            exercise="european")
     elif model == "binomial_lr":
-        return binomial_lr(S, K, T, r, sigma, q, N=501, opt=opt, exercise="european")
+        N = int(n or 501)
+        if N % 2 == 0:
+            N += 1                    # Leisen-Reimer requires an odd grid
+        return binomial_lr(S, K, T, r, sigma, q, N=N, opt=opt,
+                           exercise="european")
     elif model == "trinomial":
-        return trinomial(S, K, T, r, sigma, q, N=300, opt=opt, exercise="european")
+        return trinomial(S, K, T, r, sigma, q, N=int(n or 300), opt=opt,
+                         exercise="european")
     elif model == "mc":
         if opt == "call":
             pf = lambda paths: np.maximum(paths[:, -1] - K, 0)
         else:
             pf = lambda paths: np.maximum(K - paths[:, -1], 0)
-        return mc_price(pf, S, r, q, sigma, T)
+        return mc_price(pf, S, r, q, sigma, T,
+                        steps=int(steps or 252),
+                        n_sims=int(n_sims or 100_000),
+                        seed=int(seed) if seed is not None else 42)
     elif model == "pde":
         from models.pde import cn_vanilla
         return cn_vanilla(S, K, T, r, sigma, q, opt, "european")

@@ -65,6 +65,24 @@ final class WorkstationViewModel {
     var isRunningLadder: Bool { analyticsJobs["ladder"]?.isBusy ?? false }
     var isRunningScenarios: Bool { analyticsJobs["scenarios"]?.isBusy ?? false }
 
+    // MARK: phase 3 — comparison / convergence / solve-for / sim lab
+
+    var comparison: WsCompare?
+    var comparisonPartial: [WsCompareRow] = []
+    var convergence: WsConvergence?
+    var convergencePartial: [WsConvergenceRow] = []
+    var solveKey: String?
+    var solveTarget: Double = 0
+    var solveResult: WsSolveResult?
+    var solveMessage: String?
+    var isSolving = false
+    var simLab: WsSimLab?
+    var simLabSeed: Int = 42
+    var isLoadingSimLab = false
+
+    var isComparing: Bool { analyticsJobs["compare"]?.isBusy ?? false }
+    var isConverging: Bool { analyticsJobs["convergence"]?.isBusy ?? false }
+
     var isLoading = false
     var isPricing = false
     var serverDown = false
@@ -256,6 +274,13 @@ final class WorkstationViewModel {
         ladderPartial = []
         gridPartial = []
         scenariosPartial = []
+        comparison = nil
+        comparisonPartial = []
+        convergence = nil
+        convergencePartial = []
+        solveResult = nil
+        solveMessage = nil
+        simLab = nil
         analyticsJobs = [:]
     }
 
@@ -601,8 +626,89 @@ final class WorkstationViewModel {
         case "grid2d": await loadGrid2d()
         case "scenarios": await runScenarios()
         case "payoff": await loadPayoff()
+        case "compare": await runComparison()
+        case "convergence": await runConvergence()
         default: break
         }
+    }
+
+    // MARK: phase 3 actions
+
+    /// Every engine of the product on ONE frozen context (spec §15); the
+    /// selected engine is the reference the diffs are computed against.
+    func runComparison() async {
+        guard let product = selectedProduct, let engine = selectedEngine
+        else { return }
+        comparison = nil
+        comparisonPartial = []
+        await runAnalyticsJob(
+            kind: "compare",
+            submit: { try await client.submitCompareJob(
+                product: product.id, referenceEngine: engine.id,
+                params: bridgeParams(),
+                envID: envID.isEmpty ? nil : envID) },
+            onPartial: { self.comparisonPartial = $0.items },
+            onCompleted: { self.comparison = $0; self.comparisonPartial = [] })
+    }
+
+    /// Same frozen request at increasing paths/steps (spec §14).
+    func runConvergence() async {
+        guard let product = selectedProduct, let engine = selectedEngine,
+              canRunSelectedEngine else { return }
+        convergence = nil
+        convergencePartial = []
+        await runAnalyticsJob(
+            kind: "convergence",
+            submit: { try await client.submitConvergenceJob(
+                product: product.id, engine: engine.id,
+                params: bridgeParams(),
+                envID: envID.isEmpty ? nil : envID) },
+            onPartial: { self.convergencePartial = $0.items },
+            onCompleted: { self.convergence = $0; self.convergencePartial = [] })
+    }
+
+    /// Break-even solve (spec §13.2): bisect one numeric input so PV hits
+    /// the target; the bracket is derived from the current field value.
+    func runSolve() async {
+        guard let product = selectedProduct, let engine = selectedEngine,
+              let key = solveKey, canRunSelectedEngine else { return }
+        isSolving = true
+        solveResult = nil
+        solveMessage = nil
+        let current = numericValues[key] ?? 0
+        let lo = current > 0 ? current / 4 : min(current, -1)
+        let hi = current > 0 ? current * 4 : max(current + 2, 1)
+        do {
+            solveResult = try await client.solveFor(
+                product: product.id, engine: engine.id,
+                params: bridgeParams(), solveKey: key,
+                target: solveTarget, lo: lo, hi: hi,
+                envID: envID.isEmpty ? nil : envID)
+        } catch {
+            solveMessage = error.localizedDescription
+        }
+        isSolving = false
+    }
+
+    /// Illustrative GBM path preview + terminal distribution (spec §14) —
+    /// deterministic seed, honestly labelled as NOT the engine's pricing run.
+    func runSimLab() async {
+        guard let product = selectedProduct else { return }
+        isLoadingSimLab = true
+        errorMessage = nil
+        do {
+            simLab = try await client.simLab(product: product.id,
+                                             params: bridgeParams(),
+                                             seed: simLabSeed)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isLoadingSimLab = false
+    }
+
+    var supportsSimLab: Bool {
+        let keys = Set((selectedEngine?.params ?? []).map(\.key))
+        return !keys.isDisjoint(with: ["S", "S0", "spot"])
     }
 
     func loadGrid2d() async {

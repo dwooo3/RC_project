@@ -517,6 +517,152 @@ struct WsCaptureResult: Decodable, Sendable {
     }
 }
 
+// MARK: - Phase 3: comparison / convergence / solve-for / simulation lab
+
+struct WsCompareRow: Decodable, Sendable, Identifiable, Hashable {
+    let engine: String
+    let name: String
+    let modelID: String
+    let status: String
+    let productionAllowed: Bool
+    let contextHash: String
+    let value: Double?
+    let delta: Double?
+    let stderr: Double?
+    let runtimeMs: Double?
+    let inputsHash: String
+    let snapshotID: String
+    let error: String?
+    let diff: Double?
+    let diffPct: Double?
+    var id: String { engine }
+
+    enum CodingKeys: String, CodingKey {
+        case engine, name, status, value, delta, stderr, error, diff
+        case modelID = "model_id"
+        case productionAllowed = "production_allowed"
+        case contextHash = "context_hash"
+        case runtimeMs = "runtime_ms"
+        case inputsHash = "inputs_hash"
+        case snapshotID = "snapshot_id"
+        case diffPct = "diff_pct"
+    }
+}
+
+struct WsCompare: Decodable, Sendable {
+    let product: String
+    let reference: String
+    let referenceValue: Double?
+    let contextHash: String
+    let rows: [WsCompareRow]
+
+    enum CodingKeys: String, CodingKey {
+        case product, reference, rows
+        case referenceValue = "reference_value"
+        case contextHash = "context_hash"
+    }
+}
+
+struct WsConvergenceRow: Decodable, Sendable, Hashable {
+    let effort: Int
+    let value: Double?
+    let stderr: Double?
+    let runtimeMs: Double?
+    let error: String?
+    let errorVsRef: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case effort, value, stderr, error
+        case runtimeMs = "runtime_ms"
+        case errorVsRef = "error_vs_ref"
+    }
+}
+
+struct WsConvergence: Decodable, Sendable {
+    let product: String
+    let engine: String
+    let effortKey: String
+    let reference: Double?
+    let rows: [WsConvergenceRow]
+
+    enum CodingKeys: String, CodingKey {
+        case product, engine, reference, rows
+        case effortKey = "effort_key"
+    }
+}
+
+struct WsSolveResult: Decodable, Sendable {
+    let solveKey: String
+    let target: Double
+    let root: Double
+    let achieved: Double
+    let residual: Double
+    let iterations: Int
+    let evaluations: Int
+    let engine: String
+
+    enum CodingKeys: String, CodingKey {
+        case target, root, achieved, residual, iterations, evaluations, engine
+        case solveKey = "solve_key"
+    }
+}
+
+struct WsSimLabBand: Decodable, Sendable {
+    let p: Int
+    let values: [Double]
+}
+
+struct WsSimLabBin: Decodable, Sendable, Hashable {
+    let lo: Double
+    let hi: Double
+    let count: Int
+}
+
+struct WsSimLabTerminal: Decodable, Sendable {
+    let bins: [WsSimLabBin]
+    let mean: Double
+    let std: Double
+    let skew: Double
+    let kurtosis: Double
+    let percentiles: [String: Double]
+}
+
+struct WsSimLabPayoff: Decodable, Sendable {
+    let opt: String
+    let strike: Double
+    let mcPrice: Double
+    let mcStderr: Double
+    let probItm: Double
+
+    enum CodingKeys: String, CodingKey {
+        case opt, strike
+        case mcPrice = "mc_price"
+        case mcStderr = "mc_stderr"
+        case probItm = "prob_itm"
+    }
+}
+
+struct WsSimLab: Decodable, Sendable {
+    let nature: String
+    let product: String
+    let seed: Int
+    let nPaths: Int
+    let nSteps: Int
+    let times: [Double]
+    let fan: [WsSimLabBand]
+    let samplePaths: [[Double]]
+    let terminal: WsSimLabTerminal
+    let payoff: WsSimLabPayoff?
+    let warnings: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case nature, product, seed, times, fan, terminal, payoff, warnings
+        case nPaths = "n_paths"
+        case nSteps = "n_steps"
+        case samplePaths = "sample_paths"
+    }
+}
+
 // MARK: - Async analytics jobs (spec §18)
 
 struct WsJobProgress: Decodable, Sendable, Equatable {
@@ -591,6 +737,7 @@ private struct WsJobSubmitBody: Encodable {
     var y_hi: Double? = nil
     var nx: Int = 9
     var ny: Int = 7
+    var reference_engine: String? = nil
 }
 
 extension BridgeClient {
@@ -733,6 +880,60 @@ extension BridgeClient {
             kind: "payoff", product: product, engine: engine, params: params,
             env_id: envID))
         return try await post("pricing/jobs", body: body)
+    }
+
+    func submitCompareJob(product: String, referenceEngine: String,
+                          params: [String: BridgeValue],
+                          envID: String? = nil)
+            async throws -> WsJobSnapshot<WsCompare, WsCompareRow> {
+        let body = try JSONEncoder().encode(WsJobSubmitBody(
+            kind: "compare", product: product, engine: referenceEngine,
+            params: params, env_id: envID, reference_engine: referenceEngine))
+        return try await post("pricing/jobs", body: body)
+    }
+
+    func submitConvergenceJob(product: String, engine: String,
+                              params: [String: BridgeValue],
+                              envID: String? = nil)
+            async throws -> WsJobSnapshot<WsConvergence, WsConvergenceRow> {
+        let body = try JSONEncoder().encode(WsJobSubmitBody(
+            kind: "convergence", product: product, engine: engine,
+            params: params, env_id: envID))
+        return try await post("pricing/jobs", body: body)
+    }
+
+    func solveFor(product: String, engine: String,
+                  params: [String: BridgeValue], solveKey: String,
+                  target: Double, lo: Double, hi: Double,
+                  envID: String? = nil) async throws -> WsSolveResult {
+        struct Body: Encodable {
+            let product: String
+            let engine: String
+            let params: [String: BridgeValue]
+            let solve_key: String
+            let target: Double
+            let lo: Double
+            let hi: Double
+            let env_id: String?
+        }
+        let body = try JSONEncoder().encode(Body(
+            product: product, engine: engine, params: params,
+            solve_key: solveKey, target: target, lo: lo, hi: hi,
+            env_id: envID))
+        return try await post("pricing/solve", body: body)
+    }
+
+    func simLab(product: String, params: [String: BridgeValue],
+                nPaths: Int = 2000, seed: Int = 42) async throws -> WsSimLab {
+        struct Body: Encodable {
+            let product: String
+            let params: [String: BridgeValue]
+            let n_paths: Int
+            let seed: Int
+        }
+        let body = try JSONEncoder().encode(Body(
+            product: product, params: params, n_paths: nPaths, seed: seed))
+        return try await post("pricing/simlab", body: body)
     }
 
     func jobSnapshot<Payload: Decodable & Sendable, Item: Decodable & Sendable>(

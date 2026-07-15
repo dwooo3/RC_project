@@ -4,7 +4,9 @@ The service keeps existing pricing engines intact and wraps them with governance
 market-data metadata, warnings, and structured errors.
 """
 
-from typing import Any
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Iterator
 
 from domain.market_data import MarketDataSnapshot
 from domain.results import BondPricingRequest, BondPricingResult
@@ -21,6 +23,15 @@ _BOND_APPROXIMATION_WARNINGS = [
 ]
 
 
+# Request-local workstation composition.  ContextVar keeps concurrent FastAPI
+# requests isolated while allowing the existing 50 product adapters to reuse
+# the same PricingService entry points without threading engine metadata through
+# every signature.
+_ENGINE_EXECUTION_CONTEXT: ContextVar[dict | None] = ContextVar(
+    "pricing_engine_execution_context", default=None
+)
+
+
 class PricingService:
     def __init__(
         self,
@@ -35,6 +46,43 @@ class PricingService:
         self.audit = audit or AuditService()
         self.allow_analytics_lab = allow_analytics_lab
         self.allow_non_production_models = allow_non_production_models
+
+    @contextmanager
+    def engine_context(self, metadata: dict) -> Iterator[None]:
+        """Attach exact engine/model/solver provenance to one calculation."""
+        token = _ENGINE_EXECUTION_CONTEXT.set(dict(metadata))
+        try:
+            yield
+        finally:
+            _ENGINE_EXECUTION_CONTEXT.reset(token)
+
+    @staticmethod
+    def _eligibility_metadata(eligibility) -> dict:
+        from models.engine_eligibility import effective_production_allowed
+
+        return {
+            "engine_eligibility_id": eligibility.engine_id,
+            "engine_eligibility_version": eligibility.version,
+            "model_definition_id": eligibility.model_ref.definition_id,
+            "model_definition_version": eligibility.model_ref.version,
+            "solver_definition_id": eligibility.solver_ref.definition_id,
+            "solver_definition_version": eligibility.solver_ref.version,
+            "pricer_component_id": eligibility.pricer_component_id,
+            "parameterization_component_id": eligibility.parameterization_component_id,
+            "implementation_component_id": eligibility.implementation_component_id,
+            "requested_engine_selector": eligibility.selector_id,
+            "engine_runtime_variant": eligibility.runtime_variant,
+            "engine_production_allowed": eligibility.production_allowed,
+            "engine_effective_production_allowed": effective_production_allowed(
+                eligibility
+            ),
+            "engine_approval_basis": eligibility.approval_basis,
+            "engine_approval_ref": eligibility.approval_ref,
+            "engine_approval_expires_on": (
+                eligibility.approval_expires_on.isoformat()
+                if eligibility.approval_expires_on else ""
+            ),
+        }
 
     def _market_data_warnings(self, snapshot: MarketDataSnapshot | None) -> list[str]:
         if snapshot is None:
@@ -67,24 +115,35 @@ class PricingService:
         user_action: str = "PricingService calculation",
     ) -> dict:
         model = self.governance.get_model(model_id)
-        all_warnings = self.governance.warnings_for_model(model_id)
+        canonical_model_id = model.model_id
+        all_warnings = self.governance.warnings_for_model(canonical_model_id)
         all_warnings.extend(self._market_data_warnings(snapshot))
         all_warnings.extend(warnings or [])
         model_metadata = self.governance.metadata_for_model(model_id)
         snapshot_id = snapshot.snapshot_id if snapshot else ""
+        engine_context = dict(_ENGINE_EXECUTION_CONTEXT.get() or {})
         audit_record = self.audit.record_calculation(
             user_action=user_action,
             calculation_type=calculation_type,
-            model_id=model_id,
+            model_id=canonical_model_id,
             model_version=model.version,
             market_data_snapshot_id=snapshot_id,
             inputs=inputs,
-            result_id=f"{calculation_type}:{model_id}",
-            details={"model_status": model.status, "errors": errors or []},
+            result_id=f"{calculation_type}:{canonical_model_id}",
+            details={
+                "model_status": model.status,
+                "errors": errors or [],
+                "requested_model_id": model.requested_component_id,
+                "canonical_component_id": canonical_model_id,
+                "deprecated_alias": model.deprecated_alias,
+                **engine_context,
+            },
         )
         return {
             "value": value,
-            "model_id": model_id,
+            "model_id": canonical_model_id,
+            "requested_model_id": model.requested_component_id,
+            "deprecated_model_alias": model.deprecated_alias,
             "model_status": model.status,
             "model_metadata": model_metadata,
             "model_version": model.version,
@@ -95,12 +154,14 @@ class PricingService:
             "model_production_allowed": model.production_allowed,
             "model_workflow_layer": model.workflow_layer,
             "model_analytics_lab_only": model.analytics_lab_only,
+            **engine_context,
             "warnings": all_warnings,
             "errors": errors or [],
             "market_data_snapshot_id": snapshot_id,
             "market_data_source": self._market_data_source(snapshot),
             "market_data_quality": snapshot.quality if snapshot else "",
             "calculation_id": audit_record.record_id,
+            "calculation_timestamp": audit_record.timestamp.isoformat(),
             "inputs_hash": audit_record.inputs_hash,
             "audit_record": audit_record,
             "calculation_record": audit_record,
@@ -174,11 +235,16 @@ class PricingService:
         model: str = "bsm",
         snapshot: MarketDataSnapshot | None = None,
         vol_surface_id: str | None = None,
+        n: int | None = None,
+        n_sims: int | None = None,
+        steps: int | None = None,
+        seed: int | None = None,
     ) -> dict:
         """
         Price a vanilla option. sigma may be omitted when vol_surface_id names a
         surface in the market snapshot — the strike/tenor vol is then resolved
         from the surface (Phase 1: surface-aware pricing).
+        n / n_sims / steps / seed: numerical overrides for lattice/MC engines.
         """
         from instruments.vanilla import european
 
@@ -209,12 +275,17 @@ class PricingService:
                 if rmse is not None:
                     note += f" · SABR fit RMSE {rmse:.2%}"
                 vol_warnings.append(note)
-            raw = european(S, K, T, r, sigma, q, opt, model)
+            raw = european(S, K, T, r, sigma, q, opt, model,
+                           n=n, n_sims=n_sims, steps=steps, seed=seed)
             if vol_surface_id is not None and isinstance(raw, dict):
                 raw["vol_surface_id"] = vol_surface_id
                 raw["sigma_used"] = sigma
             inputs = {"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q, "opt": opt,
                       "model": model, "vol_surface_id": vol_surface_id}
+            for key, val in (("n", n), ("n_sims", n_sims),
+                             ("steps", steps), ("seed", seed)):
+                if val is not None:      # numericals are part of the evidence
+                    inputs[key] = val
             return self._result(
                 value=raw.get("price"),
                 model_id=model_id,
@@ -1303,14 +1374,30 @@ class PricingService:
 
     def price_structural_credit(self, model, V0, D, T, r, sigma_V, barrier=None,
                                 snapshot=None) -> dict:
-        """Structural default model (M7). model: merton | black_cox."""
-        from models.structural_credit import merton, black_cox
-        mid = "merton_structural" if model == "merton" else "black_cox"
+        """Structural default model (M7).
+
+        ``model`` accepts canonical IDs. For KMV the legacy argument names
+        ``V0`` and ``sigma_V`` carry observable equity value and equity vol.
+        """
+        from models.structural_credit import black_cox, kmv_calibrate, merton
+        aliases = {"merton": "merton_structural"}
+        mid = aliases.get(model, model)
+        if mid not in {"merton_structural", "black_cox", "kmv"}:
+            return self._error_result(
+                model_id=mid,
+                error=ValueError(f"Unknown structural credit model {model}"),
+                snapshot=snapshot,
+                calculation_type="structural_credit_pricing",
+                inputs={"model": model},
+            )
 
         def engine():
-            if model == "black_cox":
+            if mid == "black_cox":
                 res = black_cox(V0, D, T, r, sigma_V, barrier)
                 return {"price": res["pd"], **res}
+            if mid == "kmv":
+                res = kmv_calibrate(V0, sigma_V, D, T, r)
+                return {"price": res["edf"], **res}
             res = merton(V0, D, T, r, sigma_V)
             return {"price": res["credit_spread"], **res}
         return self._priced(
@@ -1624,16 +1711,47 @@ class PricingService:
                          snapshot=None, **kw) -> dict:
         """Carr-Madan FFT pricer (gap batch 2). model: bsm | heston."""
         from models.fourier import carr_madan_bsm, carr_madan_heston
+        model = str(model).lower()
+        inputs = {
+            "model": model, "S": S, "K": K, "T": T, "r": r,
+            "sigma": sigma, "q": q, "opt": opt, **kw,
+        }
+        if model not in {"bsm", "heston"}:
+            return self._error_result(
+                model_id="carr_madan",
+                error=ValueError(f"unsupported Carr-Madan model {model!r}"),
+                snapshot=snapshot,
+                calculation_type="carr_madan_pricing",
+                inputs=inputs,
+            )
+        eligibility = self.governance.get_engine_eligibility(
+            "european_option", "carr_madan", {"cf_model": model}
+        )
+        metadata = self._eligibility_metadata(eligibility)
+        try:
+            self.governance.enforce_engine(
+                "european_option", "carr_madan", {"cf_model": model},
+                allow_analytics_lab=self.allow_analytics_lab,
+                allow_non_production=self.allow_non_production_models,
+            )
+        except Exception as exc:
+            with self.engine_context(metadata):
+                return self._error_result(
+                    model_id="carr_madan", error=exc, snapshot=snapshot,
+                    calculation_type="carr_madan_pricing", inputs=inputs,
+                )
         if model == "heston":
             engine = lambda: {"price": carr_madan_heston(
                 S, K, T, r, q, kw.get("v0", 0.04), kw.get("kappa", 1.5),
-                kw.get("theta", 0.04), kw.get("sigma", 0.3), kw.get("rho", -0.6), opt)}
+                kw.get("theta", 0.04), kw.get("xi", 0.3),
+                kw.get("rho", -0.6), opt)}
         else:
             engine = lambda: {"price": carr_madan_bsm(S, K, T, r, sigma, q, opt)}
-        return self._priced(
-            model_id="carr_madan", calculation_type="carr_madan_pricing", engine=engine,
-            inputs={"model": model, "S": S, "K": K, "T": T, "r": r, "opt": opt, **kw},
-            snapshot=snapshot, user_action="Price option (Carr-Madan FFT)")
+        with self.engine_context(metadata):
+            return self._priced(
+                model_id="carr_madan", calculation_type="carr_madan_pricing",
+                engine=engine, inputs=inputs, snapshot=snapshot,
+                user_action="Price option (Carr-Madan FFT)")
 
     def price_qmc_option(self, S, K, T, r, sigma, q=0.0, opt="call",
                          kind="european", n=16384, m=12, snapshot=None) -> dict:
@@ -1655,7 +1773,7 @@ class PricingService:
         boundary (task-3; cross-check to the Heston CF)."""
         from models.adi import heston_adi
         return self._priced(
-            model_id="adi", calculation_type="heston_adi_pricing",
+            model_id="heston_adi", calculation_type="heston_adi_pricing",
             engine=lambda: {"price": heston_adi(S, K, T, r, q, v0, kappa, theta,
                                                 sigma, rho, opt, int(NS), int(Nv), int(Nt))},
             inputs={"S": S, "K": K, "T": T, "r": r, "q": q, "v0": v0, "kappa": kappa,
@@ -1760,7 +1878,7 @@ class PricingService:
                    "spread": lambda a, b: _np.maximum(a - b - K, 0.0)}
         payoff = payoffs.get(kind, payoffs["exchange"])
         return self._priced(
-            model_id="adi", calculation_type="two_asset_option_pricing",
+            model_id="two_asset_adi", calculation_type="two_asset_option_pricing",
             engine=lambda: {"price": two_asset_adi(payoff, S1, S2, T, r, q1, q2,
                                                    sigma1, sigma2, rho,
                                                    int(N1), int(N2), int(Nt))},
@@ -1852,6 +1970,49 @@ class PricingService:
             inputs={"S": S, "K": K, "T": T, "r": r, "q": q, "v0": v0,
                     "kappa": kappa, "theta": theta, "xi": xi, "rho": rho, "opt": opt},
             snapshot=snapshot, user_action="Price Heston option")
+
+    def price_heston_mc_option(self, S, K, T, r, q, v0, kappa, theta, xi, rho,
+                               opt="call", scheme="qe", n_sims=100_000,
+                               steps=100, seed=42, snapshot=None) -> dict:
+        """European Heston MC via explicit Euler or Andersen-QE solver."""
+        import numpy as np
+
+        from models.monte_carlo import heston_mc_price
+
+        scheme = str(scheme).lower()
+        if scheme not in {"euler", "qe"}:
+            return self._error_result(
+                model_id="mc_heston_qe",
+                error=ValueError(f"Unknown Heston MC scheme {scheme!r}"),
+                snapshot=snapshot,
+                calculation_type="heston_mc_option_pricing",
+                inputs={"scheme": scheme},
+            )
+        model_id = "mc_heston_qe" if scheme == "qe" else "mc_heston"
+        n_sims = int(n_sims)
+        if scheme == "euler" and n_sims % 2:
+            n_sims += 1
+        payoff = (
+            (lambda paths: np.maximum(paths[:, -1] - K, 0.0))
+            if opt == "call"
+            else (lambda paths: np.maximum(K - paths[:, -1], 0.0))
+        )
+        return self._priced(
+            model_id=model_id,
+            calculation_type="heston_mc_option_pricing",
+            engine=lambda: heston_mc_price(
+                payoff, S, v0, r, q, kappa, theta, xi, rho, T,
+                int(steps), n_sims, int(seed), scheme,
+            ),
+            inputs={
+                "S": S, "K": K, "T": T, "r": r, "q": q, "v0": v0,
+                "kappa": kappa, "theta": theta, "xi": xi, "rho": rho,
+                "opt": opt, "scheme": scheme, "n_sims": n_sims,
+                "steps": int(steps), "seed": int(seed),
+            },
+            snapshot=snapshot,
+            user_action=f"Price Heston option ({scheme.upper()} Monte Carlo)",
+        )
 
     def price_bates_option(self, S, K, T, r, q, v0, kappa, theta, xi, rho,
                            lam=0.1, mu_j=-0.1, delta_j=0.15, opt="call",
