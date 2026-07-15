@@ -127,6 +127,18 @@ def test_definition_hash_is_canonical_and_content_sensitive():
     assert definition_hash(a) != definition_hash(b)
 
 
+def test_compile_report_includes_event_timeline():
+    report = compile_definition(_phoenix_template())
+    timeline = report["timeline"]
+    assert len(timeline) == 8 + 1               # 8 observations + maturity
+    assert timeline[-1]["kind"] == "maturity"
+    assert timeline[-1]["t"] == 2.0
+    assert any("досрочное погашение" in e for e in timeline[0]["events"])
+    assert any("выплата" in e for e in timeline[-1]["events"])
+    times = [entry["t"] for entry in timeline]
+    assert times == sorted(times)
+
+
 def test_regression_vectors_are_deterministic():
     r1 = compile_definition(_phoenix_template())["test_vectors"]
     r2 = compile_definition(_phoenix_template())["test_vectors"]

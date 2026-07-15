@@ -40,17 +40,74 @@ final class CustomProductsViewModel {
         }
     }
 
+    /// Advanced editor document for the selected product (full AST).
+    var editor: EDefinition?
+
     func select(_ id: String) async {
         selectedID = id
         priceResult = nil
         message = nil
+        editor = nil
         do {
             let d = try await client.customProduct(id)
             detail = d
             slotValues = d.definition.slots.mapValues(\.defaultValue)
+            let raw = try await client.customProductRaw(id)
+            if let obj = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
+               let definition = obj["definition"] as? [String: Any] {
+                editor = EDefinition.fromJSON(definition)
+            }
         } catch {
             message = error.localizedDescription
         }
+    }
+
+    /// Advanced mode: blank definition assembled entirely in the editor.
+    func createAdvanced() async {
+        isBusy = true
+        message = nil
+        do {
+            let skeleton: [String: Any] = [
+                "name": "Новый продукт",
+                "description": "Собран в advanced-конструкторе",
+                "author": author,
+                "slots": ["T": ["label": "Maturity, y", "default": 1.0,
+                                "min": 0.25, "max": 10.0]],
+                "state": [:],
+                "schedule": ["observations": 4, "maturity": ["slot": "T"]],
+                "observation_program": [],
+                "maturity_program": [["action": "pay",
+                                      "amount": ["node": "const", "value": 1.0]]],
+            ]
+            let body = try JSONSerialization.data(
+                withJSONObject: ["definition": skeleton, "author": author])
+            let created = try await client.customCreateRaw(body)
+            products = try await client.customProducts()
+            await select(created.id)
+        } catch {
+            message = error.localizedDescription
+        }
+        isBusy = false
+    }
+
+    /// PUT the edited document, then run the authoritative server compile.
+    func saveAndCompile() async {
+        guard let id = selectedID, let editor else { return }
+        isBusy = true
+        message = nil
+        do {
+            let body = try JSONSerialization.data(
+                withJSONObject: ["definition": editor.toJSON()])
+            _ = try await client.customUpdateDefinition(id, body: body)
+            detail = try await client.customCompile(id)
+            products = try await client.customProducts()
+            if let d = detail {
+                slotValues = d.definition.slots.mapValues(\.defaultValue)
+            }
+        } catch {
+            message = error.localizedDescription
+        }
+        isBusy = false
     }
 
     func createFromTemplate(_ template: CustomProductSummary) async {
@@ -113,6 +170,10 @@ struct CustomProductsView: View {
                         DetailHeader(vm: vm, detail: detail)
                         SlotsCard(vm: vm, detail: detail)
                         PricingCard(vm: vm, detail: detail)
+                        if let editor = vm.editor {
+                            AdvancedEditorCard(vm: vm, detail: detail,
+                                               editor: editor)
+                        }
                         if let report = detail.compileReport {
                             CompileReportCard(report: report)
                         }
@@ -143,8 +204,12 @@ struct CustomProductsView: View {
                             Task { await vm.createFromTemplate(template) }
                         }
                     }
+                    Divider()
+                    Button("Advanced · с нуля") {
+                        Task { await vm.createAdvanced() }
+                    }
                 } label: {
-                    Label("Из шаблона", systemImage: "plus")
+                    Label("Создать", systemImage: "plus")
                         .font(.system(size: 11))
                 }
                 .menuStyle(.borderlessButton)
@@ -429,6 +494,250 @@ private struct PricingCard: View {
     }
 }
 
+// MARK: - Advanced mode: typed payout-graph editor (spec §16.1 mode 2)
+
+private struct AdvancedEditorCard: View {
+    @Bindable var vm: CustomProductsViewModel
+    let detail: CustomProductDetail
+    @Bindable var editor: EDefinition
+    @State private var expanded = false
+
+    private var editable: Bool {
+        detail.state != "published" && detail.state != "deprecated"
+    }
+
+    var body: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: Theme.s3) {
+                HStack {
+                    BlockTitle("Конструктор выплат · advanced",
+                               icon: "point.3.connected.trianglepath.dotted")
+                    Spacer()
+                    if editable && expanded {
+                        Button {
+                            Task { await vm.saveAndCompile() }
+                        } label: {
+                            if vm.isBusy {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Label("Сохранить и скомпилировать",
+                                      systemImage: "checkmark.seal")
+                            }
+                        }
+                        .disabled(vm.isBusy)
+                    }
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            expanded.toggle()
+                        }
+                    } label: {
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                }
+                if !editable {
+                    Label("Версия published — неизменяема. «Новая версия» откроет редактирование.",
+                          systemImage: "lock.fill")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                if expanded {
+                    if editable {
+                        ForEach(editor.localHints, id: \.self) { hint in
+                            Label(hint, systemImage: "exclamationmark.triangle.fill")
+                                .font(.system(size: 10)).foregroundStyle(Theme.warning)
+                        }
+                    }
+                    slotsSection
+                    statesSection
+                    scheduleSection
+                    programSection("Программа наблюдений (на каждой дате)",
+                                   program: $editor.observationProgram,
+                                   allowTerminate: true)
+                    programSection("Программа погашения (выжившие пути)",
+                                   program: $editor.maturityProgram,
+                                   allowTerminate: false)
+                }
+            }
+            .disabled(!editable)
+        }
+    }
+
+    // ── slots ────────────────────────────────────────────
+    private var slotsSection: some View {
+        section("Слоты (параметры шаблона)") {
+            ForEach(editor.slots) { slot in
+                SlotRow(slot: slot) {
+                    editor.slots.removeAll { $0.id == slot.id }
+                }
+            }
+            Button {
+                editor.slots.append(ESlot(name: "slot\(editor.slots.count + 1)"))
+            } label: {
+                Label("Добавить слот", systemImage: "plus.circle")
+                    .font(.system(size: 10))
+            }
+            .buttonStyle(.plain).foregroundStyle(Theme.accent)
+        }
+    }
+
+    private var statesSection: some View {
+        section("State-переменные (память, счётчики)") {
+            ForEach(editor.states) { state in
+                StateRow(state: state) {
+                    editor.states.removeAll { $0.id == state.id }
+                }
+            }
+            Button {
+                editor.states.append(EStateVar(
+                    name: editor.states.isEmpty ? "memory"
+                          : "state\(editor.states.count + 1)"))
+            } label: {
+                Label("Добавить state", systemImage: "plus.circle")
+                    .font(.system(size: 10))
+            }
+            .buttonStyle(.plain).foregroundStyle(Theme.accent)
+        }
+    }
+
+    // ── schedule ─────────────────────────────────────────
+    private var scheduleSection: some View {
+        section("Расписание") {
+            HStack(spacing: Theme.s3) {
+                scheduleField("Наблюдений", slot: $editor.obsSlot,
+                              value: $editor.obsCount)
+                scheduleField("Погашение, лет", slot: $editor.matSlot,
+                              value: $editor.matValue)
+                Spacer()
+            }
+        }
+    }
+
+    private func scheduleField(_ title: String, slot: Binding<String>,
+                               value: Binding<Double>) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.system(size: 10)).foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Menu(slot.wrappedValue.isEmpty ? "число" : "слот «\(slot.wrappedValue)»") {
+                    Button("число") { slot.wrappedValue = "" }
+                    ForEach(editor.slotNames, id: \.self) { name in
+                        Button("слот «\(name)»") { slot.wrappedValue = name }
+                    }
+                }
+                .menuStyle(.borderlessButton).fixedSize()
+                if slot.wrappedValue.isEmpty {
+                    TextField("", value: value, format: .number)
+                        .textFieldStyle(.roundedBorder).monospacedDigit()
+                        .frame(width: 70)
+                }
+            }
+        }
+    }
+
+    // ── programs ─────────────────────────────────────────
+    private func programSection(_ title: String,
+                                program: Binding<[EAction]>,
+                                allowTerminate: Bool) -> some View {
+        section(title) {
+            ForEach(program.wrappedValue) { action in
+                ActionEditor(action: action, defn: editor,
+                             allowTerminate: allowTerminate,
+                             onDelete: {
+                                 program.wrappedValue.removeAll { $0.id == action.id }
+                             },
+                             onMove: { delta in
+                                 move(action, in: program, by: delta)
+                             })
+            }
+            Menu {
+                let kinds = allowTerminate
+                    ? ["accumulate", "set", "pay", "terminate"]
+                    : ["accumulate", "set", "pay"]
+                ForEach(kinds, id: \.self) { kind in
+                    Button(actionTitle(kind)) {
+                        program.wrappedValue.append(EAction(kind: kind))
+                    }
+                }
+            } label: {
+                Label("Добавить действие", systemImage: "plus.circle")
+                    .font(.system(size: 10))
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            .foregroundStyle(Theme.accent)
+        }
+    }
+
+    private func move(_ action: EAction, in program: Binding<[EAction]>,
+                      by delta: Int) {
+        guard let index = program.wrappedValue.firstIndex(where: { $0.id == action.id })
+        else { return }
+        let target = index + delta
+        guard program.wrappedValue.indices.contains(target) else { return }
+        program.wrappedValue.swapAt(index, target)
+    }
+
+    private func section(_ title: String,
+                         @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: Theme.s2) {
+            Text(title.uppercased())
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.tertiary)
+            content()
+        }
+        .padding(.top, Theme.s1)
+    }
+}
+
+private struct SlotRow: View {
+    @Bindable var slot: ESlot
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: Theme.s2) {
+            TextField("имя", text: $slot.name)
+                .textFieldStyle(.roundedBorder).frame(width: 110)
+                .font(.system(size: 11, design: .monospaced))
+            TextField("подпись", text: $slot.label)
+                .textFieldStyle(.roundedBorder).frame(width: 150)
+            numeric("default", $slot.def)
+            numeric("min", $slot.lo)
+            numeric("max", $slot.hi)
+            Button { onDelete() } label: {
+                Image(systemName: "xmark.circle.fill")
+            }
+            .buttonStyle(.plain).foregroundStyle(.tertiary)
+            Spacer()
+        }
+    }
+
+    private func numeric(_ placeholder: String,
+                         _ value: Binding<Double>) -> some View {
+        TextField(placeholder, value: value, format: .number)
+            .textFieldStyle(.roundedBorder).monospacedDigit().frame(width: 70)
+    }
+}
+
+private struct StateRow: View {
+    @Bindable var state: EStateVar
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: Theme.s2) {
+            TextField("имя", text: $state.name)
+                .textFieldStyle(.roundedBorder).frame(width: 110)
+                .font(.system(size: 11, design: .monospaced))
+            Text("начальное").font(.system(size: 10)).foregroundStyle(.tertiary)
+            TextField("", value: $state.initial, format: .number)
+                .textFieldStyle(.roundedBorder).monospacedDigit().frame(width: 70)
+            Button { onDelete() } label: {
+                Image(systemName: "xmark.circle.fill")
+            }
+            .buttonStyle(.plain).foregroundStyle(.tertiary)
+            Spacer()
+        }
+    }
+}
+
 // MARK: - Compile report: summary, classification, issues, test vectors
 
 private struct CompileReportCard: View {
@@ -466,6 +775,31 @@ private struct CompileReportCard: View {
                           (issue.path.isEmpty ? "" : " (\(issue.path))"),
                           systemImage: "xmark.octagon.fill")
                         .font(.system(size: 10)).foregroundStyle(Theme.negative)
+                }
+                if let timeline = report.timeline, !timeline.isEmpty {
+                    Text("Событийная шкала:")
+                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(alignment: .top, spacing: Theme.s3) {
+                            ForEach(timeline, id: \.self) { entry in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(String(format: "t=%.2f", entry.t))
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .monospacedDigit()
+                                        .foregroundStyle(entry.kind == "maturity"
+                                                         ? Theme.accent : .secondary)
+                                    ForEach(entry.events, id: \.self) { event in
+                                        Text("· \(event)")
+                                            .font(.system(size: 9))
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                }
+                                .padding(6)
+                                .background(Color.primary.opacity(0.04),
+                                            in: RoundedRectangle(cornerRadius: 6))
+                            }
+                        }
+                    }
                 }
                 if !report.testVectors.isEmpty {
                     Text("Регрессионные векторы (детерминированные сценарии):")

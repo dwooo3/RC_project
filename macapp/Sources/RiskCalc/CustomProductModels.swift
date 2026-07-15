@@ -73,6 +73,12 @@ struct CustomClassification: Decodable, Sendable {
     }
 }
 
+struct CustomTimelineEntry: Decodable, Sendable, Hashable {
+    let t: Double
+    let kind: String            // observation | maturity
+    let events: [String]
+}
+
 struct CustomCompileReport: Decodable, Sendable {
     let ok: Bool
     let issues: [CustomCompileIssue]
@@ -81,9 +87,10 @@ struct CustomCompileReport: Decodable, Sendable {
     let classification: CustomClassification?
     let compatibleEngines: [String]
     let testVectors: [CustomTestVector]
+    let timeline: [CustomTimelineEntry]?    // absent in pre-timeline reports
 
     enum CodingKeys: String, CodingKey {
-        case ok, issues, summary, classification
+        case ok, issues, summary, classification, timeline
         case definitionHash = "definition_hash"
         case compatibleEngines = "compatible_engines"
         case testVectors = "test_vectors"
@@ -164,6 +171,23 @@ extension BridgeClient {
 
     func customCompile(_ id: String) async throws -> CustomProductDetail {
         try await post("custom/products/\(id)/compile", body: Data("{}".utf8))
+    }
+
+    // ── advanced mode: raw definition documents ──────────
+    /// Full product JSON including the AST programs the typed models omit.
+    func customProductRaw(_ id: String) async throws -> Data {
+        try await getRaw("custom/products/\(id)")
+    }
+
+    /// body = {"definition": {...}} serialized by the editor.
+    func customUpdateDefinition(_ id: String,
+                                body: Data) async throws -> CustomProductDetail {
+        try await put("custom/products/\(id)", body: body)
+    }
+
+    /// body = {"definition": {...}, "author": ...} for advanced creation.
+    func customCreateRaw(_ body: Data) async throws -> CustomProductDetail {
+        try await post("custom/products", body: body)
     }
 
     private func customAction(_ id: String, _ action: String,

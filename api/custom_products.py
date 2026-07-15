@@ -218,6 +218,37 @@ def definition_hash(defn: dict) -> str:
     return hashlib.sha256(canon.encode()).hexdigest()
 
 
+def _action_label(action: dict) -> str:
+    kind = action.get("action")
+    if kind == "accumulate":
+        return f"накопление «{action.get('name')}»"
+    if kind == "set":
+        return f"запись «{action.get('name')}»"
+    if kind == "pay":
+        return "выплата (условная)" if "when" in action else "выплата"
+    if kind == "terminate":
+        return "досрочное погашение?"
+    return str(kind)
+
+
+def event_timeline(defn: dict) -> list[dict]:
+    """Generated event/cashflow timeline (spec §16.3) — data, not pixels."""
+    slots = defn.get("slots") or {}
+    sched = defn.get("schedule") or {}
+    n_obs = int(_resolve_scalar(sched.get("observations"), slots) or 0)
+    maturity = float(_resolve_scalar(sched.get("maturity"), slots) or 0.0)
+    if n_obs < 1 or maturity <= 0:
+        return []
+    obs_events = [_action_label(a) for a in defn.get("observation_program") or []]
+    timeline = [{"t": round(maturity * (i + 1) / n_obs, 6),
+                 "kind": "observation", "events": obs_events}
+                for i in range(n_obs)]
+    timeline.append({"t": round(maturity, 6), "kind": "maturity",
+                     "events": [_action_label(a)
+                                for a in defn.get("maturity_program") or []]})
+    return timeline
+
+
 def economic_summary(defn: dict) -> str:
     """Mechanically generated natural-language summary (spec §16.3)."""
     slots = defn.get("slots") or {}
@@ -256,11 +287,13 @@ def compile_definition(defn: dict) -> dict:
         "classification": None,
         "compatible_engines": [],
         "test_vectors": [],
+        "timeline": [],
     }
     if issues:
         return report
 
     report["summary"] = economic_summary(defn)
+    report["timeline"] = event_timeline(defn)
     uses_state = bool(defn.get("state"))
     uses_path = _mentions_node(defn, {"path_min", "path_max"})
     has_terminate = _mentions_action(defn, "terminate")

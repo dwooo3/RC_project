@@ -269,6 +269,24 @@ actor BridgeClient {
         return try JSONDecoder().decode(T.self, from: data)
     }
 
+    func put<T: Decodable>(_ path: String, body: Data) async throws -> T {
+        var request = URLRequest(url: base.appending(path: path))
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        let (data, response) = try await session.data(for: request)
+        try Self.check(response, data)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    /// Raw JSON payload for documents whose full shape is edited client-side
+    /// (custom product definitions) — parsing happens on the caller's side.
+    func getRaw(_ path: String) async throws -> Data {
+        let (data, response) = try await session.data(from: base.appending(path: path))
+        try Self.check(response, data)
+        return data
+    }
+
     func delete(_ path: String) async throws {
         var request = URLRequest(url: base.appending(path: path))
         request.httpMethod = "DELETE"
