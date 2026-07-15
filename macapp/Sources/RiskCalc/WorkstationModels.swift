@@ -502,6 +502,51 @@ struct WsIncrementalVaR: Decodable, Sendable {
     }
 }
 
+struct WsRunApproval: Decodable, Sendable {
+    let inputsHash: String
+    let calculationID: String
+    let approvedBy: String
+    let approvedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case inputsHash = "inputs_hash"
+        case calculationID = "calculation_id"
+        case approvedBy = "approved_by"
+        case approvedAt = "approved_at"
+    }
+}
+
+struct WsCaptureLineage: Decodable, Sendable {
+    let calculationID: String
+    let inputsHash: String
+    let snapshotID: String
+    let approvedBy: String?
+    let capturedBy: String
+    let capturedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case calculationID = "calculation_id"
+        case inputsHash = "inputs_hash"
+        case snapshotID = "snapshot_id"
+        case approvedBy = "approved_by"
+        case capturedBy = "captured_by"
+        case capturedAt = "captured_at"
+    }
+}
+
+struct WsAtomicCaptureResult: Decodable, Sendable {
+    let positionID: String
+    let instrument: String
+    let quantity: Double
+    let positions: Int
+    let lineage: WsCaptureLineage
+
+    enum CodingKeys: String, CodingKey {
+        case instrument, quantity, positions, lineage
+        case positionID = "position_id"
+    }
+}
+
 struct WsCaptureResult: Decodable, Sendable {
     let positionID: String
     let instrument: String
@@ -952,6 +997,40 @@ extension BridgeClient {
         let body = try JSONEncoder().encode(WsCaptureBody(
             product: product, engine: engine, params: params, quantity: quantity))
         return try await post("portfolio/add", body: body)
+    }
+
+    // ── Phase 5: approval evidence + atomic capture (spec §17, §20) ──
+    func approveRun(inputsHash: String, calculationID: String,
+                    user: String) async throws -> WsRunApproval {
+        struct Body: Encodable {
+            let inputs_hash: String
+            let calculation_id: String
+            let user: String
+        }
+        let body = try JSONEncoder().encode(Body(
+            inputs_hash: inputsHash, calculation_id: calculationID, user: user))
+        return try await post("pricing/runs/approve", body: body)
+    }
+
+    /// Atomic capture of the EXACT completed run: the server reprices on its
+    /// frozen context and 409s when the inputs_hash drifted (spec phase 5).
+    func captureAtomic(product: String, engine: String,
+                       params: [String: BridgeValue], quantity: Double,
+                       expectedInputsHash: String,
+                       requestedBy: String) async throws -> WsAtomicCaptureResult {
+        struct Body: Encodable {
+            let product: String
+            let engine: String
+            let params: [String: BridgeValue]
+            let quantity: Double
+            let expected_inputs_hash: String
+            let requested_by: String
+        }
+        let body = try JSONEncoder().encode(Body(
+            product: product, engine: engine, params: params,
+            quantity: quantity, expected_inputs_hash: expectedInputsHash,
+            requested_by: requestedBy))
+        return try await post("portfolio/capture", body: body)
     }
 
     func incrementalVaR(product: String, engine: String, params: [String: BridgeValue],

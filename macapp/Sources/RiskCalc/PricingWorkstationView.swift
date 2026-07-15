@@ -1744,6 +1744,31 @@ private struct WorkstationResultPanel: View {
                     .font(.system(size: 10))
                     .foregroundStyle(msg.hasPrefix("✓") ? Theme.positive : Theme.negative)
             }
+            // Run approval evidence (spec §20): large quantities capture only
+            // after another user approved this exact run's inputs_hash.
+            HStack(spacing: Theme.s2) {
+                TextField("согласующий", text: $vm.approverName)
+                    .textFieldStyle(.roundedBorder).frame(width: 110)
+                    .font(.system(size: 11))
+                Button {
+                    Task { await vm.approveCurrentRun() }
+                } label: {
+                    HStack(spacing: 4) {
+                        if vm.isApproving { ProgressView().controlSize(.mini) }
+                        Image(systemName: "checkmark.seal").font(.system(size: 10))
+                        Text("Approve run").font(.system(size: 11))
+                    }
+                }
+                .disabled(vm.isApproving || vm.currentRun == nil
+                          || (vm.businessState != .priced && vm.businessState != .captured))
+                .help("Записать согласование ТЕКУЩЕГО расчёта (по server inputs_hash); Qty ≥ 100 без согласования не захватывается")
+                Spacer()
+            }
+            if let msg = vm.approvalMessage {
+                Text(msg)
+                    .font(.system(size: 10))
+                    .foregroundStyle(msg.hasPrefix("✓") ? Theme.positive : Theme.negative)
+            }
             HStack(spacing: Theme.s2) {
                 Button {
                     Task { await vm.runIncrementalVaR() }

@@ -517,19 +517,81 @@ final class WorkstationViewModel {
             captureMessage = "Сначала посчитай текущие inputs (Run) — capture относится к конкретному расчёту"
             return
         }
+        // Phase 5 exit criterion: capture carries the server hash of the
+        // exact run on screen — the server reprices and 409s on any drift.
+        guard let expectedHash = currentRun?.result.provenance?.inputsHash,
+              !expectedHash.isEmpty else {
+            captureMessage = "У расчёта нет server inputs_hash — capture невозможен"
+            return
+        }
         isCapturing = true
         captureMessage = nil
         do {
-            let res = try await client.addToPortfolio(product: product.id,
-                                                      engine: engine.id,
-                                                      params: bridgeParams(),
-                                                      quantity: captureQuantity)
-            captureMessage = "✓ \(res.positionID) — в книге \(res.positions) позиций"
+            let res = try await client.captureAtomic(
+                product: product.id, engine: engine.id,
+                params: bridgeParams(), quantity: captureQuantity,
+                expectedInputsHash: expectedHash, requestedBy: userName)
+            var note = "✓ \(res.positionID) — в книге \(res.positions) позиций · lineage \(String(res.lineage.inputsHash.prefix(8)))"
+            if let approver = res.lineage.approvedBy {
+                note += " · согласовал \(approver)"
+            }
+            captureMessage = note
             capturedFingerprint = currentFingerprint
         } catch {
-            captureMessage = error.localizedDescription
+            captureMessage = Self.captureErrorText(error)
         }
         isCapturing = false
+    }
+
+    /// Who is acting in this session (maker for approvals/captures).
+    var userName: String {
+        let name = NSUserName()
+        return name.isEmpty ? "trader" : name
+    }
+
+    // MARK: run approval (spec §20 maker≠checker)
+
+    var approverName: String = "risk-control"
+    var approvalMessage: String?
+    var isApproving = false
+
+    /// Record approval evidence for the CURRENT completed run's hash.
+    func approveCurrentRun() async {
+        guard let prov = currentRun?.result.provenance,
+              !prov.inputsHash.isEmpty else {
+            approvalMessage = "Нет расчёта с server inputs_hash"
+            return
+        }
+        isApproving = true
+        approvalMessage = nil
+        do {
+            let approval = try await client.approveRun(
+                inputsHash: prov.inputsHash,
+                calculationID: prov.calculationID,
+                user: approverName)
+            approvalMessage = "✓ согласовано: \(approval.approvedBy) · run \(String(approval.inputsHash.prefix(8)))"
+        } catch {
+            approvalMessage = Self.captureErrorText(error)
+        }
+        isApproving = false
+    }
+
+    /// Surface the structured capture/governance error codes readably.
+    static func captureErrorText(_ error: Error) -> String {
+        let text = error.localizedDescription
+        if text.contains("CAPTURE_HASH_MISMATCH") {
+            return "Конфликт: inputs изменились с момента расчёта — пересчитай (Calculate) и повтори"
+        }
+        if text.contains("CAPTURE_APPROVAL_REQUIRED") {
+            return "Требуется согласование расчёта (Approve run) — количество выше порога политики"
+        }
+        if text.contains("GOVERNANCE_MAKER_CHECKER") {
+            return "maker≠checker: согласовавший не может сам захватывать"
+        }
+        if text.contains("CAPTURE_RESEARCH_FORBIDDEN") {
+            return "Research-результат не подлежит capture — модель не допущена в прод"
+        }
+        return text
     }
 
     // payoff diagram

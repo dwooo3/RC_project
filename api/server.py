@@ -43,7 +43,7 @@ from api import (
     timeseries,
     volsurface,
 )
-from api import credit, custom_products, desk, marketrisk, pricing_jobs, pricing_workstation, underlying, xva
+from api import capture_workflow, credit, custom_products, desk, marketrisk, pricing_jobs, pricing_workstation, underlying, xva
 from api.context import CONTEXT
 from api.serialization import jsonable
 from services.pricing_service import PricingService
@@ -917,6 +917,93 @@ def portfolio_add(req: WsCaptureRequest) -> dict:
                      "description": pos.description, "quantity": pos.quantity,
                      "market_value": pos.market_value,
                      "positions": len(CONTEXT.portfolio.positions)})
+
+
+# ── Phase 5: approval evidence + atomic capture (spec §17, §20) ──
+_APPROVALS = capture_workflow.ApprovalRegistry(
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                 "data", "run_approvals.json"))
+
+
+class RunApproveRequest(BaseModel):
+    inputs_hash: str
+    calculation_id: str = ""
+    user: str
+
+
+@app.post("/pricing/runs/approve")
+def pricing_run_approve(req: RunApproveRequest) -> dict:
+    try:
+        return jsonable(_APPROVALS.approve(req.inputs_hash,
+                                           req.calculation_id, req.user))
+    except capture_workflow.CaptureError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.payload())
+
+
+class WsAtomicCaptureRequest(BaseModel):
+    product: str
+    engine: str | None = None
+    params: dict[str, float | int | str | None] = {}
+    quantity: float = 1.0
+    description: str | None = None
+    expected_inputs_hash: str
+    requested_by: str = "user"
+    env_id: str | None = None
+
+
+@app.post("/portfolio/capture")
+def portfolio_capture(req: WsAtomicCaptureRequest) -> dict:
+    """Atomic capture: server-side reprice on the frozen context, exact
+    inputs_hash match (409 on drift), policy approval gate, rollback on
+    book-reprice failure — returns the position + replay lineage."""
+    env, snapshot, svc, curve_ids, surface_ids = _workstation_runtime(req.env_id)
+    try:
+        quantity = pricing_workstation.portfolio_quantity(req.quantity)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    def reprice() -> dict:
+        return pricing_workstation.price_ws(
+            svc, snapshot, req.product, req.engine, req.params, env=env,
+            curve_ids=curve_ids, surface_ids=surface_ids)
+
+    def map_position():
+        mapped = pricing_workstation.to_position(
+            req.product, req.params, engine_id=req.engine)
+        if mapped is None:
+            return None
+        instrument, params, default_desc = mapped
+        return instrument, params, req.description or default_desc
+
+    def add_position(instrument, params, description, qty):
+        return CONTEXT.add_position(instrument, params, description, qty)
+
+    def remove_position(position):
+        CONTEXT.remove_position(position.id)
+
+    def reprice_book():
+        CONTEXT.portfolio.price_all()
+
+    try:
+        outcome = capture_workflow.atomic_capture(
+            reprice=reprice, map_position=map_position,
+            add_position=add_position, remove_position=remove_position,
+            reprice_book=reprice_book, approvals=_APPROVALS,
+            quantity=quantity, expected_inputs_hash=req.expected_inputs_hash,
+            requested_by=req.requested_by)
+    except capture_workflow.CaptureError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.payload())
+    except (KeyError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    position = outcome["position"]
+    return jsonable({
+        "position_id": position.id, "instrument": position.instrument,
+        "description": position.description, "quantity": position.quantity,
+        "market_value": position.market_value,
+        "positions": len(CONTEXT.portfolio.positions),
+        "lineage": outcome["lineage"],
+    })
 
 
 @app.delete("/portfolio/position/{position_id}")
