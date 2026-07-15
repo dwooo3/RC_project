@@ -43,7 +43,7 @@ from api import (
     timeseries,
     volsurface,
 )
-from api import credit, desk, marketrisk, pricing_jobs, pricing_workstation, underlying, xva
+from api import credit, custom_products, desk, marketrisk, pricing_jobs, pricing_workstation, underlying, xva
 from api.context import CONTEXT
 from api.serialization import jsonable
 from services.pricing_service import PricingService
@@ -557,6 +557,111 @@ def ws_simlab(req: WsSimLabRequest) -> dict:
     except (KeyError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=404 if "unknown product" in str(exc)
                             else 400, detail=str(exc))
+
+
+# ── Custom Product Engine (spec §16) ──
+class CustomCreateRequest(BaseModel):
+    template_id: str | None = None
+    definition: dict | None = None
+    name: str | None = None
+    author: str = "user"
+    slot_defaults: dict[str, float] = {}
+
+
+class CustomDefinitionRequest(BaseModel):
+    definition: dict
+
+
+class CustomActionRequest(BaseModel):
+    user: str = "user"
+
+
+class CustomPriceRequest(BaseModel):
+    slots: dict[str, float] = {}
+    market: dict[str, float] = {}
+    n_sims: int = 50_000
+    steps: int = 252
+    seed: int = 42
+
+
+def _custom(fn):
+    try:
+        return jsonable(fn())
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/custom/templates")
+def custom_templates() -> dict:
+    return jsonable({"templates": custom_products.get_store().templates()})
+
+
+@app.get("/custom/products")
+def custom_list() -> dict:
+    return jsonable({"products": custom_products.get_store().list_products()})
+
+
+@app.get("/custom/products/{product_id}")
+def custom_get(product_id: str) -> dict:
+    return _custom(lambda: custom_products.get_store().get(product_id))
+
+
+@app.post("/custom/products", status_code=201)
+def custom_create(req: CustomCreateRequest) -> dict:
+    return _custom(lambda: custom_products.get_store().create(
+        definition=req.definition, template_id=req.template_id,
+        name=req.name, author=req.author, slot_defaults=req.slot_defaults))
+
+
+@app.put("/custom/products/{product_id}")
+def custom_update(product_id: str, req: CustomDefinitionRequest) -> dict:
+    return _custom(lambda: custom_products.get_store().update_definition(
+        product_id, req.definition))
+
+
+@app.post("/custom/products/{product_id}/compile")
+def custom_compile(product_id: str) -> dict:
+    return _custom(lambda: custom_products.get_store().compile(product_id))
+
+
+@app.post("/custom/products/{product_id}/submit")
+def custom_submit(product_id: str, req: CustomActionRequest) -> dict:
+    return _custom(lambda: custom_products.get_store().submit(product_id, req.user))
+
+
+@app.post("/custom/products/{product_id}/approve")
+def custom_approve(product_id: str, req: CustomActionRequest) -> dict:
+    return _custom(lambda: custom_products.get_store().approve(product_id, req.user))
+
+
+@app.post("/custom/products/{product_id}/publish")
+def custom_publish(product_id: str) -> dict:
+    return _custom(lambda: custom_products.get_store().publish(product_id))
+
+
+@app.post("/custom/products/{product_id}/deprecate")
+def custom_deprecate(product_id: str) -> dict:
+    return _custom(lambda: custom_products.get_store().deprecate(product_id))
+
+
+@app.post("/custom/products/{product_id}/versions")
+def custom_new_version(product_id: str, req: CustomActionRequest) -> dict:
+    return _custom(lambda: custom_products.get_store().new_version(
+        product_id, author=req.user))
+
+
+@app.get("/custom/products/{product_id}/diff")
+def custom_diff(product_id: str, v_from: int, v_to: int) -> dict:
+    return _custom(lambda: custom_products.get_store().diff(product_id, v_from, v_to))
+
+
+@app.post("/custom/products/{product_id}/price")
+def custom_price(product_id: str, req: CustomPriceRequest) -> dict:
+    return _custom(lambda: custom_products.get_store().price(
+        product_id, req.slots, req.market,
+        n_sims=req.n_sims, steps=req.steps, seed=req.seed))
 
 
 # ── Market Risk workstation (ERS-style: HypPL / VaR / backtesting) ──

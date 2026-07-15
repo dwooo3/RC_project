@@ -6,6 +6,7 @@ struct PricingScreen: View {
     enum Category: String, CaseIterable, Identifiable {
         case derivatives = "Derivatives"
         case bond = "Bond"
+        case custom = "Custom"
         var id: String { rawValue }
     }
 
@@ -25,6 +26,7 @@ struct PricingScreen: View {
             switch category {
             case .derivatives: PricingWorkstationView()
             case .bond: BondPane()
+            case .custom: CustomProductsView()
             }
         }
     }
