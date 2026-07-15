@@ -21,7 +21,7 @@ import uuid
 
 import numpy as np
 
-from models.monte_carlo import gbm_paths
+from models.monte_carlo import gbm_paths, multi_asset_paths
 
 # ── typed AST allowlist ──────────────────────────────────
 
@@ -32,11 +32,19 @@ _EXPR_NODES = {
     "const":     ((), NUMBER),          # {"node":"const","value":1.0}
     "param":     ((), NUMBER),          # slot reference {"name": ...}
     "state":     ((), NUMBER),          # state variable {"name": ...}
-    "perf":      ((), NUMBER),          # S_t / S0 at the current observation
+    "perf":      ((), NUMBER),          # S_t / S0 (single-underlying only)
     "time":      ((), NUMBER),          # current observation time, years
     "accrual":   ((), NUMBER),          # t_i - t_{i-1}
-    "path_min":  ((), NUMBER),          # running minimum of perf so far
-    "path_max":  ((), NUMBER),          # running maximum of perf so far
+    "path_min":  ((), NUMBER),          # running min of perf (single-asset)
+    "path_max":  ((), NUMBER),          # running max of perf (single-asset)
+    # multi-asset aggregations (spec §16.2: basket, worst/best/nth/weighted)
+    "asset":     ((), NUMBER),          # perf of one asset {"index": i}
+    "worst_of":  ((), NUMBER),          # min over assets at current obs
+    "best_of":   ((), NUMBER),          # max over assets at current obs
+    "basket_avg": ((), NUMBER),         # equally-weighted basket perf
+    "weighted":  ((), NUMBER),          # weighted basket {"weights": [...]}
+    "nth_worst": ((), NUMBER),          # rank-th worst perf {"rank": n}
+    "worst_path_min": ((), NUMBER),     # running min over time AND assets
     "add":       (("n", "n"), NUMBER),
     "sub":       (("n", "n"), NUMBER),
     "mul":       (("n", "n"), NUMBER),
@@ -58,8 +66,15 @@ _ACTIONS = {"set", "accumulate", "pay", "terminate"}
 _MAX_DEPTH = 64
 _MAX_NODES = 512
 
-_TOP_KEYS = {"name", "description", "author", "slots", "state",
+_TOP_KEYS = {"name", "description", "author", "slots", "state", "assets",
              "schedule", "observation_program", "maturity_program"}
+
+
+def _asset_names(defn: dict) -> list[str]:
+    assets = defn.get("assets")
+    if isinstance(assets, list) and assets:
+        return [str(a) for a in assets]
+    return ["S"]
 
 # Lifecycle (spec §16.5); validate/compile/test collapse into one server
 # compile step, whose report records each stage's evidence.
@@ -104,6 +119,28 @@ def _check_expr(expr, defn, issues, path, depth=0, count=None):
         if expr.get("name") not in (defn.get("state") or {}):
             _issue(issues, "CUSTOM_PRODUCT_UNDECLARED_STATE",
                    f"state '{expr.get('name')}' не объявлен", path)
+    n_assets = len(_asset_names(defn))
+    if kind in ("perf", "path_min", "path_max") and n_assets > 1:
+        _issue(issues, "CUSTOM_PRODUCT_AMBIGUOUS_ASSET",
+               f"'{kind}' неоднозначен при {n_assets} активах — используй "
+               "asset/worst_of/best_of/basket_avg/worst_path_min", path)
+    elif kind == "asset":
+        index = expr.get("index")
+        if not isinstance(index, int) or not 0 <= index < n_assets:
+            _issue(issues, "CUSTOM_PRODUCT_TYPE_MISMATCH",
+                   f"asset.index должен быть 0..{n_assets - 1}", path)
+    elif kind == "nth_worst":
+        rank = expr.get("rank")
+        if not isinstance(rank, int) or not 1 <= rank <= n_assets:
+            _issue(issues, "CUSTOM_PRODUCT_TYPE_MISMATCH",
+                   f"nth_worst.rank должен быть 1..{n_assets}", path)
+    elif kind == "weighted":
+        weights = expr.get("weights")
+        if (not isinstance(weights, list) or len(weights) != n_assets
+                or not all(isinstance(w, (int, float)) and not isinstance(w, bool)
+                           for w in weights)):
+            _issue(issues, "CUSTOM_PRODUCT_TYPE_MISMATCH",
+                   f"weighted.weights: нужен список из {n_assets} чисел", path)
     args = expr.get("args", [])
     if argspec and (not isinstance(args, list) or len(args) != len(argspec)):
         _issue(issues, "CUSTOM_PRODUCT_TYPE_MISMATCH",
@@ -154,6 +191,15 @@ def validate_definition(defn: dict) -> list[dict]:
             _issue(issues, "SCHEMA_UNKNOWN_FIELD", f"неизвестное поле '{key}'", key)
     if not str(defn.get("name") or "").strip():
         _issue(issues, "SCHEMA_MISSING_FIELD", "name обязателен", "name")
+
+    assets = defn.get("assets")
+    if assets is not None:
+        if (not isinstance(assets, list) or not assets
+                or not all(isinstance(a, str) and a.strip() for a in assets)):
+            _issue(issues, "SCHEMA_TYPE",
+                   "assets должен быть непустым списком имён", "assets")
+        elif len(set(assets)) != len(assets):
+            _issue(issues, "SCHEMA_TYPE", "имена активов дублируются", "assets")
 
     slots = defn.get("slots") or {}
     for name, spec in slots.items():
@@ -294,16 +340,18 @@ def compile_definition(defn: dict) -> dict:
 
     report["summary"] = economic_summary(defn)
     report["timeline"] = event_timeline(defn)
+    n_assets = len(_asset_names(defn))
     uses_state = bool(defn.get("state"))
-    uses_path = _mentions_node(defn, {"path_min", "path_max"})
+    uses_path = _mentions_node(defn, {"path_min", "path_max", "worst_path_min"})
     has_terminate = _mentions_action(defn, "terminate")
     report["classification"] = {
         "path_dependent": uses_state or uses_path,
         "early_redemption": has_terminate,
-        "underlyings": 1,
-        "dynamics": "gbm",
+        "underlyings": n_assets,
+        "dynamics": "gbm" if n_assets == 1 else "correlated_gbm",
     }
-    report["compatible_engines"] = ["custom_mc_gbm"]
+    report["compatible_engines"] = (["custom_mc_gbm"] if n_assets == 1
+                                    else ["custom_mc_multi_gbm"])
 
     # Deterministic regression vectors (§16.4): flat / up / down scenarios.
     slots = {k: v.get("default") for k, v in (defn.get("slots") or {}).items()}
@@ -335,12 +383,13 @@ def _mentions_action(defn, kind: str) -> bool:
 # ── evaluator: PayoffIR over paths ───────────────────────
 
 class _Ctx:
-    __slots__ = ("perf", "t", "accrual", "path_min", "path_max",
+    __slots__ = ("perfs", "run_min", "run_max", "t", "accrual",
                  "slots", "state")
 
-    def __init__(self, perf, t, accrual, path_min, path_max, slots, state):
-        self.perf, self.t, self.accrual = perf, t, accrual
-        self.path_min, self.path_max = path_min, path_max
+    def __init__(self, perfs, run_min, run_max, t, accrual, slots, state):
+        # perfs / run_min / run_max: (n_paths, n_assets) at the current obs
+        self.perfs, self.run_min, self.run_max = perfs, run_min, run_max
+        self.t, self.accrual = t, accrual
         self.slots, self.state = slots, state
 
 
@@ -353,15 +402,29 @@ def _eval(expr, ctx):
     if kind == "state":
         return ctx.state[expr["name"]]
     if kind == "perf":
-        return ctx.perf
+        return ctx.perfs[:, 0]
     if kind == "time":
         return ctx.t
     if kind == "accrual":
         return ctx.accrual
     if kind == "path_min":
-        return ctx.path_min
+        return ctx.run_min[:, 0]
     if kind == "path_max":
-        return ctx.path_max
+        return ctx.run_max[:, 0]
+    if kind == "asset":
+        return ctx.perfs[:, int(expr["index"])]
+    if kind == "worst_of":
+        return ctx.perfs.min(axis=1)
+    if kind == "best_of":
+        return ctx.perfs.max(axis=1)
+    if kind == "basket_avg":
+        return ctx.perfs.mean(axis=1)
+    if kind == "weighted":
+        return ctx.perfs @ np.asarray(expr["weights"], dtype=float)
+    if kind == "nth_worst":
+        return np.sort(ctx.perfs, axis=1)[:, int(expr["rank"]) - 1]
+    if kind == "worst_path_min":
+        return ctx.run_min.min(axis=1)
     a = expr.get("args", [])
     if kind == "add":
         return _eval(a[0], ctx) + _eval(a[1], ctx)
@@ -398,7 +461,9 @@ def _eval(expr, ctx):
 
 def _evaluate_paths(defn: dict, slots: dict, paths: np.ndarray,
                     times: np.ndarray, r: float) -> dict:
-    """Run the definition programs over pre-generated paths (perf terms)."""
+    """Run the definition programs over pre-generated paths (perf terms).
+
+    ``paths`` has shape (n_paths, n_steps+1, n_assets)."""
     sched = defn.get("schedule") or {}
     slot_specs = defn.get("slots") or {}
     n_obs = int(_resolve_scalar(sched.get("observations"), slot_specs, slots))
@@ -414,10 +479,10 @@ def _evaluate_paths(defn: dict, slots: dict, paths: np.ndarray,
     prev_t = 0.0
     for t_obs in obs_times:
         step = min(int(round(t_obs / maturity * n_steps)), n_steps)
-        perf = paths[:, step]
-        ctx = _Ctx(perf, t_obs, t_obs - prev_t,
-                   paths[:, :step + 1].min(axis=1),
-                   paths[:, :step + 1].max(axis=1), slots, state)
+        ctx = _Ctx(paths[:, step, :],
+                   paths[:, :step + 1, :].min(axis=1),
+                   paths[:, :step + 1, :].max(axis=1),
+                   t_obs, t_obs - prev_t, slots, state)
         disc_t = np.exp(-r * t_obs)
         for action in defn.get("observation_program") or []:
             kind = action["action"]
@@ -443,9 +508,9 @@ def _evaluate_paths(defn: dict, slots: dict, paths: np.ndarray,
                         state[name] = np.where(mask, 0.0, state[name])
         prev_t = t_obs
 
-    perf_T = paths[:, -1]
-    ctx = _Ctx(perf_T, maturity, maturity - (obs_times[-2] if n_obs > 1 else 0.0),
-               paths.min(axis=1), paths.max(axis=1), slots, state)
+    ctx = _Ctx(paths[:, -1, :], paths.min(axis=1), paths.max(axis=1),
+               maturity, maturity - (obs_times[-2] if n_obs > 1 else 0.0),
+               slots, state)
     disc_T = np.exp(-r * maturity)
     for action in defn.get("maturity_program") or []:
         kind = action["action"]
@@ -467,12 +532,15 @@ def _evaluate_paths(defn: dict, slots: dict, paths: np.ndarray,
 
 
 def _deterministic_payoff(defn: dict, slots: dict, drift: float) -> float:
-    """One synthetic linear path from 1.0 to 1.0+drift — regression vector."""
+    """One synthetic linear scenario — regression vector. Asset i drifts to
+    1+drift−0.05·i so multi-asset aggregations are actually exercised."""
     sched = defn.get("schedule") or {}
     slot_specs = defn.get("slots") or {}
     n_obs = int(_resolve_scalar(sched.get("observations"), slot_specs, slots) or 1)
+    n_assets = len(_asset_names(defn))
     steps = max(n_obs * 4, 8)
-    path = np.linspace(1.0, 1.0 + drift, steps + 1)[None, :]
+    path = np.stack([np.linspace(1.0, 1.0 + drift - 0.05 * i, steps + 1)
+                     for i in range(n_assets)], axis=1)[None, :, :]
     maturity = float(_resolve_scalar(sched.get("maturity"), slot_specs, slots) or 1.0)
     result = _evaluate_paths(defn, slots, path, np.linspace(0, maturity, steps + 1), r=0.0)
     return float(result["payoffs"][0])
@@ -499,27 +567,67 @@ def price_definition(defn: dict, slots: dict, market: dict,
             raise ValueError(f"слот '{key}': {value} выше максимума {spec['max']}")
         merged[key] = value
 
+    assets = _asset_names(defn)
+    n_assets = len(assets)
     r = float(market.get("r", 0.05))
-    q = float(market.get("q", 0.0))
-    sigma = float(market.get("sigma", 0.2))
     sched = defn.get("schedule") or {}
     maturity = float(_resolve_scalar(sched.get("maturity"), slot_specs, merged))
     n_sims = max(1000, min(int(n_sims), 200_000))
     steps = max(16, min(int(steps), 1024))
 
-    paths = gbm_paths(1.0, r, q, sigma, maturity, steps, n_sims, seed=int(seed))
+    def _vector(key_list, key_scalar, default):
+        listed = market.get(key_list)
+        if listed is not None:
+            values = [float(v) for v in listed]
+            if len(values) != n_assets:
+                raise ValueError(f"{key_list}: нужно {n_assets} значений "
+                                 f"(активы {', '.join(assets)})")
+            return np.asarray(values)
+        return np.full(n_assets, float(market.get(key_scalar, default)))
+
+    sigma_vec = _vector("sigmas", "sigma", 0.2)
+    q_vec = _vector("qs", "q", 0.0)
+
+    if n_assets == 1:
+        paths = gbm_paths(1.0, r, float(q_vec[0]), float(sigma_vec[0]),
+                          maturity, steps, n_sims, seed=int(seed))[:, :, None]
+        corr_out = None
+    else:
+        corr_raw = market.get("corr")
+        if corr_raw is not None:
+            corr = np.asarray(corr_raw, dtype=float)
+            if corr.shape != (n_assets, n_assets):
+                raise ValueError(f"corr: нужна матрица {n_assets}×{n_assets}")
+        else:
+            rho = float(market.get("rho", 0.5))
+            corr = np.full((n_assets, n_assets), rho)
+            np.fill_diagonal(corr, 1.0)
+        try:
+            raw = multi_asset_paths(np.ones(n_assets), r, q_vec, sigma_vec,
+                                    corr, maturity, steps, n_sims,
+                                    seed=int(seed))
+        except np.linalg.LinAlgError:
+            raise ValueError("корреляционная матрица не положительно "
+                             "определена") from None
+        paths = raw.transpose(0, 2, 1)      # → (n_sims, steps+1, n_assets)
+        corr_out = corr.tolist()
+
     result = _evaluate_paths(defn, merged, paths,
                              np.linspace(0, maturity, steps + 1), r=r)
     payoffs = result["payoffs"]
+    market_out = {"r": r, "sigmas": sigma_vec.tolist(), "qs": q_vec.tolist()}
+    if corr_out is not None:
+        market_out["corr"] = corr_out
     return {
         "value": float(payoffs.mean()),
         "stderr": float(payoffs.std(ddof=1) / np.sqrt(n_sims)),
         "early_redemption_prob": result["early_redemption_prob"],
         "definition_hash": definition_hash(defn),
         "slots": merged,
-        "market": {"r": r, "q": q, "sigma": sigma},
+        "assets": assets,
+        "market": market_out,
         "n_sims": n_sims, "steps": steps, "seed": int(seed),
-        "engine": "custom_mc_gbm",
+        "engine": "custom_mc_gbm" if n_assets == 1 else "custom_mc_multi_gbm",
     }
 
 
@@ -533,8 +641,7 @@ class CustomProductStore:
         self.path = path
         self._data: dict[str, dict] = {}
         self._load()
-        if not self._data:
-            self._seed_templates()
+        self._seed_templates()          # idempotent: fills in missing seeds
 
     # ── persistence ──────────────────────────────────────
     def _load(self):
@@ -726,12 +833,14 @@ class CustomProductStore:
 
     # ── seed templates ───────────────────────────────────
     def _seed_templates(self):
-        phoenix = _phoenix_template()
-        reverse = _reverse_convertible_template()
-        for template in (phoenix, reverse):
+        changed = False
+        for template in (_phoenix_template(), _reverse_convertible_template(),
+                         _worst_of_barrier_rc_template()):
+            product_id = template["name"].lower().replace(" ", "_").replace("-", "_")
+            if product_id in self._data:
+                continue
             report = compile_definition(template)
             assert report["ok"], report["issues"]
-            product_id = template["name"].lower().replace(" ", "_")
             self._data[product_id] = {
                 "is_template": True,
                 "versions": [{
@@ -744,7 +853,9 @@ class CustomProductStore:
                     "from_template": None,
                 }],
             }
-        self._save()
+            changed = True
+        if changed:
+            self._save()
 
 
 def _diff_walk(old, new, path, changes):
@@ -843,6 +954,41 @@ def _reverse_convertible_template() -> dict:
                           _n("if",
                              _n("and", ki_hit, _n("lt", _n("perf"), _n("const", value=1.0))),
                              _n("perf"),
+                             _n("const", value=1.0)),
+                          _n("mul", _n("param", name="coupon_rate"),
+                             _n("param", name="T")))},
+        ],
+    }
+
+
+def _worst_of_barrier_rc_template() -> dict:
+    """Worst-of Barrier Reverse Convertible on a 2-asset basket — exercises
+    the multi-asset primitives (worst_of, worst_path_min, spec §16.2)."""
+    ki_hit = _n("le", _n("worst_path_min"), _n("param", name="ki_barrier"))
+    return {
+        "name": "Worst-of Barrier RC",
+        "description": "Купон гарантирован; барьер мониторится по ХУДШЕМУ "
+                       "активу корзины непрерывно; при пробое и worst < 1 на "
+                       "погашении — поставка худшего актива.",
+        "author": "riskcalc-seed",
+        "assets": ["Asset A", "Asset B"],
+        "slots": {
+            "T": {"label": "Maturity, y", "default": 1.0, "min": 0.25, "max": 5.0},
+            "ki_barrier": {"label": "Knock-in barrier", "default": 0.70,
+                           "min": 0.1, "max": 1.0},
+            "coupon_rate": {"label": "Coupon p.a.", "default": 0.15,
+                            "min": 0.0, "max": 1.0},
+        },
+        "state": {},
+        "schedule": {"observations": 1, "maturity": {"slot": "T"}},
+        "observation_program": [],
+        "maturity_program": [
+            {"action": "pay",
+             "amount": _n("add",
+                          _n("if",
+                             _n("and", ki_hit,
+                                _n("lt", _n("worst_of"), _n("const", value=1.0))),
+                             _n("worst_of"),
                              _n("const", value=1.0)),
                           _n("mul", _n("param", name="coupon_rate"),
                              _n("param", name="T")))},

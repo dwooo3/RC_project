@@ -18,6 +18,8 @@ struct ExprKindInfo {
 let exprKindOrder: [String] = [
     "const", "param", "state", "perf", "time", "accrual",
     "path_min", "path_max",
+    "asset", "worst_of", "best_of", "basket_avg", "nth_worst",
+    "worst_path_min",
     "add", "sub", "mul", "div", "neg", "min", "max", "if",
     "ge", "gt", "le", "lt", "and", "or", "not",
 ]
@@ -31,6 +33,13 @@ let exprKinds: [String: ExprKindInfo] = [
     "accrual":  .init(label: "Δt периода", args: [], result: .number),
     "path_min": .init(label: "min по пути", args: [], result: .number),
     "path_max": .init(label: "max по пути", args: [], result: .number),
+    "asset":    .init(label: "актив i", args: [], result: .number),
+    "worst_of": .init(label: "худший актив", args: [], result: .number),
+    "best_of":  .init(label: "лучший актив", args: [], result: .number),
+    "basket_avg": .init(label: "среднее корзины", args: [], result: .number),
+    "nth_worst": .init(label: "n-й худший", args: [], result: .number),
+    "worst_path_min": .init(label: "min худшего по пути", args: [],
+                            result: .number),
     "add":      .init(label: "a + b", args: [.number, .number], result: .number),
     "sub":      .init(label: "a − b", args: [.number, .number], result: .number),
     "mul":      .init(label: "a × b", args: [.number, .number], result: .number),
@@ -79,6 +88,8 @@ final class ENode: Identifiable {
         guard let info = exprKinds[newKind] else { return }
         let old = children
         kind = newKind
+        if newKind == "asset" { value = 0 }
+        if newKind == "nth_worst" { value = 1 }
         children = info.args.enumerated().map { index, type in
             if index < old.count, let oldInfo = exprKinds[old[index].kind],
                oldInfo.result == type {
@@ -94,6 +105,10 @@ final class ENode: Identifiable {
             return ["node": "const", "value": value]
         case "param", "state":
             return ["node": kind, "name": name]
+        case "asset":
+            return ["node": "asset", "index": Int(value)]
+        case "nth_worst":
+            return ["node": "nth_worst", "rank": Int(value)]
         default:
             var out: [String: Any] = ["node": kind]
             if !children.isEmpty { out["args"] = children.map { $0.toJSON() } }
@@ -104,6 +119,8 @@ final class ENode: Identifiable {
     static func fromJSON(_ dict: [String: Any]) -> ENode {
         let node = ENode(dict["node"] as? String ?? "const")
         node.value = (dict["value"] as? NSNumber)?.doubleValue ?? 1.0
+        if let index = dict["index"] as? NSNumber { node.value = index.doubleValue }
+        if let rank = dict["rank"] as? NSNumber { node.value = rank.doubleValue }
         node.name = dict["name"] as? String ?? ""
         node.children = (dict["args"] as? [[String: Any]])?.map(fromJSON) ?? []
         return node
@@ -205,6 +222,7 @@ final class EDefinition {
     var name = ""
     var about = ""
     var author = ""
+    var assets: [String] = ["S"]
     var slots: [ESlot] = []
     var states: [EStateVar] = []
     var obsSlot = ""              // empty → literal obsCount
@@ -246,6 +264,7 @@ final class EDefinition {
             "name": name,
             "description": about,
             "author": author,
+            "assets": assets.filter { !$0.isEmpty },
             "slots": slotsJSON,
             "state": stateJSON,
             "schedule": [
@@ -264,6 +283,9 @@ final class EDefinition {
         defn.name = dict["name"] as? String ?? ""
         defn.about = dict["description"] as? String ?? ""
         defn.author = dict["author"] as? String ?? ""
+        if let assets = dict["assets"] as? [String], !assets.isEmpty {
+            defn.assets = assets
+        }
         for (name, raw) in (dict["slots"] as? [String: [String: Any]] ?? [:])
                 .sorted(by: { $0.key < $1.key }) {
             defn.slots.append(ESlot(
@@ -360,6 +382,23 @@ struct ExprTreeEditor: View {
             namePicker(options: defn.slotNames, missing: "нет слотов")
         case "state":
             namePicker(options: defn.stateNames, missing: "нет state")
+        case "asset":
+            Picker("", selection: Binding(
+                get: { min(max(Int(node.value), 0), defn.assets.count - 1) },
+                set: { node.value = Double($0) }
+            )) {
+                ForEach(Array(defn.assets.enumerated()), id: \.offset) { index, name in
+                    Text(name).tag(index)
+                }
+            }
+            .labelsHidden().pickerStyle(.menu).fixedSize()
+        case "nth_worst":
+            TextField("", value: Binding(
+                get: { Int(node.value) },
+                set: { node.value = Double(min(max($0, 1), defn.assets.count)) }
+            ), format: .number)
+                .textFieldStyle(.roundedBorder).monospacedDigit()
+                .frame(width: 44)
         default:
             EmptyView()
         }

@@ -15,12 +15,17 @@ from api.custom_products import (
     CustomProductStore,
     _phoenix_template,
     _reverse_convertible_template,
+    _worst_of_barrier_rc_template,
     compile_definition,
     definition_hash,
     price_definition,
     validate_definition,
 )
-from instruments.structured.phoenix import phoenix, reverse_convertible
+from instruments.structured.phoenix import (
+    phoenix,
+    reverse_convertible,
+    worst_of_barrier_rc,
+)
 
 
 @pytest.fixture()
@@ -58,6 +63,128 @@ def test_reverse_convertible_template_matches_dedicated_pricer():
                                ki_barrier=0.70, coupon_rate=0.12,
                                n_sims=20_000, seed=42)
     assert got["value"] == pytest.approx(want["price"], abs=1e-12)
+
+
+# ── multi-asset primitives (spec §16.2) ──────────────────
+
+def test_worst_of_rc_template_matches_dedicated_pricer():
+    import numpy as np
+
+    defn = _worst_of_barrier_rc_template()
+    slots = {"T": 1.0, "ki_barrier": 0.70, "coupon_rate": 0.15}
+    corr = [[1.0, 0.6], [0.6, 1.0]]
+    market = {"r": 0.05, "sigmas": [0.30, 0.25], "qs": [0.01, 0.0],
+              "corr": corr}
+    got = price_definition(defn, slots, market,
+                           n_sims=20_000, steps=252, seed=42)
+    want = worst_of_barrier_rc([1.0, 1.0], 0.05, [0.01, 0.0], [0.30, 0.25],
+                               np.array(corr), 1.0, ki_barrier=0.70,
+                               coupon_rate=0.15, n_sims=20_000, seed=42)
+    assert got["value"] == pytest.approx(want["price"], abs=1e-12), \
+        "worst_of/worst_path_min must reproduce the dedicated WBRC pricer"
+    assert got["engine"] == "custom_mc_multi_gbm"
+    assert got["assets"] == ["Asset A", "Asset B"]
+
+
+def test_multi_asset_aggregations_deterministic_at_zero_vol():
+    import math
+
+    base = {
+        "name": "agg-check", "author": "t",
+        "assets": ["A", "B"],
+        "slots": {},
+        "state": {},
+        "schedule": {"observations": 1, "maturity": 1.0},
+        "observation_program": [],
+    }
+    market = {"r": 0.05, "sigmas": [0.0, 0.0], "qs": [0.0, 0.05], "rho": 0.0}
+    # σ=0 → детерминированные форварды: perf_A = e^{0.05}, perf_B = 1.0
+    perf_a, perf_b = math.exp(0.05), 1.0
+    disc = math.exp(-0.05)
+    cases = {
+        "worst_of": min(perf_a, perf_b),
+        "best_of": max(perf_a, perf_b),
+        "basket_avg": (perf_a + perf_b) / 2,
+    }
+    for node, expected in cases.items():
+        defn = {**base, "maturity_program": [
+            {"action": "pay", "amount": {"node": node}}]}
+        got = price_definition(defn, {}, market, n_sims=1000, steps=16)
+        assert got["value"] == pytest.approx(disc * expected, abs=1e-12), node
+    defn = {**base, "maturity_program": [
+        {"action": "pay", "amount": {"node": "nth_worst", "rank": 2}}]}
+    got = price_definition(defn, {}, market, n_sims=1000, steps=16)
+    assert got["value"] == pytest.approx(disc * perf_a, abs=1e-12)
+    defn = {**base, "maturity_program": [
+        {"action": "pay",
+         "amount": {"node": "weighted", "weights": [0.25, 0.75]}}]}
+    got = price_definition(defn, {}, market, n_sims=1000, steps=16)
+    assert got["value"] == pytest.approx(
+        disc * (0.25 * perf_a + 0.75 * perf_b), abs=1e-12)
+
+
+def test_multi_asset_validation_fail_closed():
+    defn = _worst_of_barrier_rc_template()
+    # ambiguous single-asset node with 2 assets
+    defn["maturity_program"][0]["amount"] = {"node": "perf"}
+    issues = validate_definition(defn)
+    assert any(i["code"] == "CUSTOM_PRODUCT_AMBIGUOUS_ASSET" for i in issues)
+
+    defn = _worst_of_barrier_rc_template()
+    defn["maturity_program"][0]["amount"] = {"node": "asset", "index": 5}
+    assert any("asset.index" in i["message"]
+               for i in validate_definition(defn))
+
+    defn = _worst_of_barrier_rc_template()
+    defn["maturity_program"][0]["amount"] = {"node": "nth_worst", "rank": 3}
+    assert any("nth_worst.rank" in i["message"]
+               for i in validate_definition(defn))
+
+    defn = _worst_of_barrier_rc_template()
+    defn["maturity_program"][0]["amount"] = {"node": "weighted",
+                                             "weights": [1.0]}
+    assert any("weighted.weights" in i["message"]
+               for i in validate_definition(defn))
+
+    defn = _worst_of_barrier_rc_template()
+    defn["assets"] = ["A", "A"]
+    assert any("дублируются" in i["message"]
+               for i in validate_definition(defn))
+
+
+def test_wbrc_template_compiles_with_multi_asset_classification():
+    report = compile_definition(_worst_of_barrier_rc_template())
+    assert report["ok"], report["issues"]
+    assert report["classification"]["underlyings"] == 2
+    assert report["classification"]["dynamics"] == "correlated_gbm"
+    assert report["classification"]["path_dependent"] is True  # worst_path_min
+    assert report["compatible_engines"] == ["custom_mc_multi_gbm"]
+    vectors = {v["scenario"]: v["pv"] for v in report["test_vectors"]}
+    assert vectors["up"] > vectors["down"]
+
+
+def test_price_rejects_wrong_sigma_vector_and_bad_corr():
+    defn = _worst_of_barrier_rc_template()
+    with pytest.raises(ValueError, match="sigmas"):
+        price_definition(defn, {}, {"r": 0.05, "sigmas": [0.3]},
+                         n_sims=1000, steps=16)
+    with pytest.raises(ValueError, match="положительно определена"):
+        price_definition(defn, {},
+                         {"r": 0.05, "sigmas": [0.3, 0.3],
+                          "corr": [[1.0, 2.0], [2.0, 1.0]]},
+                         n_sims=1000, steps=16)
+
+
+def test_seeding_is_idempotent_and_adds_missing_templates(tmp_path):
+    path = str(tmp_path / "seeds.json")
+    store1 = CustomProductStore(path)
+    assert len(store1.templates()) == 3
+    # simulate a store created before the WBRC seed existed
+    store1._data.pop("worst_of_barrier_rc")
+    store1._save()
+    store2 = CustomProductStore(path)
+    names = {t["name"] for t in store2.templates()}
+    assert "Worst-of Barrier RC" in names and len(store2.templates()) == 3
 
 
 # ── compiler: fail-closed checks (spec §16.4) ────────────

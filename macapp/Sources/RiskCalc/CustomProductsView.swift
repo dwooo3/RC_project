@@ -17,8 +17,14 @@ final class CustomProductsViewModel {
     var marketR: Double = 0.05
     var marketQ: Double = 0.0
     var marketSigma: Double = 0.25
+    /// Per-asset vols + equicorrelation, used when the definition declares
+    /// a multi-asset basket.
+    var marketSigmas: [Double] = []
+    var marketRho: Double = 0.5
     var nSims: Double = 50_000
     var seed: Double = 42
+
+    var assetNames: [String] { detail?.definition.assetNames ?? ["S"] }
 
     var author: String = NSUserName().isEmpty ? "trader" : NSUserName()
     var approver: String = "risk-control"
@@ -52,6 +58,8 @@ final class CustomProductsViewModel {
             let d = try await client.customProduct(id)
             detail = d
             slotValues = d.definition.slots.mapValues(\.defaultValue)
+            marketSigmas = Array(repeating: marketSigma,
+                                 count: d.definition.assetNames.count)
             let raw = try await client.customProductRaw(id)
             if let obj = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
                let definition = obj["definition"] as? [String: Any] {
@@ -144,10 +152,16 @@ final class CustomProductsViewModel {
         isPricing = true
         message = nil
         priceResult = nil
+        var market = CustomMarketPayload(r: marketR, q: marketQ)
+        if assetNames.count > 1 {
+            market.sigmas = marketSigmas
+            market.rho = marketRho
+        } else {
+            market.sigma = marketSigma
+        }
         do {
             priceResult = try await client.customPrice(
-                id, slots: slotValues,
-                market: ["r": marketR, "q": marketQ, "sigma": marketSigma],
+                id, slots: slotValues, market: market,
                 nSims: Int(nSims), seed: Int(seed))
         } catch {
             message = error.localizedDescription
@@ -442,7 +456,25 @@ private struct PricingCard: View {
                           alignment: .leading, spacing: Theme.s3) {
                     marketField("Risk-free r", $vm.marketR)
                     marketField("Dividend q", $vm.marketQ)
-                    marketField("Volatility σ", $vm.marketSigma)
+                    if vm.assetNames.count > 1 {
+                        ForEach(Array(vm.assetNames.enumerated()),
+                                id: \.offset) { index, name in
+                            marketField("σ · \(name)", Binding(
+                                get: {
+                                    index < vm.marketSigmas.count
+                                        ? vm.marketSigmas[index] : vm.marketSigma
+                                },
+                                set: { newValue in
+                                    while vm.marketSigmas.count < vm.assetNames.count {
+                                        vm.marketSigmas.append(vm.marketSigma)
+                                    }
+                                    vm.marketSigmas[index] = newValue
+                                }))
+                        }
+                        marketField("Корреляция ρ", $vm.marketRho)
+                    } else {
+                        marketField("Volatility σ", $vm.marketSigma)
+                    }
                     marketField("MC paths", $vm.nSims)
                     marketField("Seed", $vm.seed)
                 }
@@ -548,6 +580,7 @@ private struct AdvancedEditorCard: View {
                                 .font(.system(size: 10)).foregroundStyle(Theme.warning)
                         }
                     }
+                    assetsSection
                     slotsSection
                     statesSection
                     scheduleSection
@@ -560,6 +593,43 @@ private struct AdvancedEditorCard: View {
                 }
             }
             .disabled(!editable)
+        }
+    }
+
+    // ── assets (multi-underlying basket, spec §16.2) ─────
+    private var assetsSection: some View {
+        section("Базовые активы (корзина)") {
+            ForEach(Array(editor.assets.enumerated()), id: \.offset) { index, _ in
+                HStack(spacing: Theme.s2) {
+                    TextField("имя актива", text: Binding(
+                        get: { editor.assets[index] },
+                        set: { editor.assets[index] = $0 }
+                    ))
+                        .textFieldStyle(.roundedBorder).frame(width: 150)
+                    if editor.assets.count > 1 {
+                        Button {
+                            editor.assets.remove(at: index)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.tertiary)
+                    }
+                    Spacer()
+                }
+            }
+            HStack(spacing: Theme.s3) {
+                Button {
+                    editor.assets.append("Asset \(editor.assets.count + 1)")
+                } label: {
+                    Label("Добавить актив", systemImage: "plus.circle")
+                        .font(.system(size: 10))
+                }
+                .buttonStyle(.plain).foregroundStyle(Theme.accent)
+                if editor.assets.count > 1 {
+                    Text("perf/path_min недоступны — используй узлы корзины (худший/лучший/среднее)")
+                        .font(.system(size: 9)).foregroundStyle(.tertiary)
+                }
+            }
         }
     }
 

@@ -38,7 +38,20 @@ struct CustomDefinitionDoc: Decodable, Sendable {
     let name: String
     let description: String?
     let author: String?
+    let assets: [String]?
     let slots: [String: CustomSlotSpec]
+
+    var assetNames: [String] { assets?.isEmpty == false ? assets! : ["S"] }
+}
+
+/// Market context for the generic MC evaluator; optional fields are omitted
+/// from the JSON so the server applies its own defaults.
+struct CustomMarketPayload: Encodable, Sendable {
+    var r: Double = 0.05
+    var q: Double? = nil
+    var sigma: Double? = nil
+    var sigmas: [Double]? = nil
+    var rho: Double? = nil
 }
 
 struct CustomCompileIssue: Decodable, Sendable, Hashable, Identifiable {
@@ -214,11 +227,11 @@ extension BridgeClient {
     }
 
     func customPrice(_ id: String, slots: [String: Double],
-                     market: [String: Double], nSims: Int,
+                     market: CustomMarketPayload, nSims: Int,
                      seed: Int) async throws -> CustomPriceResult {
         struct Body: Encodable {
             let slots: [String: Double]
-            let market: [String: Double]
+            let market: CustomMarketPayload
             let n_sims: Int
             let seed: Int
         }

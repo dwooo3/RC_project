@@ -578,7 +578,8 @@ class CustomActionRequest(BaseModel):
 
 class CustomPriceRequest(BaseModel):
     slots: dict[str, float] = {}
-    market: dict[str, float] = {}
+    # scalar r/sigma/q/rho, per-asset sigmas/qs lists, corr matrix
+    market: dict[str, float | list[float] | list[list[float]]] = {}
     n_sims: int = 50_000
     steps: int = 252
     seed: int = 42
