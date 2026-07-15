@@ -39,8 +39,31 @@ final class WorkstationViewModel {
     var ladderSteps: Int = 15
     var ladder: WsLadder?
     var scenarios: WsScenarios?
-    var isRunningLadder = false
-    var isRunningScenarios = false
+
+    // MARK: async analytics jobs (spec §18)
+
+    /// UI projection of one server-side analytics job.
+    struct AnalyticsJob: Equatable {
+        var id: String
+        var state: String        // queued/running/completed/failed/cancelled/expired
+        var completed: Int = 0
+        var total: Int?
+        var fingerprint: String  // workspace fingerprint at submit
+        var errorMessage: String?
+        var retryable = false
+        var isBusy: Bool { state == "queued" || state == "running" }
+    }
+
+    /// Active/last job per kind: ladder / grid2d / scenarios / payoff.
+    var analyticsJobs: [String: AnalyticsJob] = [:]
+    /// Partial rows streamed by a running (or cancelled) job — rendered live,
+    /// never mixed into the completed result (spec §21.5).
+    var ladderPartial: [WsLadderRow] = []
+    var gridPartial: [WsGridCell] = []
+    var scenariosPartial: [WsScenarioRow] = []
+
+    var isRunningLadder: Bool { analyticsJobs["ladder"]?.isBusy ?? false }
+    var isRunningScenarios: Bool { analyticsJobs["scenarios"]?.isBusy ?? false }
 
     var isLoading = false
     var isPricing = false
@@ -55,6 +78,10 @@ final class WorkstationViewModel {
     var issues: [WsValidationIssue] = []
     /// Fingerprint of the last input set the server validated successfully.
     private var validatedFingerprint: String?
+    /// Parameter-resolved QW1 decision returned by /pricing/validate. It is
+    /// only reused while its fingerprint still matches the current request.
+    private var validatedEligibility: WsEngineEligibility?
+    private var validatedEligibilityFingerprint: String?
     /// Fingerprint of the last captured run.
     private var capturedFingerprint: String?
     /// The immutable run whose result is currently displayed.
@@ -100,6 +127,81 @@ final class WorkstationViewModel {
         selectedProduct?.engines.first { $0.id == engineID } ?? selectedProduct?.engines.first
     }
 
+    var selectedEnvironment: WsEnvironment? {
+        environments.first { $0.envID == envID }
+    }
+
+    /// Resolve parameter-dependent eligibility without pretending that the
+    /// catalogue's default Carr-Madan (BSM) decision also applies to Heston.
+    /// A current authoritative validation response wins over static metadata.
+    var selectedEligibility: WsEngineEligibility? {
+        if validatedEligibilityFingerprint == currentFingerprint,
+           let validatedEligibility {
+            return validatedEligibility
+        }
+        guard let engine = selectedEngine else { return nil }
+        return engine.eligibility(forRuntimeVariant: requestedRuntimeVariant)
+    }
+
+    private var requestedRuntimeVariant: String? {
+        guard selectedEngine?.id == "carr_madan",
+              let variant = choiceValues["cf_model"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !variant.isEmpty else { return nil }
+        return variant.lowercased()
+    }
+
+    /// Static catalogues before `eligibility_variants` cannot classify a
+    /// non-default Carr-Madan runtime. The server still resolves it during
+    /// validation; the UI explicitly shows that state instead of mislabelling.
+    var eligibilityResolutionWarning: String? {
+        guard let engine = selectedEngine, let requested = requestedRuntimeVariant else {
+            return nil
+        }
+        if selectedEligibility != nil { return nil }
+        guard engine.eligibility != nil || !(engine.eligibilityVariants ?? []).isEmpty else {
+            return nil       // pre-QW1 fixture: preserve legacy behaviour
+        }
+        return "Вариант \(requested.uppercased()) будет авторитетно классифицирован сервером при Validate. Каталог не содержит его статического eligibility-варианта."
+    }
+
+    var eligibilityBlockReason: String? {
+        selectedEligibility?.blockReason(in: selectedEnvironment)
+    }
+
+    var canRunSelectedEngine: Bool { eligibilityBlockReason == nil }
+
+    /// Research/non-production calculations may be explored in an explicitly
+    /// permitted environment, but they must not become portfolio positions.
+    var canCaptureCurrentRun: Bool {
+        guard businessState == .priced || businessState == .captured else {
+            return false
+        }
+        if let eligibility = selectedEligibility,
+           !eligibility.isEffectivelyProductionAllowed {
+            return false
+        }
+        if let productionAllowed = result?.effectiveProductionAllowed
+            ?? result?.provenance?.productionAllowed {
+            return productionAllowed
+        }
+        return selectedEligibility?.isEffectivelyProductionAllowed
+            ?? selectedEngine?.governance.productionAllowed
+            ?? false
+    }
+
+    /// Effective status for the immutable result currently on screen. A stale
+    /// result keeps its historical server-qualified provenance; a current run
+    /// is additionally constrained by the latest selected eligibility.
+    var displayedRunIsEffectivelyProductionAllowed: Bool {
+        let runAllowed = result?.effectiveProductionAllowed
+            ?? result?.provenance?.productionAllowed
+            ?? false
+        guard !isStale, let eligibility = selectedEligibility else {
+            return runAllowed
+        }
+        return runAllowed && eligibility.isEffectivelyProductionAllowed
+    }
+
     /// Rail sections: asset classes in catalogue order, products grouped inside.
     var railSections: [(assetClass: WsAssetClass, products: [WsProductModel])] {
         guard let cat = catalogue else { return [] }
@@ -134,16 +236,27 @@ final class WorkstationViewModel {
         currentRun = nil
         issues = []
         restoredSecID = nil
-        ladder = nil
-        scenarios = nil
+        clearAnalytics()
         ladderKey = nil
-        payoff = nil
-        grid2d = nil
         errorMessage = nil
         captureMessage = nil
         impliedVolResult = nil
         clearUnderlying()
         resetForSelection()
+    }
+
+    /// Drop analytics outputs, partials and job trackers — they describe runs
+    /// of a different product/engine/inputs (spec §21.3: never present them
+    /// as belonging to the new selection).
+    private func clearAnalytics() {
+        ladder = nil
+        scenarios = nil
+        payoff = nil
+        grid2d = nil
+        ladderPartial = []
+        gridPartial = []
+        scenariosPartial = []
+        analyticsJobs = [:]
     }
 
     func selectEngine(_ id: String) {
@@ -155,10 +268,7 @@ final class WorkstationViewModel {
         issues = []
         // desk-risk outputs belong to the previous engine's runs — never show
         // them as if they were produced by the new engine
-        ladder = nil
-        scenarios = nil
-        payoff = nil
-        grid2d = nil
+        clearAnalytics()
         resetForSelection()
         // keep shared param values across engine switches (spot, strike, ...)
         for (k, v) in saved.0 where numericValues[k] != nil { numericValues[k] = v }
@@ -169,6 +279,8 @@ final class WorkstationViewModel {
         numericValues.removeAll()
         choiceValues.removeAll()
         autofilledKeys = []
+        validatedEligibility = nil
+        validatedEligibilityFingerprint = nil
         guard let engine = selectedEngine else { return }
         for spec in engine.params {
             switch spec.defaultValue {
@@ -282,6 +394,10 @@ final class WorkstationViewModel {
                                                 params: bridgeParams(),
                                                 envID: envID.isEmpty ? nil : envID)
             issues = v.issues
+            if let eligibility = v.eligibility {
+                validatedEligibility = eligibility
+                validatedEligibilityFingerprint = currentFingerprint
+            }
             if v.valid { validatedFingerprint = currentFingerprint }
             return v.valid
         } catch {
@@ -295,6 +411,11 @@ final class WorkstationViewModel {
 
     func price() async {
         guard let product = selectedProduct, let engine = selectedEngine else { return }
+        if let reason = eligibilityBlockReason {
+            errorMessage = reason
+            techState = .failed("engine eligibility")
+            return
+        }
         isPricing = true
         errorMessage = nil
         // Validate → Run (fail closed): issues block the run and map to fields.
@@ -353,10 +474,7 @@ final class WorkstationViewModel {
         currentRun = run
         issues = []
         errorMessage = nil
-        ladder = nil
-        scenarios = nil
-        payoff = nil
-        grid2d = nil
+        clearAnalytics()
     }
 
     // MARK: trade capture
@@ -364,6 +482,10 @@ final class WorkstationViewModel {
     func addToPortfolio() async {
         guard let product = selectedProduct, product.capturable,
               let engine = selectedEngine else { return }
+        guard canCaptureCurrentRun else {
+            captureMessage = "Текущий расчёт не имеет активного production-разрешения"
+            return
+        }
         // Capture attaches to the exact priced run, never to an edited form
         // (spec §7.7 invariant): the current inputs must match the run.
         guard businessState == .priced || businessState == .captured else {
@@ -387,11 +509,11 @@ final class WorkstationViewModel {
 
     // payoff diagram
     var payoff: WsPayoff?
-    var isLoadingPayoff = false
+    var isLoadingPayoff: Bool { analyticsJobs["payoff"]?.isBusy ?? false }
 
     // 2D what-if grid (spot × vol)
     var grid2d: WsGrid2D?
-    var isLoadingGrid = false
+    var isLoadingGrid: Bool { analyticsJobs["grid2d"]?.isBusy ?? false }
 
     /// (spot-like, vol-like) numeric keys present on the current engine form.
     var gridKeys: (x: String, y: String)? {
@@ -402,26 +524,117 @@ final class WorkstationViewModel {
         return nil
     }
 
+    /// Submit → poll with backoff+jitter until terminal (spec §18, §21.3).
+    /// Partial items render live and are replaced by the completed payload.
+    private func runAnalyticsJob<P: Decodable & Sendable, I: Decodable & Sendable>(
+        kind: String,
+        submit: () async throws -> WsJobSnapshot<P, I>,
+        onPartial: (WsJobPartial<I>) -> Void,
+        onCompleted: (P) -> Void
+    ) async {
+        let fingerprint = currentFingerprint
+        do {
+            var snap = try await submit()
+            analyticsJobs[kind] = AnalyticsJob(
+                id: snap.jobID, state: snap.state,
+                completed: snap.progress.completed, total: snap.progress.total,
+                fingerprint: fingerprint)
+            var delay: UInt64 = 200_000_000
+            while !snap.isTerminal {
+                try await Task.sleep(nanoseconds: delay + UInt64.random(in: 0..<80_000_000))
+                delay = min(delay * 3 / 2, 1_000_000_000)
+                snap = try await client.jobSnapshot(snap.jobID)
+                var ui = analyticsJobs[kind]
+                    ?? AnalyticsJob(id: snap.jobID, state: snap.state,
+                                    fingerprint: fingerprint)
+                ui.state = snap.state
+                ui.completed = snap.progress.completed
+                ui.total = snap.progress.total
+                analyticsJobs[kind] = ui
+                if let partial = snap.partial { onPartial(partial) }
+            }
+            var ui = analyticsJobs[kind]
+                ?? AnalyticsJob(id: snap.jobID, state: snap.state,
+                                fingerprint: fingerprint)
+            ui.state = snap.state
+            ui.completed = snap.progress.completed
+            ui.total = snap.progress.total
+            if snap.state == "failed" {
+                ui.errorMessage = snap.error?.message ?? "расчёт не удался"
+                ui.retryable = snap.error?.retryable ?? false
+            }
+            analyticsJobs[kind] = ui
+            if snap.state == "completed", let payload = snap.result {
+                onCompleted(payload)
+            }
+        } catch is CancellationError {
+            // The Swift polling task died (view gone) — the server job keeps
+            // running by design (spec §18); explicit Cancel stops it.
+        } catch {
+            analyticsJobs[kind] = AnalyticsJob(
+                id: analyticsJobs[kind]?.id ?? "", state: "failed",
+                fingerprint: fingerprint,
+                errorMessage: error.localizedDescription, retryable: true)
+        }
+    }
+
+    /// Explicit server-side cancel — idempotent on terminal jobs (spec §18).
+    func cancelAnalyticsJob(_ kind: String) async {
+        guard let job = analyticsJobs[kind], !job.id.isEmpty else { return }
+        do {
+            let ack = try await client.cancelJob(job.id)
+            analyticsJobs[kind]?.state = ack.state
+        } catch {
+            analyticsJobs[kind]?.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Payload was produced for inputs older than the current form (spec §21.3).
+    func analyticsIsStale(_ kind: String) -> Bool {
+        guard let job = analyticsJobs[kind] else { return false }
+        return job.fingerprint != currentFingerprint
+    }
+
+    func retryAnalytics(_ kind: String) async {
+        switch kind {
+        case "ladder": await runLadder()
+        case "grid2d": await loadGrid2d()
+        case "scenarios": await runScenarios()
+        case "payoff": await loadPayoff()
+        default: break
+        }
+    }
+
     func loadGrid2d() async {
         guard let product = selectedProduct, let engine = selectedEngine,
-              let keys = gridKeys else { return }
-        isLoadingGrid = true
+              let keys = gridKeys, canRunSelectedEngine else { return }
+        grid2d = nil
+        gridPartial = []
         let s0 = numericValues[keys.x] ?? 100
         let v0 = numericValues[keys.y] ?? 0.2
-        grid2d = try? await client.grid2d(
-            product: product.id, engine: engine.id, params: bridgeParams(),
-            xKey: keys.x, yKey: keys.y,
-            xLo: s0 * 0.8, xHi: s0 * 1.2,
-            yLo: max(v0 - 0.1, 0.01), yHi: v0 + 0.1)
-        isLoadingGrid = false
+        await runAnalyticsJob(
+            kind: "grid2d",
+            submit: { try await client.submitGridJob(
+                product: product.id, engine: engine.id, params: bridgeParams(),
+                xKey: keys.x, yKey: keys.y,
+                xLo: s0 * 0.8, xHi: s0 * 1.2,
+                yLo: max(v0 - 0.1, 0.01), yHi: v0 + 0.1,
+                envID: envID.isEmpty ? nil : envID) },
+            onPartial: { self.gridPartial = $0.items },
+            onCompleted: { self.grid2d = $0; self.gridPartial = [] })
     }
 
     func loadPayoff() async {
-        guard let product = selectedProduct, let engine = selectedEngine else { return }
-        isLoadingPayoff = true
-        payoff = try? await client.payoff(product: product.id, engine: engine.id,
-                                          params: bridgeParams())
-        isLoadingPayoff = false
+        guard let product = selectedProduct, let engine = selectedEngine,
+              canRunSelectedEngine else { return }
+        payoff = nil
+        await runAnalyticsJob(
+            kind: "payoff",
+            submit: { try await client.submitPayoffJob(
+                product: product.id, engine: engine.id, params: bridgeParams(),
+                envID: envID.isEmpty ? nil : envID) },
+            onPartial: { _ in },   // legs are indistinguishable mid-run
+            onCompleted: { self.payoff = $0 })
     }
 
     /// CSV of the current result (params + measures + greeks) via save panel.
@@ -468,7 +681,7 @@ final class WorkstationViewModel {
 
     func runIncrementalVaR() async {
         guard let product = selectedProduct, product.capturable,
-              let engine = selectedEngine else { return }
+              let engine = selectedEngine, canCaptureCurrentRun else { return }
         isRunningIncremental = true
         incrementalVaR = nil
         do {
@@ -504,30 +717,32 @@ final class WorkstationViewModel {
 
     func runLadder() async {
         guard let product = selectedProduct, let engine = selectedEngine,
-              let key = ladderKey else { return }
-        isRunningLadder = true
+              let key = ladderKey, canRunSelectedEngine else { return }
+        ladder = nil
+        ladderPartial = []
         errorMessage = nil
-        do {
-            ladder = try await client.wsLadder(product: product.id, engine: engine.id,
-                                               params: bridgeParams(), bumpKey: key,
-                                               lo: ladderLo, hi: ladderHi,
-                                               steps: ladderSteps)
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-        isRunningLadder = false
+        await runAnalyticsJob(
+            kind: "ladder",
+            submit: { try await client.submitLadderJob(
+                product: product.id, engine: engine.id, params: bridgeParams(),
+                bumpKey: key, lo: ladderLo, hi: ladderHi, steps: ladderSteps,
+                envID: envID.isEmpty ? nil : envID) },
+            onPartial: { self.ladderPartial = $0.items },
+            onCompleted: { self.ladder = $0; self.ladderPartial = [] })
     }
 
     func runScenarios() async {
-        guard let product = selectedProduct, let engine = selectedEngine else { return }
-        isRunningScenarios = true
+        guard let product = selectedProduct, let engine = selectedEngine,
+              canRunSelectedEngine else { return }
+        scenarios = nil
+        scenariosPartial = []
         errorMessage = nil
-        do {
-            scenarios = try await client.wsScenarios(product: product.id, engine: engine.id,
-                                                     params: bridgeParams())
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-        isRunningScenarios = false
+        await runAnalyticsJob(
+            kind: "scenarios",
+            submit: { try await client.submitScenariosJob(
+                product: product.id, engine: engine.id, params: bridgeParams(),
+                envID: envID.isEmpty ? nil : envID) },
+            onPartial: { self.scenariosPartial = $0.items },
+            onCompleted: { self.scenarios = $0; self.scenariosPartial = [] })
     }
 }

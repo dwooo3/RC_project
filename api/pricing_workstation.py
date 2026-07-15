@@ -28,6 +28,12 @@ from typing import Callable
 
 from api.instruments import CURVE_LABELS
 from models import registry
+from models.engine_eligibility import (
+    approval_is_active,
+    build_engine_eligibility,
+    effective_production_allowed,
+    eligibility_policy_issues,
+)
 from models.parameters import P, ParameterSpec, engine_params
 
 FLAT_CURVE = "— флэт r —"
@@ -279,6 +285,14 @@ def _european(svc, v, snapshot):
         return svc.price_heston_option(S, K, T, r, q, _num(v, "v0", .04), _num(v, "kappa", 1.5),
                                        _num(v, "theta", .04), _num(v, "xi", .5),
                                        _num(v, "rho", -.6), opt, snapshot=snapshot)
+    if eng in {"mc_heston", "mc_heston_qe"}:
+        return svc.price_heston_mc_option(
+            S, K, T, r, q, _num(v, "v0", .04), _num(v, "kappa", 1.5),
+            _num(v, "theta", .04), _num(v, "xi", .5), _num(v, "rho", -.6),
+            opt, "qe" if eng == "mc_heston_qe" else "euler",
+            int(_num(v, "n_sims", 100000)), int(_num(v, "steps", 100)),
+            int(_num(v, "seed", 42)), snapshot=snapshot,
+        )
     if eng == "bates":
         return svc.price_bates_option(S, K, T, r, q, _num(v, "v0", .04), _num(v, "kappa", 1.5),
                                       _num(v, "theta", .04), _num(v, "xi", .5), _num(v, "rho", -.6),
@@ -310,7 +324,7 @@ def _european(svc, v, snapshot):
         kw = {}
         if model == "heston":
             kw = {"v0": _num(v, "v0", .04), "kappa": _num(v, "kappa", 1.5),
-                  "theta": _num(v, "theta", .04), "sigma": _num(v, "xi", .3),
+                  "theta": _num(v, "theta", .04), "xi": _num(v, "xi", .3),
                   "rho": _num(v, "rho", -.6)}
         return svc.price_carr_madan(model, S, K, T, r, sig, q, opt,
                                     snapshot=snapshot, **kw)
@@ -648,7 +662,9 @@ PRODUCTS: list[WsProduct] = [
          E("binomial_tian", params=[P("N", "Tree steps", 500, "numerical", dtype="int",
                                       minimum=10, maximum=5000)]),
          E("pde_cn"), E("mc_gbm"), E("qmc"),
-         E("heston_cf"), E("bates"), E("merton_jump"), E("merton_cos"),
+         E("heston_cf"), E("mc_heston", "Heston Monte Carlo (Euler)"),
+         E("mc_heston_qe", "Heston Monte Carlo (Andersen QE)"),
+         E("bates"), E("merton_jump"), E("merton_cos"),
          E("kou"), E("variance_gamma"), E("nig"), E("cgmy"),
          E("rough_bergomi"),
          E("carr_madan", params=[
@@ -1476,6 +1492,81 @@ def _governance(model_id: str) -> dict:
     }
 
 
+def _engine_eligibility(product: WsProduct, engine: Engine,
+                        params: dict | None = None):
+    dependencies = []
+    if product.needs_curve:
+        dependencies.append("discount_curve")
+    if product.needs_proj:
+        dependencies.append("projection_curve")
+    if product.vol_surfaces:
+        dependencies.append("volatility_surface_or_manual_vol")
+    if product.underlying:
+        dependencies.append("underlying_market_facts")
+    features = (product.group, product.note) if product.note else (product.group,)
+    return build_engine_eligibility(
+        product_id=product.id,
+        selector_id=engine.id,
+        implementation_component_id=engine.model_id,
+        params=params,
+        required_market_dependencies=dependencies,
+        supported_product_features=features,
+    )
+
+
+def _eligibility_dict(eligibility) -> dict:
+    approval_active = approval_is_active(eligibility)
+    return {
+        "eligibility_id": eligibility.engine_id,
+        "eligibility_version": eligibility.version,
+        "product_definition_id": eligibility.product_definition_id,
+        "selector_id": eligibility.selector_id,
+        "implementation_component_id": eligibility.implementation_component_id,
+        "model_definition_id": eligibility.model_ref.definition_id,
+        "model_definition_version": eligibility.model_ref.version,
+        "solver_definition_id": eligibility.solver_ref.definition_id,
+        "solver_definition_version": eligibility.solver_ref.version,
+        "pricer_component_id": eligibility.pricer_component_id,
+        "parameterization_component_id": eligibility.parameterization_component_id,
+        "runtime_variant": eligibility.runtime_variant,
+        "status": eligibility.eligibility_status,
+        "production_allowed": eligibility.production_allowed,
+        "approval_basis": eligibility.approval_basis,
+        "approval_ref": eligibility.approval_ref,
+        "approval_expires_on": (
+            eligibility.approval_expires_on.isoformat()
+            if eligibility.approval_expires_on else ""
+        ),
+        "approval_active": approval_active,
+        "effective_production_allowed": effective_production_allowed(eligibility),
+        "fallback_policy": eligibility.fallback_policy,
+        "workflow_layer": eligibility.workflow_layer,
+    }
+
+
+def _engine_eligibility_variants(product: WsProduct, engine: Engine) -> list[dict]:
+    """Publish every governance-relevant runtime variant of a selector."""
+    if engine.id == "carr_madan":
+        return [
+            _eligibility_dict(_engine_eligibility(
+                product, engine, {"cf_model": runtime_variant}
+            ))
+            for runtime_variant in ("bsm", "heston")
+        ]
+    return [_eligibility_dict(_engine_eligibility(product, engine))]
+
+
+def _engine_governance(product: WsProduct, engine: Engine) -> dict:
+    """Compatibility governance view with engine-owned production approval."""
+    governance = _governance(engine.model_id)
+    eligibility = _engine_eligibility(product, engine)
+    governance["component_production_allowed_legacy"] = governance[
+        "production_allowed"
+    ]
+    governance["production_allowed"] = eligibility.production_allowed
+    return governance
+
+
 def build_ws_catalogue(curve_ids: list[str] | None = None,
                        surface_ids: list[str] | None = None) -> dict:
     """The full workstation catalogue: asset classes -> products -> engines."""
@@ -1496,7 +1587,9 @@ def build_ws_catalogue(curve_ids: list[str] | None = None,
                     "id": e.id,
                     "model_id": e.model_id,
                     "name": e.name,
-                    "governance": _governance(e.model_id),
+                    "governance": _engine_governance(p, e),
+                    "eligibility": _eligibility_dict(_engine_eligibility(p, e)),
+                    "eligibility_variants": _engine_eligibility_variants(p, e),
                     "params": [_spec_dict(s)
                                for s in p.params_for(e, curve_ids, surface_ids)],
                 }
@@ -1615,6 +1708,18 @@ def normalize_ws_result(result: dict, input_keys: set[str] | None = None) -> dic
         "value": value,
         "model_id": result.get("model_id", ""),
         "model_status": getattr(model_status, "value", model_status) or "",
+        "eligibility_id": str(result.get("engine_eligibility_id") or ""),
+        "eligibility_version": str(result.get("engine_eligibility_version") or ""),
+        "model_definition_id": str(result.get("model_definition_id") or ""),
+        "model_definition_version": str(result.get("model_definition_version") or ""),
+        "solver_definition_id": str(result.get("solver_definition_id") or ""),
+        "solver_definition_version": str(result.get("solver_definition_version") or ""),
+        "pricer_component_id": result.get("pricer_component_id"),
+        "runtime_variant": str(result.get("engine_runtime_variant") or "default"),
+        "effective_production_allowed": bool(result.get(
+            "engine_effective_production_allowed",
+            result.get("engine_production_allowed", False),
+        )),
         "greeks": greeks,
         "measures": measures,
         "series": series,
@@ -1632,7 +1737,33 @@ def normalize_ws_result(result: dict, input_keys: set[str] | None = None) -> dic
             "model_version": str(result.get("model_version") or ""),
             "model_owner": str(result.get("model_owner") or ""),
             "model_validation_date": str(result.get("model_validation_date") or ""),
-            "production_allowed": bool(result.get("model_production_allowed", False)),
+            "eligibility_id": str(result.get("engine_eligibility_id") or ""),
+            "eligibility_version": str(result.get("engine_eligibility_version") or ""),
+            "model_definition_id": str(result.get("model_definition_id") or ""),
+            "model_definition_version": str(result.get("model_definition_version") or ""),
+            "solver_definition_id": str(result.get("solver_definition_id") or ""),
+            "solver_definition_version": str(result.get("solver_definition_version") or ""),
+            "implementation_component_id": str(
+                result.get("implementation_component_id") or result.get("model_id") or ""
+            ),
+            "requested_engine_selector": str(
+                result.get("requested_engine_selector") or ""
+            ),
+            "runtime_variant": str(result.get("engine_runtime_variant") or "default"),
+            "production_allowed": bool(result.get(
+                "engine_effective_production_allowed",
+                result.get(
+                    "engine_production_allowed",
+                    result.get("model_production_allowed", False),
+                ),
+            )),
+            "declared_production_allowed": bool(result.get(
+                "engine_production_allowed",
+                result.get("model_production_allowed", False),
+            )),
+            "approval_expires_on": str(
+                result.get("engine_approval_expires_on") or ""
+            ),
             "valuation_time": str(result.get("calculation_timestamp") or ""),
         },
     }
@@ -1667,14 +1798,52 @@ _PAYOFF_SPOT_KEY = {p.id: k for p in PRODUCTS
                     for s in p.base_params)}
 
 
+def _derived_effective_params(
+    product_id: str, engine_id: str | None, params: dict, *, env=None,
+    curve_ids: list[str] | None = None,
+    surface_ids: list[str] | None = None,
+) -> dict:
+    """Materialize environment defaults before constructing shocks/ranges."""
+    product = find_product(product_id)
+    if product is None:
+        raise ValueError(f"unknown product '{product_id}'")
+    engine_ids = [item.id for item in product.engines]
+    if engine_id is None and env is not None:
+        engine_id = (env.pricer_overrides or {}).get(product_id)
+    resolved_engine = engine_id or engine_ids[0]
+    if resolved_engine not in engine_ids:
+        raise ValueError(
+            f"unknown engine '{resolved_engine}' for product '{product_id}'"
+        )
+    engine = next(item for item in product.engines if item.id == resolved_engine)
+    allowed_keys = {
+        spec.key for spec in product.params_for(
+            engine, curve_ids or [], surface_ids or []
+        )
+    }
+    return _effective_ws_params(product, params, env, allowed_keys)
+
+
 def grid2d_ws(svc, snapshot, product_id: str, engine_id: str | None,
               params: dict, x_key: str, y_key: str,
               x_lo: float, x_hi: float, y_lo: float, y_hi: float,
-              nx: int = 9, ny: int = 7) -> dict:
+              nx: int = 9, ny: int = 7, *, env=None,
+              curve_ids: list[str] | None = None,
+              surface_ids: list[str] | None = None,
+              hook=None) -> dict:
     """2-D what-if grid (Desk Risk): full revaluation over a mesh of two
-    inputs (обычно spot × vol) — P&L vs the base run per cell."""
+    inputs (обычно spot × vol) — P&L vs the base run per cell.
+
+    `hook(done, total, cell)` runs after each cell; may raise to abort."""
     nx, ny = max(3, min(int(nx), 15)), max(3, min(int(ny), 15))
-    base = price_ws(svc, snapshot, product_id, engine_id, params)
+    params = _derived_effective_params(
+        product_id, engine_id, params, env=env,
+        curve_ids=curve_ids, surface_ids=surface_ids,
+    )
+    base = price_ws(
+        svc, snapshot, product_id, engine_id, params, env=env,
+        curve_ids=curve_ids, surface_ids=surface_ids,
+    )
     base_value = base.get("value")
     cells = []
     for j in range(ny):
@@ -1683,34 +1852,59 @@ def grid2d_ws(svc, snapshot, product_id: str, engine_id: str | None,
             x = x_lo + (x_hi - x_lo) * i / (nx - 1)
             shocked = dict(params)
             shocked[x_key], shocked[y_key] = x, y
-            r = price_ws(svc, snapshot, product_id, engine_id, shocked)
+            r = price_ws(
+                svc, snapshot, product_id, engine_id, shocked, env=env,
+                curve_ids=curve_ids, surface_ids=surface_ids,
+            )
             value = r.get("value")
             cells.append({
                 "x": x, "y": y, "value": value,
                 "pnl": (value - base_value)
                        if (value is not None and base_value is not None) else None,
             })
+            if hook is not None:
+                hook(len(cells), nx * ny, cells[-1])
     return {"product": base["product"], "engine": base["engine"],
             "x_key": x_key, "y_key": y_key, "base_value": base_value,
             "nx": nx, "ny": ny, "cells": cells}
 
 
 def payoff_ws(svc, snapshot, product_id: str, engine_id: str | None,
-              params: dict, steps: int = 41) -> dict:
+              params: dict, steps: int = 41, *, env=None,
+              curve_ids: list[str] | None = None,
+              surface_ids: list[str] | None = None,
+              hook=None) -> dict:
     """Payoff diagram: value profile over spot today (T как есть) и на
-    экспирации (T→0, интринсик) — тем же прайсером через ladder."""
+    экспирации (T→0, интринсик) — тем же прайсером через ladder.
+
+    `hook(done, total, row)` spans both ladders (total = 2·steps)."""
     spot_key = _PAYOFF_SPOT_KEY.get(product_id)
     if spot_key is None:
         raise ValueError(f"payoff не определён для '{product_id}' (нет спот-входа)")
+    params = _derived_effective_params(
+        product_id, engine_id, params, env=env,
+        curve_ids=curve_ids, surface_ids=surface_ids,
+    )
     s0 = float(params.get(spot_key) or 100.0)
     lo, hi = s0 * 0.5, s0 * 1.5
 
+    def _leg_hook(offset):
+        if hook is None:
+            return None
+        return lambda done, total, row: hook(offset + done, 2 * total, row)
+
     value = ladder_ws(svc, snapshot, product_id, engine_id, params,
-                      spot_key, lo, hi, steps)
+                      spot_key, lo, hi, steps, env=env,
+                      curve_ids=curve_ids, surface_ids=surface_ids,
+                      hook=_leg_hook(0))
     at_expiry = dict(params)
-    at_expiry["T"] = 1e-6
+    # Use the published schema floor: small enough to approximate intrinsic
+    # value without making the derived request fail its own validation.
+    at_expiry["T"] = 1e-4
     payoff = ladder_ws(svc, snapshot, product_id, engine_id, at_expiry,
-                       spot_key, lo, hi, steps)
+                       spot_key, lo, hi, steps, env=env,
+                       curve_ids=curve_ids, surface_ids=surface_ids,
+                       hook=_leg_hook(len(value["rows"])))
     return {
         "product": product_id, "engine": value["engine"], "spot_key": spot_key,
         "spot": s0, "base_value": value["base_value"],
@@ -1775,7 +1969,9 @@ def _effective_ws_params(product: WsProduct, params: dict, env=None,
 def validate_ws(product_id: str, engine_id: str | None, params: dict,
                 curve_ids: list[str] | None = None,
                 surface_ids: list[str] | None = None,
-                env=None) -> dict:
+                env=None, *,
+                allow_analytics_lab: bool = False,
+                allow_non_production: bool = False) -> dict:
     """Authoritative request validation (spec §7.5): fail-closed checks of
     product, engine and every parameter against the published schema —
     unknown keys, dtype mismatches, choice membership and numeric ranges.
@@ -1844,6 +2040,19 @@ def validate_ws(product_id: str, engine_id: str | None, params: dict,
                       f"'{spec.label}': значение '{value}' не входит в "
                       f"список выбора", key)
 
+    eligibility_payload = None
+    try:
+        eligibility = _engine_eligibility(product, engine, effective_params)
+        eligibility_payload = _eligibility_dict(eligibility)
+        for code, message in eligibility_policy_issues(
+            eligibility,
+            allow_analytics_lab=allow_analytics_lab,
+            allow_non_production=allow_non_production,
+        ):
+            issue(code, "error", message)
+    except (KeyError, ValueError) as exc:
+        issue("ENGINE_BINDING_INVALID", "error", str(exc))
+
     errors = [i for i in issues if i["severity"] == "error"]
     return {
         "valid": not errors,
@@ -1851,6 +2060,7 @@ def validate_ws(product_id: str, engine_id: str | None, params: dict,
         "product": product_id,
         "engine": resolved_engine,
         "checked_params": sorted(specs.keys()),
+        "eligibility": eligibility_payload,
     }
 
 
@@ -1880,7 +2090,11 @@ def price_ws(svc, snapshot, product_id: str, engine_id: str | None,
         surface_ids = list((getattr(snapshot, "vol_surfaces", None) or {}).keys())
     validation = validate_ws(
         product_id, engine_id, params,
-        curve_ids=curve_ids, surface_ids=surface_ids, env=env)
+        curve_ids=curve_ids, surface_ids=surface_ids, env=env,
+        allow_analytics_lab=bool(getattr(svc, "allow_analytics_lab", False)),
+        allow_non_production=bool(getattr(
+            svc, "allow_non_production_models", False
+        )))
     if not validation["valid"]:
         messages = [f"{item['code']}: {item['message']}"
                     for item in validation["issues"]
@@ -1890,7 +2104,36 @@ def price_ws(svc, snapshot, product_id: str, engine_id: str | None,
     values = _effective_ws_params(
         product, params, env, set(validation["checked_params"]))
     values["engine"] = engine_id or engine_ids[0]
-    result = product.invoke(svc, values, snapshot)
+    engine = next(item for item in product.engines if item.id == values["engine"])
+    eligibility = _engine_eligibility(product, engine, values)
+    engine_metadata = {
+        "engine_eligibility_id": eligibility.engine_id,
+        "engine_eligibility_version": eligibility.version,
+        "model_definition_id": eligibility.model_ref.definition_id,
+        "model_definition_version": eligibility.model_ref.version,
+        "solver_definition_id": eligibility.solver_ref.definition_id,
+        "solver_definition_version": eligibility.solver_ref.version,
+        "pricer_component_id": eligibility.pricer_component_id,
+        "parameterization_component_id": eligibility.parameterization_component_id,
+        "implementation_component_id": eligibility.implementation_component_id,
+        "requested_engine_selector": eligibility.selector_id,
+        "engine_runtime_variant": eligibility.runtime_variant,
+        "engine_production_allowed": eligibility.production_allowed,
+        "engine_effective_production_allowed": effective_production_allowed(
+            eligibility
+        ),
+        "engine_approval_basis": eligibility.approval_basis,
+        "engine_approval_ref": eligibility.approval_ref,
+        "engine_approval_expires_on": (
+            eligibility.approval_expires_on.isoformat()
+            if eligibility.approval_expires_on else ""
+        ),
+    }
+    if hasattr(svc, "engine_context"):
+        with svc.engine_context(engine_metadata):
+            result = product.invoke(svc, values, snapshot)
+    else:
+        result = product.invoke(svc, values, snapshot)
     normalized = normalize_ws_result(result if isinstance(result, dict) else {},
                                      input_keys=set(params.keys()))
     normalized["product"] = product_id
@@ -2135,18 +2378,34 @@ _RATE_KEYS = ("r", "r_d", "forward_rate", "repo_rate", "discount_rate")
 
 
 def ladder_ws(svc, snapshot, product_id: str, engine_id: str | None, params: dict,
-              bump_key: str, lo: float, hi: float, steps: int = 11) -> dict:
+              bump_key: str, lo: float, hi: float, steps: int = 11, *, env=None,
+              curve_ids: list[str] | None = None,
+              surface_ids: list[str] | None = None,
+              hook=None) -> dict:
     """Full-revaluation ladder: reprice the instrument over a grid of one input.
-    Returns value + P&L vs the base run per grid point."""
+    Returns value + P&L vs the base run per grid point.
+
+    `hook(done, total, row)` is called after each grid point (async job
+    progress/partial/cancel — spec §18); it may raise to abort the run."""
     steps = max(2, min(int(steps), 81))
-    base = price_ws(svc, snapshot, product_id, engine_id, params)
+    params = _derived_effective_params(
+        product_id, engine_id, params, env=env,
+        curve_ids=curve_ids, surface_ids=surface_ids,
+    )
+    base = price_ws(
+        svc, snapshot, product_id, engine_id, params, env=env,
+        curve_ids=curve_ids, surface_ids=surface_ids,
+    )
     base_value = base.get("value")
     rows = []
     for i in range(steps):
         x = lo + (hi - lo) * i / (steps - 1)
         shocked = dict(params)
         shocked[bump_key] = x
-        r = price_ws(svc, snapshot, product_id, engine_id, shocked)
+        r = price_ws(
+            svc, snapshot, product_id, engine_id, shocked, env=env,
+            curve_ids=curve_ids, surface_ids=surface_ids,
+        )
         value = r.get("value")
         rows.append({
             "x": x,
@@ -2155,6 +2414,8 @@ def ladder_ws(svc, snapshot, product_id: str, engine_id: str | None, params: dic
                    else None,
             "error": (r.get("errors") or [None])[0],
         })
+        if hook is not None:
+            hook(i + 1, steps, rows[-1])
     return {"product": base["product"], "engine": base["engine"],
             "bump_key": bump_key, "base_value": base_value, "rows": rows}
 
@@ -2184,20 +2445,36 @@ def _apply_scenario(params: dict, shocks: dict, has_curve: bool) -> dict:
 
 
 def scenarios_ws(svc, snapshot, product_id: str, engine_id: str | None,
-                 params: dict) -> dict:
+                 params: dict, *, env=None,
+                 curve_ids: list[str] | None = None,
+                 surface_ids: list[str] | None = None,
+                 hook=None) -> dict:
     """Run the historical scenario library through the instrument's own pricer
-    (full revaluation, not a greek approximation)."""
+    (full revaluation, not a greek approximation).
+
+    `hook(done, total, row)` runs after each scenario; may raise to abort."""
     from risk.stress import HISTORICAL_SCENARIOS
 
     product = find_product(product_id)
     if product is None:
         raise ValueError(f"unknown product '{product_id}'")
-    base = price_ws(svc, snapshot, product_id, engine_id, params)
+    params = _derived_effective_params(
+        product_id, engine_id, params, env=env,
+        curve_ids=curve_ids, surface_ids=surface_ids,
+    )
+    base = price_ws(
+        svc, snapshot, product_id, engine_id, params, env=env,
+        curve_ids=curve_ids, surface_ids=surface_ids,
+    )
     base_value = base.get("value")
     rows = []
+    total = len(HISTORICAL_SCENARIOS)
     for name, shocks in HISTORICAL_SCENARIOS.items():
         shocked = _apply_scenario(params, shocks, product.needs_curve)
-        r = price_ws(svc, snapshot, product_id, engine_id, shocked)
+        r = price_ws(
+            svc, snapshot, product_id, engine_id, shocked, env=env,
+            curve_ids=curve_ids, surface_ids=surface_ids,
+        )
         value = r.get("value")
         pnl = (value - base_value) if (value is not None and base_value is not None) else None
         rows.append({
@@ -2210,5 +2487,7 @@ def scenarios_ws(svc, snapshot, product_id: str, engine_id: str | None,
             "pnl_pct": (pnl / abs(base_value)) if (pnl is not None and base_value) else None,
             "error": (r.get("errors") or [None])[0],
         })
+        if hook is not None:
+            hook(len(rows), total, rows[-1])
     return {"product": base["product"], "engine": base["engine"],
             "base_value": base_value, "rows": rows}

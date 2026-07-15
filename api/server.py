@@ -9,10 +9,9 @@ Endpoints
     GET  /pricing/catalogue  the universal pricer catalogue (products x engines)
     POST /pricing/price      {"product","engine","params"} -> normalized result
 
-The engine runs in an explicitly analytical mode: Analytics-Lab and other
-non-production models may return governed results with status warnings, while
-their ``production_allowed`` metadata remains false. Service defaults stay
-fail-closed.
+Workstation endpoints are fail-closed by default. Research and other
+non-production engines may execute only in the explicit, server-owned ``LAB``
+pricing environment; every derived pricing route uses the same policy.
 """
 
 from __future__ import annotations
@@ -23,8 +22,9 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from api import (
@@ -43,7 +43,7 @@ from api import (
     timeseries,
     volsurface,
 )
-from api import credit, desk, marketrisk, pricing_workstation, underlying, xva
+from api import credit, desk, marketrisk, pricing_jobs, pricing_workstation, underlying, xva
 from api.context import CONTEXT
 from api.serialization import jsonable
 from services.pricing_service import PricingService
@@ -61,6 +61,35 @@ _svc = PricingService(
     allow_non_production_models=True,
     audit=CONTEXT.audit,
 )
+
+
+_WORKSTATION_ENV_PERMISSIONS = {
+    # Server-owned permission map. Environment metadata is user-editable and
+    # therefore must never grant research/non-production execution rights.
+    "LAB": (True, True),
+}
+
+
+def _workstation_permissions(env) -> tuple[bool, bool]:
+    """Resolve server-owned research permissions for an explicit environment."""
+    if env is None:
+        return False, False
+    env_id = str(getattr(env, "env_id", "")).upper()
+    purpose = str(getattr(env, "purpose", "")).lower()
+    if env_id == "LAB" and purpose != "research":
+        return False, False
+    return _WORKSTATION_ENV_PERMISSIONS.get(env_id, (False, False))
+
+
+def _workstation_service(env) -> PricingService:
+    allow_lab, allow_non_production = _workstation_permissions(env)
+    return PricingService(
+        market_data=CONTEXT.market,
+        governance=_svc.governance,
+        audit=CONTEXT.audit,
+        allow_analytics_lab=allow_lab,
+        allow_non_production_models=allow_non_production,
+    )
 
 
 class WsPriceRequest(BaseModel):
@@ -110,6 +139,7 @@ class WsLadderRequest(BaseModel):
     lo: float
     hi: float
     steps: int = 11
+    env_id: str | None = None
 
 
 class InstrumentPriceRequest(BaseModel):
@@ -163,6 +193,15 @@ def _vol_surface_ids(snapshot=None) -> list[str]:
     return sorted(ids, key=lambda s: (not s.endswith("_FORTS"), s))
 
 
+def _workstation_runtime(env_id: str | None):
+    """Resolve one immutable request-local workstation execution context."""
+    env = CONTEXT.environment(env_id) if env_id else None
+    snapshot = CONTEXT.env_snapshot(env) if env else CONTEXT.snapshot
+    curve_ids = list((getattr(snapshot, "curves", None) or {}).keys())
+    surface_ids = _vol_surface_ids(snapshot)
+    return env, snapshot, _workstation_service(env), curve_ids, surface_ids
+
+
 # ── universal pricing workstation ────────────────────────
 @app.get("/pricing/catalogue")
 def ws_catalogue() -> dict:
@@ -177,30 +216,30 @@ def ws_catalogue() -> dict:
 def ws_validate(req: WsPriceRequest) -> dict:
     """Authoritative fail-closed validation of a pricing request (spec §7.5):
     product/engine existence, unknown params, dtype/choice/range checks."""
-    env = CONTEXT.environment(req.env_id) if req.env_id else None
-    snapshot = CONTEXT.env_snapshot(env) if env else CONTEXT.snapshot
     try:
-        curve_ids = list(snapshot.curves.keys())
-    except Exception:
-        curve_ids = []
+        env, snapshot, _, curve_ids, surface_ids = _workstation_runtime(req.env_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    allow_lab, allow_non_production = _workstation_permissions(env)
     return jsonable(pricing_workstation.validate_ws(
         req.product, req.engine, req.params,
-        curve_ids=curve_ids, surface_ids=_vol_surface_ids(snapshot), env=env))
+        curve_ids=curve_ids, surface_ids=surface_ids, env=env,
+        allow_analytics_lab=allow_lab,
+        allow_non_production=allow_non_production))
 
 
 @app.post("/pricing/price")
 def ws_price(req: WsPriceRequest) -> dict:
     try:
-        env = CONTEXT.environment(req.env_id) if req.env_id else None
-        snapshot = CONTEXT.env_snapshot(env) if env else CONTEXT.snapshot
-        curve_ids = list((getattr(snapshot, "curves", None) or {}).keys())
-        surface_ids = _vol_surface_ids(snapshot)
-        _svc.market_data = CONTEXT.market
+        env, snapshot, ws_service, curve_ids, surface_ids = _workstation_runtime(
+            req.env_id
+        )
         result = pricing_workstation.price_ws(
-            _svc, snapshot, req.product, req.engine, req.params, env=env,
+            ws_service, snapshot, req.product, req.engine, req.params, env=env,
             curve_ids=curve_ids, surface_ids=surface_ids)
     except KeyError as exc:
-        raise HTTPException(status_code=422, detail=f"missing parameter {exc}")
+        status = 404 if "pricing environment" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404 if "unknown product" in str(exc) else 400,
                             detail=str(exc))
@@ -239,8 +278,11 @@ def environments_put(env_id: str, payload: EnvironmentPayload) -> dict:
 
 @app.delete("/environments/{env_id}")
 def environments_delete(env_id: str) -> dict:
-    if env_id.upper() in ("FO",):
-        raise HTTPException(status_code=400, detail="базовый контур FO не удаляется")
+    if env_id.upper() in ("FO", "LAB"):
+        raise HTTPException(
+            status_code=400,
+            detail="базовые контуры FO/LAB не удаляются",
+        )
     CONTEXT.app_db.delete_environment(env_id.upper())
     return {"deleted": env_id.upper()}
 
@@ -265,27 +307,30 @@ class WsGrid2DRequest(BaseModel):
     y_hi: float
     nx: int = 9
     ny: int = 7
+    env_id: str | None = None
 
 
 @app.post("/pricing/grid2d")
 def ws_grid2d(req: WsGrid2DRequest) -> dict:
     try:
-        _svc.market_data = CONTEXT.market
+        env, snapshot, svc, curve_ids, surface_ids = _workstation_runtime(req.env_id)
         return jsonable(pricing_workstation.grid2d_ws(
-            _svc, CONTEXT.snapshot, req.product, req.engine, req.params,
+            svc, snapshot, req.product, req.engine, req.params,
             req.x_key, req.y_key, req.x_lo, req.x_hi, req.y_lo, req.y_hi,
-            req.nx, req.ny))
-    except ValueError as exc:
+            req.nx, req.ny, env=env, curve_ids=curve_ids,
+            surface_ids=surface_ids))
+    except (KeyError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/pricing/payoff")
 def ws_payoff(req: WsPriceRequest) -> dict:
     try:
-        _svc.market_data = CONTEXT.market
+        env, snapshot, svc, curve_ids, surface_ids = _workstation_runtime(req.env_id)
         return jsonable(pricing_workstation.payoff_ws(
-            _svc, CONTEXT.snapshot, req.product, req.engine, req.params))
-    except ValueError as exc:
+            svc, snapshot, req.product, req.engine, req.params, env=env,
+            curve_ids=curve_ids, surface_ids=surface_ids))
+    except (KeyError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -307,14 +352,153 @@ def ws_implied_vol(req: WsImpliedVolRequest) -> dict:
 @app.post("/pricing/ladder")
 def ws_ladder(req: WsLadderRequest) -> dict:
     try:
-        _svc.market_data = CONTEXT.market
+        env, snapshot, svc, curve_ids, surface_ids = _workstation_runtime(req.env_id)
         result = pricing_workstation.ladder_ws(
-            _svc, CONTEXT.snapshot, req.product, req.engine, req.params,
-            req.bump_key, req.lo, req.hi, req.steps)
-    except ValueError as exc:
+            svc, snapshot, req.product, req.engine, req.params,
+            req.bump_key, req.lo, req.hi, req.steps, env=env,
+            curve_ids=curve_ids, surface_ids=surface_ids)
+    except (KeyError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=404 if "unknown product" in str(exc) else 400,
                             detail=str(exc))
     return jsonable(result)
+
+
+# ── async analytics jobs (spec §18): progress / partial / cancel ──
+class WsJobRequest(BaseModel):
+    kind: str                      # ladder | grid2d | scenarios | payoff
+    product: str
+    engine: str | None = None
+    params: dict[str, float | int | str | None] = {}
+    env_id: str | None = None
+    client_request_id: str | None = None
+    # ladder
+    bump_key: str | None = None
+    lo: float | None = None
+    hi: float | None = None
+    steps: int = 15
+    # grid2d
+    x_key: str | None = None
+    y_key: str | None = None
+    x_lo: float | None = None
+    x_hi: float | None = None
+    y_lo: float | None = None
+    y_hi: float | None = None
+    nx: int = 9
+    ny: int = 7
+
+
+_JOB_KINDS = {"ladder", "grid2d", "scenarios", "payoff"}
+_JOB_REQUIRED = {"ladder": ("bump_key", "lo", "hi"),
+                 "grid2d": ("x_key", "y_key", "x_lo", "x_hi", "y_lo", "y_hi")}
+
+
+@app.post("/pricing/jobs", status_code=202)
+def ws_job_submit(req: WsJobRequest) -> dict:
+    if req.kind not in _JOB_KINDS:
+        raise HTTPException(status_code=422, detail={
+            "code": "JOB_UNKNOWN_KIND",
+            "message": f"unknown job kind '{req.kind}'"})
+    for field in _JOB_REQUIRED.get(req.kind, ()):
+        if getattr(req, field) is None:
+            raise HTTPException(status_code=422, detail={
+                "code": "SCHEMA_MISSING_FIELD",
+                "message": f"'{field}' is required for kind '{req.kind}'"})
+    # Freeze one execution context at submit (spec §13.3) and validate
+    # fail-closed BEFORE a job exists — invalid inputs never enqueue.
+    env, snapshot, svc, curve_ids, surface_ids = _workstation_runtime(req.env_id)
+    validation = pricing_workstation.validate_ws(
+        req.product, req.engine, req.params,
+        curve_ids=curve_ids, surface_ids=surface_ids, env=env)
+    if not validation["valid"]:
+        raise HTTPException(status_code=422, detail={
+            "code": "VALIDATION_FAILED",
+            "issues": jsonable(validation["issues"])})
+
+    kind = req.kind
+
+    def work(hook):
+        if kind == "ladder":
+            return pricing_workstation.ladder_ws(
+                svc, snapshot, req.product, req.engine, req.params,
+                req.bump_key, req.lo, req.hi, req.steps, env=env,
+                curve_ids=curve_ids, surface_ids=surface_ids, hook=hook)
+        if kind == "grid2d":
+            return pricing_workstation.grid2d_ws(
+                svc, snapshot, req.product, req.engine, req.params,
+                req.x_key, req.y_key, req.x_lo, req.x_hi, req.y_lo, req.y_hi,
+                req.nx, req.ny, env=env,
+                curve_ids=curve_ids, surface_ids=surface_ids, hook=hook)
+        if kind == "payoff":
+            return pricing_workstation.payoff_ws(
+                svc, snapshot, req.product, req.engine, req.params, env=env,
+                curve_ids=curve_ids, surface_ids=surface_ids, hook=hook)
+        return pricing_workstation.scenarios_ws(
+            svc, snapshot, req.product, req.engine, req.params, env=env,
+            curve_ids=curve_ids, surface_ids=surface_ids, hook=hook)
+
+    job = pricing_jobs.MANAGER.submit(
+        kind, req.model_dump(), work, client_request_id=req.client_request_id)
+    return jsonable(job.snapshot())
+
+
+def _job_or_404(job_id: str) -> pricing_jobs.PricingJob:
+    job = pricing_jobs.MANAGER.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail={
+            "code": "JOB_NOT_FOUND", "message": f"job '{job_id}' not found"})
+    return job
+
+
+@app.get("/pricing/jobs/{job_id}")
+def ws_job_snapshot(job_id: str) -> dict:
+    return jsonable(_job_or_404(job_id).snapshot())
+
+
+@app.get("/pricing/jobs/{job_id}/events")
+def ws_job_events(job_id: str, after: int = 0, wait: float = 0.0) -> dict:
+    """Ordered events after seq `after`; wait>0 long-polls up to 25 s."""
+    job = _job_or_404(job_id)
+    events = (job.wait_events(after, timeout=min(wait, 25.0)) if wait > 0
+              else job.events_since(after))
+    return jsonable({"job_id": job.job_id, "state": job.state,
+                     "events": events})
+
+
+@app.post("/pricing/jobs/{job_id}/cancel")
+def ws_job_cancel(job_id: str) -> dict:
+    """Idempotent: cancelling a terminal job returns its state unchanged."""
+    job = _job_or_404(job_id)
+    return {"job_id": job.job_id, "state": job.request_cancel()}
+
+
+@app.get("/pricing/jobs/{job_id}/stream")
+def ws_job_stream(job_id: str, request: Request) -> StreamingResponse:
+    """SSE event stream; resume with the standard Last-Event-ID header."""
+    import json as _json
+
+    job = _job_or_404(job_id)
+    try:
+        after = int(request.headers.get("last-event-id") or 0)
+    except ValueError:
+        after = 0
+
+    def gen():
+        cursor = after
+        while True:
+            events = job.wait_events(cursor, timeout=20.0)
+            for e in events:
+                cursor = e["seq"]
+                payload = _json.dumps(
+                    jsonable({"state": job.state, **e["data"]}),
+                    ensure_ascii=False)
+                yield f"id: {e['seq']}\nevent: {e['type']}\ndata: {payload}\n\n"
+            if (job.state in ("completed", "failed", "cancelled", "expired")
+                    and not job.events_since(cursor)):
+                return
+            if not events:
+                yield ": keepalive\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 # ── Market Risk workstation (ERS-style: HypPL / VaR / backtesting) ──
@@ -512,10 +696,11 @@ def marketrisk_backtest(confidence: float = 0.99, window: int = 500,
 @app.post("/pricing/scenarios")
 def ws_scenarios(req: WsPriceRequest) -> dict:
     try:
-        _svc.market_data = CONTEXT.market
+        env, snapshot, svc, curve_ids, surface_ids = _workstation_runtime(req.env_id)
         result = pricing_workstation.scenarios_ws(
-            _svc, CONTEXT.snapshot, req.product, req.engine, req.params)
-    except ValueError as exc:
+            svc, snapshot, req.product, req.engine, req.params, env=env,
+            curve_ids=curve_ids, surface_ids=surface_ids)
+    except (KeyError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=404 if "unknown product" in str(exc) else 400,
                             detail=str(exc))
     return jsonable(result)
@@ -593,6 +778,12 @@ def risk() -> dict:
 @app.get("/governance")
 def governance() -> dict:
     return jsonable(payloads.governance(CONTEXT))
+
+
+@app.get("/governance/quant-components")
+def quant_governance() -> dict:
+    """Versioned QW1 model, solver, eligibility and publication ledgers."""
+    return jsonable(payloads.quant_governance(CONTEXT))
 
 
 @app.get("/analytics")

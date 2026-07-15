@@ -90,7 +90,10 @@ struct PricingWorkstationView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.s5) {
                     PageHeader(product.name, subtitle: governanceLine(engine)) {
-                        StatusChip(status: engine.governance.status)
+                        HStack(spacing: Theme.s2) {
+                            StatusChip(status: engine.governance.status)
+                            eligibilityBadge(vm.selectedEligibility)
+                        }
                     }
                     stateStrip
                     HStack(spacing: Theme.s4) {
@@ -101,6 +104,7 @@ struct PricingWorkstationView: View {
                         Label(product.note, systemImage: "info.circle")
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                    eligibilityPanel
                     HStack(alignment: .top, spacing: Theme.s4) {
                         VStack(alignment: .leading, spacing: Theme.s4) {
                             if product.underlying != nil {
@@ -145,6 +149,84 @@ struct PricingWorkstationView: View {
         [engine.governance.assetClass, engine.governance.modelFamily,
          engine.governance.method]
             .filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// QW1 makes production permission a product × model × solver decision,
+    /// not an implication of the legacy `Validated` component status.
+    @ViewBuilder
+    private func eligibilityBadge(_ eligibility: WsEngineEligibility?) -> some View {
+        if let eligibility {
+            if eligibility.isEffectivelyProductionAllowed
+                && eligibility.approvalBasis == "legacy_transition" {
+                Pill(text: "transition allowed", color: Theme.positive)
+            } else if eligibility.isEffectivelyProductionAllowed {
+                Pill(text: "production eligible", color: Theme.positive)
+            } else if eligibility.productionAllowed {
+                Pill(text: "approval inactive", color: Theme.negative)
+            } else if eligibility.isResearchOnly {
+                Pill(text: "research only", color: Theme.warning)
+            } else if eligibility.isPermanentlyBlocked {
+                Pill(text: eligibility.status, color: Theme.negative)
+            } else {
+                Pill(text: "non-production", color: Theme.warning)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var eligibilityPanel: some View {
+        if let eligibility = vm.selectedEligibility {
+            GlassCard {
+                HStack(alignment: .top, spacing: Theme.s4) {
+                    Image(systemName: eligibility.isEffectivelyProductionAllowed
+                          ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(eligibility.isEffectivelyProductionAllowed
+                                         ? Theme.positive : Theme.warning)
+                        .padding(.top, 1)
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: Theme.s2) {
+                            Text("ENGINE ELIGIBILITY")
+                                .font(.system(size: 10, weight: .semibold))
+                                .tracking(0.5).foregroundStyle(.secondary)
+                            eligibilityBadge(eligibility)
+                            if eligibility.runtimeVariant != "default" {
+                                Pill(text: eligibility.runtimeVariant.uppercased(),
+                                     color: Theme.accent)
+                            }
+                        }
+                        Text("Model: \(eligibility.modelDefinitionID) · Solver: \(eligibility.solverDefinitionID)")
+                            .font(.system(size: 11, weight: .medium)).monospaced()
+                        Text("\(eligibility.eligibilityID) · v\(eligibility.eligibilityVersion)")
+                            .font(.system(size: 9)).monospaced().foregroundStyle(.tertiary)
+                            .help("Approval: \(eligibility.approvalBasis) · \(eligibility.approvalRef)")
+                        if eligibility.approvalBasis == "legacy_transition",
+                           !eligibility.approvalExpiresOn.isEmpty {
+                            Label("Переходное разрешение до \(eligibility.approvalExpiresOn)",
+                                  systemImage: "calendar.badge.clock")
+                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                        }
+                        if let reason = vm.eligibilityBlockReason {
+                            Label(reason, systemImage: "lock.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Theme.negative)
+                        } else if !eligibility.isEffectivelyProductionAllowed {
+                            Label("Запуск разрешён только явными правами контура \(vm.envID). Результат нельзя фиксировать в портфеле.",
+                                  systemImage: "flask.fill")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Theme.warning)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        } else if let warning = vm.eligibilityResolutionWarning {
+            GlassCard {
+                Label(warning, systemImage: "arrow.triangle.branch")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.warning)
+            }
+        }
     }
 
     // MARK: workspace state strip (spec §6.1)
@@ -264,7 +346,7 @@ struct PricingWorkstationView: View {
                     set: { vm.selectEngine($0) }
                 )) {
                     ForEach(product.engines) { engine in
-                        Text(engine.name).tag(engine.id)
+                        Text(enginePickerLabel(engine)).tag(engine.id)
                     }
                 }
                 .labelsHidden()
@@ -275,10 +357,28 @@ struct PricingWorkstationView: View {
                         .frame(width: 7, height: 7)
                     Text(engine.governance.status)
                         .font(.caption).foregroundStyle(.secondary)
+                    eligibilityBadge(vm.selectedEligibility)
                 }
                 Spacer()
             }
         }
+    }
+
+    private func enginePickerLabel(_ engine: WsEngineModel) -> String {
+        var eligibility = engine.eligibilityVariants ?? []
+        if let published = engine.eligibility { eligibility.append(published) }
+        if eligibility.contains(where: { $0.isResearchOnly })
+            && eligibility.contains(where: { $0.isEffectivelyProductionAllowed }) {
+            return engine.name + " · parameter-dependent"
+        }
+        if eligibility.contains(where: { $0.isResearchOnly }) {
+            return engine.name + " · research"
+        }
+        if !eligibility.isEmpty
+            && eligibility.allSatisfy({ !$0.isEffectivelyProductionAllowed }) {
+            return engine.name + " · non-production"
+        }
+        return engine.name
     }
 
     /// Глобальные конвенции воркстейшена (A5): day count, начисление, seed,
@@ -445,7 +545,9 @@ struct PricingWorkstationView: View {
             .controlSize(.large)
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.return, modifiers: .command)
-            .disabled(vm.isPricing)
+            .disabled(vm.isPricing || !vm.canRunSelectedEngine)
+            .help(vm.eligibilityBlockReason
+                  ?? "Validate → Calculate в выбранном pricing environment")
         }
     }
 }
@@ -534,16 +636,141 @@ private struct UnderlyingPickerCard: View {
     }
 }
 
+// MARK: - Async job UI (spec §18, §21.3)
+
+/// Shared job strip: linear progress + Cancel while running, structured error
+/// + Retry when failed, «отменено» and stale-inputs markers.
+private struct AnalyticsJobBar: View {
+    @Bindable var vm: WorkstationViewModel
+    let kind: String
+
+    var body: some View {
+        if let job = vm.analyticsJobs[kind] {
+            if job.isBusy {
+                HStack(spacing: Theme.s2) {
+                    ProgressView(value: fraction(job))
+                        .progressViewStyle(.linear)
+                    Text(counter(job))
+                        .font(.system(size: 10)).monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                    Button("Cancel") {
+                        Task { await vm.cancelAnalyticsJob(kind) }
+                    }
+                    .controlSize(.small)
+                }
+            } else if job.state == "failed" {
+                HStack(spacing: Theme.s2) {
+                    Label(job.errorMessage ?? "расчёт не удался",
+                          systemImage: "xmark.octagon.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.negative)
+                        .lineLimit(2)
+                    Spacer()
+                    Button("Retry") {
+                        Task { await vm.retryAnalytics(kind) }
+                    }
+                    .controlSize(.small)
+                }
+            } else if job.state == "cancelled" {
+                Label("Отменено — ниже частичный результат (\(job.completed)\(job.total.map { " из \($0)" } ?? "") точек)",
+                      systemImage: "stop.circle")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            } else if job.state == "completed", vm.analyticsIsStale(kind) {
+                Label("Получено для прежних inputs — Run пересчитает",
+                      systemImage: "clock.arrow.circlepath")
+                    .font(.system(size: 10)).foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private func fraction(_ job: WorkstationViewModel.AnalyticsJob) -> Double {
+        guard let total = job.total, total > 0 else { return 0 }
+        return Double(job.completed) / Double(total)
+    }
+
+    private func counter(_ job: WorkstationViewModel.AnalyticsJob) -> String {
+        job.total.map { "\(job.completed)/\($0)" } ?? "\(job.completed)"
+    }
+}
+
+/// Chart ↔ table switch — table fallback для любого chart (spec §21.5).
+private struct ChartTableToggle: View {
+    @Binding var showTable: Bool
+
+    var body: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) { showTable.toggle() }
+        } label: {
+            Image(systemName: showTable ? "chart.xyaxis.line" : "tablecells")
+                .font(.system(size: 11))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help(showTable ? "Показать график" : "Показать таблицу")
+    }
+}
+
+/// Compact monospaced data table used as the chart fallback.
+private struct FallbackTable: View {
+    let header: [String]
+    let rows: [[String]]
+
+    var body: some View {
+        ScrollView {
+            Grid(alignment: .trailing, horizontalSpacing: Theme.s3,
+                 verticalSpacing: 3) {
+                GridRow {
+                    ForEach(header, id: \.self) { h in
+                        Text(h)
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .gridColumnAlignment(alignment(h))
+                    }
+                }
+                Divider().gridCellUnsizedAxes(.horizontal)
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    GridRow {
+                        ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
+                            Text(cell)
+                                .font(.system(size: 10)).monospacedDigit()
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxHeight: 190)
+    }
+
+    private func alignment(_ h: String) -> HorizontalAlignment {
+        h == header.first ? .leading : .trailing
+    }
+}
+
 // MARK: - Desk risk: ladder
 
 /// Full-revaluation sensitivity ladder over any numeric input of the pricer.
 private struct LadderCard: View {
     @Bindable var vm: WorkstationViewModel
+    @State private var showTable = false
 
     var body: some View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.s3) {
-                BlockTitle("Sensitivity ladder", icon: "chart.line.uptrend.xyaxis")
+                HStack {
+                    BlockTitle("Sensitivity ladder", icon: "chart.line.uptrend.xyaxis")
+                    Spacer()
+                    if vm.ladder != nil || !vm.ladderPartial.isEmpty {
+                        ChartTableToggle(showTable: $showTable)
+                        Button { exportCSV() } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 11))
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .help("Экспорт CSV")
+                    }
+                }
                 HStack(spacing: Theme.s2) {
                     Picker("", selection: Binding(
                         get: { vm.ladderKey ?? "" },
@@ -571,29 +798,18 @@ private struct LadderCard: View {
                             Text("Run")
                         }
                     }
-                    .disabled(vm.ladderKey == nil || vm.isRunningLadder)
+                    .disabled(vm.ladderKey == nil || vm.isRunningLadder
+                              || !vm.canRunSelectedEngine)
                     Spacer()
                 }
+                AnalyticsJobBar(vm: vm, kind: "ladder")
                 if let ladder = vm.ladder {
-                    let pts = ladder.rows.filter { $0.pnl != nil }
-                    Chart(pts, id: \.x) { row in
-                        LineMark(x: .value(ladder.bumpKey, row.x),
-                                 y: .value("P&L", row.pnl ?? 0))
-                            .foregroundStyle(Theme.accent)
-                            .interpolationMethod(.monotone)
-                        AreaMark(x: .value(ladder.bumpKey, row.x),
-                                 y: .value("P&L", row.pnl ?? 0))
-                            .foregroundStyle(
-                                LinearGradient(colors: [Theme.accent.opacity(0.18), .clear],
-                                               startPoint: .top, endPoint: .bottom))
-                            .interpolationMethod(.monotone)
-                        RuleMark(y: .value("zero", 0))
-                            .foregroundStyle(.tertiary)
-                            .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [3]))
-                    }
-                    .frame(height: 180)
+                    content(ladder.rows, key: ladder.bumpKey)
                     Text("Полная переоценка тем же прайсером в \(ladder.rows.count) точках; P&L против базового значения \(ladder.baseValue.map { Fmt.number($0, digits: 2) } ?? "—").")
                         .font(.system(size: 10)).foregroundStyle(.tertiary)
+                } else if !vm.ladderPartial.isEmpty {
+                    // live partial stream — never presented as a completed run
+                    content(vm.ladderPartial, key: vm.ladderKey ?? "x")
                 } else {
                     Text("Выберите параметр (спот, вола, ставка, корреляция…) и постройте P&L-профиль полной переоценкой.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -601,6 +817,46 @@ private struct LadderCard: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func content(_ rows: [WsLadderRow], key: String) -> some View {
+        if showTable {
+            FallbackTable(
+                header: [key, "Value", "P&L"],
+                rows: rows.map { [Fmt.number($0.x, digits: 4),
+                                  $0.value.map { Fmt.number($0, digits: 4) } ?? "—",
+                                  $0.pnl.map { Fmt.number($0, digits: 4) } ?? ($0.error ?? "—")] })
+        } else {
+            let pts = rows.filter { $0.pnl != nil }
+            Chart(pts, id: \.x) { row in
+                LineMark(x: .value(key, row.x),
+                         y: .value("P&L", row.pnl ?? 0))
+                    .foregroundStyle(Theme.accent)
+                    .interpolationMethod(.monotone)
+                AreaMark(x: .value(key, row.x),
+                         y: .value("P&L", row.pnl ?? 0))
+                    .foregroundStyle(
+                        LinearGradient(colors: [Theme.accent.opacity(0.18), .clear],
+                                       startPoint: .top, endPoint: .bottom))
+                    .interpolationMethod(.monotone)
+                RuleMark(y: .value("zero", 0))
+                    .foregroundStyle(.tertiary)
+                    .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [3]))
+            }
+            .frame(height: 180)
+        }
+    }
+
+    private func exportCSV() {
+        let rows = vm.ladder?.rows ?? vm.ladderPartial
+        CSVExport.save(
+            suggestedName: "ladder_\(vm.ladderKey ?? "x")",
+            header: [vm.ladderKey ?? "x", "value", "pnl", "error"],
+            rows: rows.map { ["\($0.x)",
+                              $0.value.map { "\($0)" } ?? "",
+                              $0.pnl.map { "\($0)" } ?? "",
+                              $0.error ?? ""] })
     }
 }
 
@@ -616,6 +872,14 @@ private struct ScenarioCard: View {
                 HStack {
                     BlockTitle("Scenario simulation", icon: "waveform.path.ecg")
                     Spacer()
+                    if vm.scenarios != nil || !vm.scenariosPartial.isEmpty {
+                        Button { exportCSV() } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 11))
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .help("Экспорт CSV")
+                    }
                     Button {
                         Task { await vm.runScenarios() }
                     } label: {
@@ -625,32 +889,16 @@ private struct ScenarioCard: View {
                             Text("Run")
                         }
                     }
-                    .disabled(vm.isRunningScenarios)
+                    .disabled(vm.isRunningScenarios || !vm.canRunSelectedEngine)
                 }
+                AnalyticsJobBar(vm: vm, kind: "scenarios")
                 if let scenarios = vm.scenarios {
-                    let rows = scenarios.rows.sorted { ($0.pnl ?? 0) < ($1.pnl ?? 0) }
-                    VStack(spacing: 3) {
-                        ForEach(rows) { row in
-                            HStack(spacing: Theme.s2) {
-                                Text(row.scenario)
-                                    .font(.system(size: 11)).lineLimit(1)
-                                Spacer()
-                                Text(shockLine(row))
-                                    .font(.system(size: 9)).foregroundStyle(.tertiary)
-                                Text(row.pnl.map { Fmt.number($0, digits: 2) } ?? "—")
-                                    .font(.system(size: 11, weight: .semibold)).monospacedDigit()
-                                    .foregroundStyle(Theme.trendColor(row.pnl ?? 0))
-                                    .frame(width: 86, alignment: .trailing)
-                                Text(row.pnlPct.map { Fmt.signedPercent($0 * 100) } ?? "")
-                                    .font(.system(size: 10)).monospacedDigit()
-                                    .foregroundStyle(Theme.trendColor(row.pnl ?? 0))
-                                    .frame(width: 56, alignment: .trailing)
-                            }
-                            .padding(.vertical, 2)
-                        }
-                    }
+                    rowsTable(scenarios.rows.sorted { ($0.pnl ?? 0) < ($1.pnl ?? 0) })
                     Text("Исторические макро-шоки (спот/вола относительные, ставка абсолютная) → полная переоценка. База: \(scenarios.baseValue.map { Fmt.number($0, digits: 2) } ?? "—").")
                         .font(.system(size: 10)).foregroundStyle(.tertiary)
+                } else if !vm.scenariosPartial.isEmpty {
+                    // partial stream in arrival order — sorted only when complete
+                    rowsTable(vm.scenariosPartial)
                 } else {
                     Text("14 именованных исторических сценариев — от Black Monday до COVID — через полную переоценку инструмента.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -658,6 +906,42 @@ private struct ScenarioCard: View {
                 }
             }
         }
+    }
+
+    private func rowsTable(_ rows: [WsScenarioRow]) -> some View {
+        VStack(spacing: 3) {
+            ForEach(rows) { row in
+                HStack(spacing: Theme.s2) {
+                    Text(row.scenario)
+                        .font(.system(size: 11)).lineLimit(1)
+                    Spacer()
+                    Text(shockLine(row))
+                        .font(.system(size: 9)).foregroundStyle(.tertiary)
+                    Text(row.pnl.map { Fmt.number($0, digits: 2) } ?? "—")
+                        .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                        .foregroundStyle(Theme.trendColor(row.pnl ?? 0))
+                        .frame(width: 86, alignment: .trailing)
+                    Text(row.pnlPct.map { Fmt.signedPercent($0 * 100) } ?? "")
+                        .font(.system(size: 10)).monospacedDigit()
+                        .foregroundStyle(Theme.trendColor(row.pnl ?? 0))
+                        .frame(width: 56, alignment: .trailing)
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    private func exportCSV() {
+        let rows = vm.scenarios?.rows ?? vm.scenariosPartial
+        CSVExport.save(
+            suggestedName: "scenarios_\(vm.productID ?? "product")",
+            header: ["scenario", "spot_shock", "vol_shock", "rate_shock",
+                     "value", "pnl", "pnl_pct"],
+            rows: rows.map { ["\($0.scenario)", "\($0.spotShock)",
+                              "\($0.volShock)", "\($0.rateShock)",
+                              $0.value.map { "\($0)" } ?? "",
+                              $0.pnl.map { "\($0)" } ?? "",
+                              $0.pnlPct.map { "\($0)" } ?? ""] })
     }
 
     private func shockLine(_ row: WsScenarioRow) -> String {
@@ -675,6 +959,7 @@ private struct ScenarioCard: View {
 /// аналог портфельного what-if хитмапа.
 private struct Grid2DCard: View {
     @Bindable var vm: WorkstationViewModel
+    @State private var showTable = false
 
     var body: some View {
         GlassCard {
@@ -682,6 +967,15 @@ private struct Grid2DCard: View {
                 HStack {
                     BlockTitle("What-if grid · spot × vol", icon: "square.grid.3x3.fill")
                     Spacer()
+                    if vm.grid2d != nil || !vm.gridPartial.isEmpty {
+                        ChartTableToggle(showTable: $showTable)
+                        Button { exportCSV() } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 11))
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .help("Экспорт CSV")
+                    }
                     Button {
                         Task { await vm.loadGrid2d() }
                     } label: {
@@ -691,26 +985,16 @@ private struct Grid2DCard: View {
                             Text(vm.grid2d == nil ? "Построить" : "Обновить")
                         }
                     }
-                    .disabled(vm.isLoadingGrid)
+                    .disabled(vm.isLoadingGrid || !vm.canRunSelectedEngine)
                 }
+                AnalyticsJobBar(vm: vm, kind: "grid2d")
                 if let g = vm.grid2d {
-                    let maxAbs = max(1e-9, g.cells.compactMap { $0.pnl.map(abs) }.max() ?? 1)
-                    Chart(g.cells, id: \.self) { c in
-                        RectangleMark(
-                            x: .value(g.xKey, xLabel(c.x)),
-                            y: .value(g.yKey, yLabel(c.y))
-                        )
-                        .foregroundStyle(heatColor(c.pnl ?? 0, maxAbs: maxAbs))
-                        .annotation(position: .overlay) {
-                            Text(Fmt.number(c.pnl ?? 0, digits: 1))
-                                .font(.system(size: 8, weight: .medium)).monospacedDigit()
-                        }
-                    }
-                    .chartXAxisLabel("\(g.xKey) (спот)")
-                    .chartYAxisLabel("\(g.yKey) (вола)")
-                    .frame(height: 260)
+                    content(g.cells)
                     Text("P&L против базы \(g.baseValue.map { Fmt.number($0, digits: 2) } ?? "—"); полная переоценка в \(g.nx)×\(g.ny) точках.")
                         .font(.system(size: 10)).foregroundStyle(.tertiary)
+                } else if !vm.gridPartial.isEmpty {
+                    // cells appear as the job computes them
+                    content(vm.gridPartial)
                 } else if !vm.isLoadingGrid {
                     Text("Сетка P&L: спот ±20% × вола ±10 пунктов, полная переоценка выбранным движком.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -718,6 +1002,44 @@ private struct Grid2DCard: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func content(_ cells: [WsGridCell]) -> some View {
+        if showTable {
+            FallbackTable(
+                header: ["Spot", "Vol", "Value", "P&L"],
+                rows: cells.map { [Fmt.number($0.x, digits: 2),
+                                   Fmt.number($0.y, digits: 3),
+                                   $0.value.map { Fmt.number($0, digits: 4) } ?? "—",
+                                   $0.pnl.map { Fmt.number($0, digits: 4) } ?? "—"] })
+        } else {
+            let maxAbs = max(1e-9, cells.compactMap { $0.pnl.map(abs) }.max() ?? 1)
+            Chart(cells, id: \.self) { c in
+                RectangleMark(
+                    x: .value("x", xLabel(c.x)),
+                    y: .value("y", yLabel(c.y))
+                )
+                .foregroundStyle(heatColor(c.pnl ?? 0, maxAbs: maxAbs))
+                .annotation(position: .overlay) {
+                    Text(Fmt.number(c.pnl ?? 0, digits: 1))
+                        .font(.system(size: 8, weight: .medium)).monospacedDigit()
+                }
+            }
+            .chartXAxisLabel("спот")
+            .chartYAxisLabel("вола")
+            .frame(height: 260)
+        }
+    }
+
+    private func exportCSV() {
+        let cells = vm.grid2d?.cells ?? vm.gridPartial
+        CSVExport.save(
+            suggestedName: "whatif_grid_\(vm.productID ?? "product")",
+            header: ["x", "y", "value", "pnl"],
+            rows: cells.map { ["\($0.x)", "\($0.y)",
+                               $0.value.map { "\($0)" } ?? "",
+                               $0.pnl.map { "\($0)" } ?? ""] })
     }
 
     private func xLabel(_ v: Double) -> String { Fmt.number(v, digits: 1) }
@@ -735,6 +1057,7 @@ private struct Grid2DCard: View {
 /// pricer, two ladders (T as-is / T→0).
 private struct PayoffCard: View {
     @Bindable var vm: WorkstationViewModel
+    @State private var showTable = false
 
     var body: some View {
         GlassCard {
@@ -742,6 +1065,15 @@ private struct PayoffCard: View {
                 HStack {
                     BlockTitle("Payoff diagram", icon: "chart.line.flattrend.xyaxis")
                     Spacer()
+                    if vm.payoff != nil {
+                        ChartTableToggle(showTable: $showTable)
+                        Button { exportCSV() } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 11))
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .help("Экспорт CSV")
+                    }
                     Button {
                         Task { await vm.loadPayoff() }
                     } label: {
@@ -751,9 +1083,14 @@ private struct PayoffCard: View {
                             Text(vm.payoff == nil ? "Построить" : "Обновить")
                         }
                     }
-                    .disabled(vm.isLoadingPayoff)
+                    .disabled(vm.isLoadingPayoff || !vm.canRunSelectedEngine)
                 }
-                if let p = vm.payoff {
+                AnalyticsJobBar(vm: vm, kind: "payoff")
+                if let p = vm.payoff, showTable {
+                    FallbackTable(
+                        header: ["Spot", "Сегодня", "На экспирации"],
+                        rows: tableRows(p))
+                } else if let p = vm.payoff {
                     Chart {
                         ForEach(p.payoff, id: \.x) { pt in
                             LineMark(x: .value("Spot", pt.x), y: .value("Payoff", pt.y),
@@ -797,6 +1134,28 @@ private struct PayoffCard: View {
             Text(text).font(.system(size: 10)).foregroundStyle(.secondary)
         }
     }
+
+    /// Merge the today/expiry series by spot for the table fallback.
+    private func tableRows(_ p: WsPayoff) -> [[String]] {
+        let expiry = Dictionary(p.payoff.map { ($0.x, $0.y) },
+                                uniquingKeysWith: { a, _ in a })
+        return p.value.map { pt in
+            [Fmt.number(pt.x, digits: 2),
+             Fmt.number(pt.y, digits: 4),
+             expiry[pt.x].map { Fmt.number($0, digits: 4) } ?? "—"]
+        }
+    }
+
+    private func exportCSV() {
+        guard let p = vm.payoff else { return }
+        let expiry = Dictionary(p.payoff.map { ($0.x, $0.y) },
+                                uniquingKeysWith: { a, _ in a })
+        CSVExport.save(
+            suggestedName: "payoff_\(vm.productID ?? "product")",
+            header: ["spot", "value_today", "payoff_at_expiry"],
+            rows: p.value.map { ["\($0.x)", "\($0.y)",
+                                 expiry[$0.x].map { "\($0)" } ?? ""] })
+    }
 }
 
 // MARK: - Result panel
@@ -824,6 +1183,17 @@ private struct WorkstationResultPanel: View {
                         Text("PRESENT VALUE").font(.system(size: 10, weight: .semibold))
                             .tracking(0.5).foregroundStyle(.secondary)
                         Spacer()
+                        if vm.displayedRunIsEffectivelyProductionAllowed {
+                            if vm.selectedEligibility?.approvalBasis == "legacy_transition" {
+                                Pill(text: "transition allowed", color: Theme.positive)
+                            } else {
+                                Pill(text: "production eligible", color: Theme.positive)
+                            }
+                        } else if vm.selectedEligibility?.isResearchOnly == true {
+                            Pill(text: "research only", color: Theme.warning)
+                        } else if r.provenance != nil {
+                            Pill(text: "non-production", color: Theme.warning)
+                        }
                         StatusChip(status: r.modelStatus)
                     }
                     Text(r.value.map { Fmt.number($0, digits: 4) } ?? "—")
@@ -946,10 +1316,13 @@ private struct WorkstationResultPanel: View {
                 // Capture attaches to the exact priced run: edited (stale)
                 // inputs must be re-run first (spec §7.7 invariant).
                 .disabled(vm.isCapturing
+                          || !vm.canCaptureCurrentRun
                           || (vm.businessState != .priced && vm.businessState != .captured))
-                .help(vm.businessState == .priced || vm.businessState == .captured
-                      ? "Зафиксировать позицию по текущему расчёту"
-                      : "Сначала Calculate: capture относится к конкретному расчёту, а не к форме")
+                .help(!vm.canCaptureCurrentRun
+                      ? "Research/non-production расчёт нельзя фиксировать в портфеле"
+                      : (vm.businessState == .priced || vm.businessState == .captured
+                         ? "Зафиксировать позицию по текущему расчёту"
+                         : "Сначала Calculate: capture относится к конкретному расчёту, а не к форме"))
             }
             if let msg = vm.captureMessage {
                 Text(msg)
@@ -966,7 +1339,7 @@ private struct WorkstationResultPanel: View {
                         Text("What-if VaR").font(.system(size: 11))
                     }
                 }
-                .disabled(vm.isRunningIncremental)
+                .disabled(vm.isRunningIncremental || !vm.canCaptureCurrentRun)
                 .help("Incremental VaR: VaR(книга + сделка) − VaR(книга), без записи в портфель")
                 Spacer()
             }
@@ -994,10 +1367,12 @@ private struct WorkstationResultPanel: View {
                 Text("PROVENANCE").font(.system(size: 10, weight: .semibold))
                     .tracking(0.5).foregroundStyle(.secondary)
                 Spacer()
-                if p.productionAllowed {
+                if vm.displayedRunIsEffectivelyProductionAllowed {
                     Pill(text: "production", color: Theme.positive)
-                } else {
+                } else if vm.selectedEligibility?.isResearchOnly == true {
                     Pill(text: "research", color: Theme.warning)
+                } else {
+                    Pill(text: "non-production", color: Theme.warning)
                 }
             }
             VStack(alignment: .leading, spacing: 3) {
@@ -1007,6 +1382,22 @@ private struct WorkstationResultPanel: View {
                 provRow("Data", [p.source, p.quality].filter { !$0.isEmpty }
                             .joined(separator: " · "), full: nil)
                 provRow("Model", "v\(p.modelVersion) · \(p.modelOwner)", full: nil)
+                if let eligibilityID = p.eligibilityID, !eligibilityID.isEmpty {
+                    let display = String(eligibilityID.suffix(24))
+                    provRow("Eligibility", display, full: eligibilityID)
+                }
+                if let definitionID = p.modelDefinitionID, !definitionID.isEmpty {
+                    let version = p.modelDefinitionVersion.map { " · v\($0)" } ?? ""
+                    provRow("Definition", definitionID + version, full: definitionID)
+                }
+                if let solverID = p.solverDefinitionID, !solverID.isEmpty {
+                    let version = p.solverDefinitionVersion.map { " · v\($0)" } ?? ""
+                    provRow("Solver", solverID + version, full: solverID)
+                }
+                if let variant = p.runtimeVariant,
+                   !variant.isEmpty, variant != "default" {
+                    provRow("Runtime variant", variant.uppercased(), full: nil)
+                }
                 if !p.valuationTime.isEmpty {
                     provRow("Valued at", String(p.valuationTime.prefix(19))
                                 .replacingOccurrences(of: "T", with: " ") + " UTC",

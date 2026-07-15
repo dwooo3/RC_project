@@ -64,11 +64,136 @@ struct WsEngineModel: Decodable, Sendable, Identifiable, Hashable {
     let modelID: String
     let name: String
     let governance: Governance
+    let eligibility: WsEngineEligibility?
+    /// All parameter-dependent publication decisions when one selector can
+    /// resolve to different models (currently Carr-Madan: BSM vs Heston).
+    /// Optional so catalogues captured before QW1 remain decodable.
+    let eligibilityVariants: [WsEngineEligibility]?
     let params: [ParamSpec]
 
     enum CodingKeys: String, CodingKey {
-        case id, name, governance, params
+        case id, name, governance, eligibility, params
         case modelID = "model_id"
+        case eligibilityVariants = "eligibility_variants"
+    }
+
+    /// Static parameter-aware lookup. Returning nil for an unknown requested
+    /// variant is deliberate: callers must obtain an authoritative decision
+    /// from /pricing/validate instead of reusing the catalogue default.
+    func eligibility(forRuntimeVariant requested: String?) -> WsEngineEligibility? {
+        let variants = eligibilityVariants ?? []
+        guard let requested, !requested.isEmpty else {
+            return eligibility ?? variants.first
+        }
+        if let exact = variants.first(where: {
+            $0.runtimeVariant.caseInsensitiveCompare(requested) == .orderedSame
+        }) {
+            return exact
+        }
+        if let eligibility,
+           eligibility.runtimeVariant.caseInsensitiveCompare(requested) == .orderedSame {
+            return eligibility
+        }
+        return nil
+    }
+}
+
+/// QW1 product-qualified model × solver publication decision.
+struct WsEngineEligibility: Decodable, Sendable, Hashable {
+    let eligibilityID: String
+    let eligibilityVersion: String
+    let productDefinitionID: String
+    let selectorID: String
+    let implementationComponentID: String
+    let modelDefinitionID: String
+    let modelDefinitionVersion: String
+    let solverDefinitionID: String
+    let solverDefinitionVersion: String
+    let pricerComponentID: String?
+    let parameterizationComponentID: String?
+    let runtimeVariant: String
+    let status: String
+    let productionAllowed: Bool
+    /// Server-qualified execution flag. Optional so an early QW1 catalogue
+    /// remains decodable; the computed predicate below still fails closed for
+    /// a transition decision without an explicit active approval.
+    let effectiveProductionAllowed: Bool?
+    let approvalBasis: String
+    let approvalRef: String
+    let approvalExpiresOn: String
+    let approvalActive: Bool?
+    let fallbackPolicy: String
+    let workflowLayer: String
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case eligibilityID = "eligibility_id"
+        case eligibilityVersion = "eligibility_version"
+        case productDefinitionID = "product_definition_id"
+        case selectorID = "selector_id"
+        case implementationComponentID = "implementation_component_id"
+        case modelDefinitionID = "model_definition_id"
+        case modelDefinitionVersion = "model_definition_version"
+        case solverDefinitionID = "solver_definition_id"
+        case solverDefinitionVersion = "solver_definition_version"
+        case pricerComponentID = "pricer_component_id"
+        case parameterizationComponentID = "parameterization_component_id"
+        case runtimeVariant = "runtime_variant"
+        case productionAllowed = "production_allowed"
+        case effectiveProductionAllowed = "effective_production_allowed"
+        case approvalBasis = "approval_basis"
+        case approvalRef = "approval_ref"
+        case approvalExpiresOn = "approval_expires_on"
+        case approvalActive = "approval_active"
+        case fallbackPolicy = "fallback_policy"
+        case workflowLayer = "workflow_layer"
+    }
+
+    var isResearchOnly: Bool {
+        let layer = workflowLayer.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return status == "research-only"
+            || layer == "research"
+            || layer == "analytics_lab"
+    }
+
+    /// The only production predicate UI/actions may consume. The backend value
+    /// is authoritative. For additive compatibility, non-transition approvals
+    /// may fall back to their declared flag; transition approvals require an
+    /// explicit `approval_active=true` and therefore fail closed when absent.
+    var isEffectivelyProductionAllowed: Bool {
+        guard productionAllowed else { return false }
+        if approvalBasis == "legacy_transition" && approvalActive != true {
+            return false
+        }
+        guard approvalActive != false else { return false }
+        return effectiveProductionAllowed ?? true
+    }
+
+    var isPermanentlyBlocked: Bool {
+        status == "deprecated" || status == "out-of-scope"
+    }
+
+    /// Mirrors the bridge's fail-closed eligibility policy. Returning a
+    /// message (rather than only a Bool) lets the workstation explain which
+    /// explicit environment permission is missing.
+    func blockReason(in environment: WsEnvironment?) -> String? {
+        if isPermanentlyBlocked {
+            return "Движок не опубликован для расчётов (\(status))."
+        }
+        if productionAllowed && !isEffectivelyProductionAllowed {
+            return approvalBasis == "legacy_transition"
+                ? "Переходное production-разрешение истекло или неактивно."
+                : "Production-разрешение неактивно."
+        }
+        if isResearchOnly && environment?.allowsAnalyticsLab != true {
+            return "Research-only движок требует server-owned контур LAB."
+        }
+        if !productionAllowed && !isResearchOnly && status == "non-production"
+            && environment?.allowsNonProduction != true {
+            return "Non-production движок требует server-owned контур LAB."
+        }
+        return nil
     }
 }
 
@@ -85,6 +210,12 @@ struct WsEnvironment: Decodable, Sendable, Identifiable, Hashable {
         case name, purpose
         case envID = "env_id"
     }
+
+    var allowsAnalyticsLab: Bool {
+        envID.uppercased() == "LAB" && purpose.lowercased() == "research"
+    }
+
+    var allowsNonProduction: Bool { allowsAnalyticsLab }
 }
 
 struct WsEnvironments: Decodable, Sendable {
@@ -123,7 +254,18 @@ struct WsProvenance: Decodable, Sendable {
     let modelVersion: String
     let modelOwner: String
     let modelValidationDate: String
+    let eligibilityID: String?
+    let eligibilityVersion: String?
+    let modelDefinitionID: String?
+    let modelDefinitionVersion: String?
+    let solverDefinitionID: String?
+    let solverDefinitionVersion: String?
+    let implementationComponentID: String?
+    let requestedEngineSelector: String?
+    let runtimeVariant: String?
     let productionAllowed: Bool
+    let declaredProductionAllowed: Bool?
+    let approvalExpiresOn: String?
     let valuationTime: String
 
     enum CodingKeys: String, CodingKey {
@@ -135,7 +277,18 @@ struct WsProvenance: Decodable, Sendable {
         case modelVersion = "model_version"
         case modelOwner = "model_owner"
         case modelValidationDate = "model_validation_date"
+        case eligibilityID = "eligibility_id"
+        case eligibilityVersion = "eligibility_version"
+        case modelDefinitionID = "model_definition_id"
+        case modelDefinitionVersion = "model_definition_version"
+        case solverDefinitionID = "solver_definition_id"
+        case solverDefinitionVersion = "solver_definition_version"
+        case implementationComponentID = "implementation_component_id"
+        case requestedEngineSelector = "requested_engine_selector"
+        case runtimeVariant = "runtime_variant"
         case productionAllowed = "production_allowed"
+        case declaredProductionAllowed = "declared_production_allowed"
+        case approvalExpiresOn = "approval_expires_on"
         case valuationTime = "valuation_time"
     }
 }
@@ -144,6 +297,15 @@ struct WsResult: Decodable, Sendable {
     let value: Double?
     let modelID: String
     let modelStatus: String
+    let eligibilityID: String?
+    let eligibilityVersion: String?
+    let modelDefinitionID: String?
+    let modelDefinitionVersion: String?
+    let solverDefinitionID: String?
+    let solverDefinitionVersion: String?
+    let pricerComponentID: String?
+    let runtimeVariant: String?
+    let effectiveProductionAllowed: Bool?
     let greeks: [WsMeasure]
     let measures: [WsMeasure]
     let series: [WsSeries]
@@ -158,6 +320,15 @@ struct WsResult: Decodable, Sendable {
     enum CodingKeys: String, CodingKey {
         case value, greeks, measures, series, warnings, errors, limitations, product, engine
         case environment, provenance
+        case eligibilityID = "eligibility_id"
+        case eligibilityVersion = "eligibility_version"
+        case modelDefinitionID = "model_definition_id"
+        case modelDefinitionVersion = "model_definition_version"
+        case solverDefinitionID = "solver_definition_id"
+        case solverDefinitionVersion = "solver_definition_version"
+        case pricerComponentID = "pricer_component_id"
+        case runtimeVariant = "runtime_variant"
+        case effectiveProductionAllowed = "effective_production_allowed"
         case modelID = "model_id"
         case modelStatus = "model_status"
     }
@@ -181,6 +352,7 @@ struct WsValidation: Decodable, Sendable {
     let issues: [WsValidationIssue]
     let product: String
     let engine: String?
+    let eligibility: WsEngineEligibility?
 }
 
 // MARK: - Desk risk: ladder + scenarios
@@ -302,6 +474,7 @@ private struct WsLadderBody: Encodable {
     let lo: Double
     let hi: Double
     let steps: Int
+    var env_id: String? = nil
 }
 
 private struct WsCaptureBody: Encodable {
@@ -344,6 +517,82 @@ struct WsCaptureResult: Decodable, Sendable {
     }
 }
 
+// MARK: - Async analytics jobs (spec §18)
+
+struct WsJobProgress: Decodable, Sendable, Equatable {
+    let completed: Int
+    let total: Int?
+    let unit: String?
+}
+
+struct WsJobError: Decodable, Sendable, Equatable {
+    let code: String
+    let message: String
+    let retryable: Bool
+}
+
+struct WsJobPartial<Item: Decodable & Sendable>: Decodable, Sendable {
+    let incomplete: Bool
+    let items: [Item]
+}
+
+/// Snapshot of one analytics job. Generic over the completed-result payload
+/// and the partial unit so ladder/grid/scenarios reuse their sync Decodables.
+struct WsJobSnapshot<Payload: Decodable & Sendable,
+                     Item: Decodable & Sendable>: Decodable, Sendable {
+    let jobID: String
+    let kind: String
+    let state: String
+    let inputsHash: String
+    let lastSeq: Int
+    let progress: WsJobProgress
+    let error: WsJobError?
+    let result: Payload?
+    let partial: WsJobPartial<Item>?
+
+    var isTerminal: Bool {
+        state == "completed" || state == "failed"
+            || state == "cancelled" || state == "expired"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case kind, state, progress, error, result, partial
+        case jobID = "job_id"
+        case inputsHash = "inputs_hash"
+        case lastSeq = "last_seq"
+    }
+}
+
+struct WsJobCancelAck: Decodable, Sendable {
+    let jobID: String
+    let state: String
+
+    enum CodingKeys: String, CodingKey {
+        case state
+        case jobID = "job_id"
+    }
+}
+
+private struct WsJobSubmitBody: Encodable {
+    let kind: String
+    let product: String
+    let engine: String
+    let params: [String: BridgeValue]
+    var env_id: String? = nil
+    var bump_key: String? = nil
+    var lo: Double? = nil
+    var hi: Double? = nil
+    var steps: Int = 15
+    var x_key: String? = nil
+    var y_key: String? = nil
+    var x_lo: Double? = nil
+    var x_hi: Double? = nil
+    var y_lo: Double? = nil
+    var y_hi: Double? = nil
+    var nx: Int = 9
+    var ny: Int = 7
+}
+
 extension BridgeClient {
     func wsCatalogue() async throws -> WsCatalogue { try await get("pricing/catalogue") }
 
@@ -372,17 +621,20 @@ extension BridgeClient {
     }
 
     func wsLadder(product: String, engine: String, params: [String: BridgeValue],
-                  bumpKey: String, lo: Double, hi: Double, steps: Int) async throws -> WsLadder {
+                  bumpKey: String, lo: Double, hi: Double, steps: Int,
+                  envID: String? = nil) async throws -> WsLadder {
         let body = try JSONEncoder().encode(WsLadderBody(
             product: product, engine: engine, params: params,
-            bump_key: bumpKey, lo: lo, hi: hi, steps: steps))
+            bump_key: bumpKey, lo: lo, hi: hi, steps: steps, env_id: envID))
         return try await post("pricing/ladder", body: body)
     }
 
     func wsScenarios(product: String, engine: String,
-                     params: [String: BridgeValue]) async throws -> WsScenarios {
+                     params: [String: BridgeValue],
+                     envID: String? = nil) async throws -> WsScenarios {
         let body = try JSONEncoder().encode(
-            WsPriceBody(product: product, engine: engine, params: params))
+            WsPriceBody(product: product, engine: engine, params: params,
+                        env_id: envID))
         return try await post("pricing/scenarios", body: body)
     }
 
@@ -392,7 +644,8 @@ extension BridgeClient {
 
     func grid2d(product: String, engine: String, params: [String: BridgeValue],
                 xKey: String, yKey: String, xLo: Double, xHi: Double,
-                yLo: Double, yHi: Double) async throws -> WsGrid2D {
+                yLo: Double, yHi: Double,
+                envID: String? = nil) async throws -> WsGrid2D {
         struct Body: Encodable {
             let product: String
             let engine: String
@@ -403,17 +656,21 @@ extension BridgeClient {
             let x_hi: Double
             let y_lo: Double
             let y_hi: Double
+            let env_id: String?
         }
         let body = try JSONEncoder().encode(Body(
             product: product, engine: engine, params: params,
-            x_key: xKey, y_key: yKey, x_lo: xLo, x_hi: xHi, y_lo: yLo, y_hi: yHi))
+            x_key: xKey, y_key: yKey, x_lo: xLo, x_hi: xHi,
+            y_lo: yLo, y_hi: yHi, env_id: envID))
         return try await post("pricing/grid2d", body: body)
     }
 
     func payoff(product: String, engine: String,
-                params: [String: BridgeValue]) async throws -> WsPayoff {
+                params: [String: BridgeValue],
+                envID: String? = nil) async throws -> WsPayoff {
         let body = try JSONEncoder().encode(
-            WsPriceBody(product: product, engine: engine, params: params))
+            WsPriceBody(product: product, engine: engine, params: params,
+                        env_id: envID))
         return try await post("pricing/payoff", body: body)
     }
 
@@ -431,6 +688,62 @@ extension BridgeClient {
                                                  market_price: marketPrice))
         let resp: Resp = try await post("pricing/implied_vol", body: body)
         return resp.implied_vol
+    }
+
+    // ── async analytics jobs ─────────────────────────────
+    func submitLadderJob(product: String, engine: String,
+                         params: [String: BridgeValue], bumpKey: String,
+                         lo: Double, hi: Double, steps: Int,
+                         envID: String? = nil)
+            async throws -> WsJobSnapshot<WsLadder, WsLadderRow> {
+        let body = try JSONEncoder().encode(WsJobSubmitBody(
+            kind: "ladder", product: product, engine: engine, params: params,
+            env_id: envID, bump_key: bumpKey, lo: lo, hi: hi, steps: steps))
+        return try await post("pricing/jobs", body: body)
+    }
+
+    func submitGridJob(product: String, engine: String,
+                       params: [String: BridgeValue],
+                       xKey: String, yKey: String,
+                       xLo: Double, xHi: Double, yLo: Double, yHi: Double,
+                       envID: String? = nil)
+            async throws -> WsJobSnapshot<WsGrid2D, WsGridCell> {
+        let body = try JSONEncoder().encode(WsJobSubmitBody(
+            kind: "grid2d", product: product, engine: engine, params: params,
+            env_id: envID, x_key: xKey, y_key: yKey,
+            x_lo: xLo, x_hi: xHi, y_lo: yLo, y_hi: yHi))
+        return try await post("pricing/jobs", body: body)
+    }
+
+    func submitScenariosJob(product: String, engine: String,
+                            params: [String: BridgeValue],
+                            envID: String? = nil)
+            async throws -> WsJobSnapshot<WsScenarios, WsScenarioRow> {
+        let body = try JSONEncoder().encode(WsJobSubmitBody(
+            kind: "scenarios", product: product, engine: engine, params: params,
+            env_id: envID))
+        return try await post("pricing/jobs", body: body)
+    }
+
+    func submitPayoffJob(product: String, engine: String,
+                         params: [String: BridgeValue],
+                         envID: String? = nil)
+            async throws -> WsJobSnapshot<WsPayoff, WsLadderRow> {
+        let body = try JSONEncoder().encode(WsJobSubmitBody(
+            kind: "payoff", product: product, engine: engine, params: params,
+            env_id: envID))
+        return try await post("pricing/jobs", body: body)
+    }
+
+    func jobSnapshot<Payload: Decodable & Sendable, Item: Decodable & Sendable>(
+            _ jobID: String) async throws -> WsJobSnapshot<Payload, Item> {
+        try await get("pricing/jobs/\(jobID)")
+    }
+
+    /// Explicit server-side cancel (idempotent) — distinct from cancelling
+    /// the Swift polling task (spec §21.3).
+    func cancelJob(_ jobID: String) async throws -> WsJobCancelAck {
+        try await post("pricing/jobs/\(jobID)/cancel", body: Data("{}".utf8))
     }
 
     func addToPortfolio(product: String, engine: String, params: [String: BridgeValue],
