@@ -288,9 +288,9 @@ def _european(svc, v, snapshot):
         return svc.price_merton_option(S, K, T, r, sig, q, _num(v, "lam", .3),
                                        _num(v, "mu_j", -.1), _num(v, "delta_j", .15),
                                        opt, snapshot=snapshot)
-    if eng in ("kou", "variance_gamma", "nig", "cgmy"):
+    if eng in ("merton_cos", "kou", "variance_gamma", "nig", "cgmy"):
         keys = ("lam", "p", "eta1", "eta2", "nu", "theta", "alpha", "beta",
-                "delta", "C", "G", "M", "Y", "N")
+                "delta", "mu_j", "delta_j", "C", "G", "M", "Y", "N")
         params = {k: v[k] for k in keys if k in v and v[k] is not None}
         if "N" in params:
             params["N"] = int(params["N"])
@@ -648,7 +648,7 @@ PRODUCTS: list[WsProduct] = [
          E("binomial_tian", params=[P("N", "Tree steps", 500, "numerical", dtype="int",
                                       minimum=10, maximum=5000)]),
          E("pde_cn"), E("mc_gbm"), E("qmc"),
-         E("heston_cf"), E("bates"), E("merton_jump"),
+         E("heston_cf"), E("bates"), E("merton_jump"), E("merton_cos"),
          E("kou"), E("variance_gamma"), E("nig"), E("cgmy"),
          E("rough_bergomi"),
          E("carr_madan", params=[
@@ -659,15 +659,7 @@ PRODUCTS: list[WsProduct] = [
              P("theta", "Heston θ", 0.04, "model", minimum=1e-4, maximum=2.0),
              P("xi", "Heston ξ", 0.3, "model", minimum=1e-3, maximum=3.0),
              P("rho", "Heston ρ", -0.6, "model", minimum=-0.999, maximum=0.999)]),
-         E("heston_adi", "Heston ADI 2-D PDE", model_id="adi", params=[
-             P("v0", "Initial variance v0", 0.04, "model", minimum=1e-4, maximum=2.0),
-             P("kappa", "Mean reversion κ", 1.5, "model", minimum=1e-3, maximum=20.0),
-             P("theta", "Long-run variance θ", 0.04, "model", minimum=1e-4, maximum=2.0),
-             P("xi", "Vol of vol ξ", 0.3, "model", minimum=1e-3, maximum=3.0),
-             P("rho", "Spot-vol corr ρ", -0.6, "model", minimum=-0.999, maximum=0.999),
-             P("NS", "S grid", 160, "numerical", dtype="int", minimum=40, maximum=400),
-             P("Nv", "v grid", 80, "numerical", dtype="int", minimum=20, maximum=200),
-             P("Nt", "Time steps", 120, "numerical", dtype="int", minimum=20, maximum=1000)]),
+         E("heston_adi", "Heston ADI 2-D PDE", model_id="heston_adi"),
          E("cev", params=[P("beta", "CEV β", 1.0, "model", minimum=0.1, maximum=1.0,
                             help="β=1 → BSM; σ в CEV-единицах")]),
          E("displaced_diffusion", params=[P("shift", "Displacement", 0.0, "model",
@@ -1207,7 +1199,10 @@ PRODUCTS: list[WsProduct] = [
         [E("merton_structural"),
          E("black_cox", params=[P("barrier", "Default barrier", 60.0, "model",
                                   minimum=0.0)]),
-         E("kmv")],
+         E("kmv", params=[
+             P("V0", "Observable equity value", 100.0, "market", minimum=0.0),
+             P("sigma_V", "Observable equity vol σ_E", 0.25, "market",
+               minimum=1e-3, maximum=3.0)])],
         _structural,
         note="Equity = колл на активы; PD, distance-to-default, кредитный спред."),
     WsProduct(
@@ -1312,7 +1307,7 @@ PRODUCTS: list[WsProduct] = [
          P("q1", "Div yield 1", 0.0, "market", minimum=-1.0, maximum=1.0),
          P("q2", "Div yield 2", 0.0, "market", minimum=-1.0, maximum=1.0)],
         [E("spread", "Kirk closed form", model_id="multi_asset"),
-         E("adi", params=engine_params("adi"))],
+         E("adi", model_id="two_asset_adi")],
         _spread,
         underlying={"categories": ["equities", "indices"], "fill": {},
                     "append_to": "component_secids"}),
@@ -1329,7 +1324,7 @@ PRODUCTS: list[WsProduct] = [
          P("sigma1", "Vol 1", 0.20, "market", minimum=1e-3, maximum=5.0),
          P("sigma2", "Vol 2", 0.25, "market", minimum=1e-3, maximum=5.0),
          P("rho", "Correlation ρ", 0.4, "market", minimum=-0.999, maximum=0.999)],
-        [E("adi")],
+        [E("adi", model_id="two_asset_adi")],
         _two_asset),
     WsProduct(
         "basket_option", "Basket Option", "hybrid", "Multi-asset",
@@ -1466,6 +1461,12 @@ def _governance(model_id: str) -> dict:
     status = e.get("status")
     return {
         "status": status.value if hasattr(status, "value") else str(status),
+        "canonical_component_id": e.get("canonical_component_id", model_id),
+        "requested_component_id": e.get("requested_component_id", model_id),
+        "deprecated_alias": bool(e.get("deprecated_alias", False)),
+        "component_kind": e.get("component_kind") or "",
+        "q_level": e.get("q_level") or "",
+        "implementation_scope": e.get("implementation_scope") or "",
         "asset_class": e.get("asset_class") or "",
         "model_family": e.get("model_family") or "",
         "method": e.get("method") or "",
@@ -1620,6 +1621,20 @@ def normalize_ws_result(result: dict, input_keys: set[str] | None = None) -> dic
         "warnings": list(result.get("warnings") or []),
         "errors": list(result.get("errors") or []),
         "limitations": list(result.get("model_limitations") or []),
+        # Immutable-evidence passthrough (spec §10.3): PricingService already
+        # produces this per calculation; expose it instead of stripping it.
+        "provenance": {
+            "calculation_id": str(result.get("calculation_id") or ""),
+            "inputs_hash": str(result.get("inputs_hash") or ""),
+            "snapshot_id": str(result.get("market_data_snapshot_id") or ""),
+            "market_data_source": str(result.get("market_data_source") or ""),
+            "market_data_quality": str(result.get("market_data_quality") or ""),
+            "model_version": str(result.get("model_version") or ""),
+            "model_owner": str(result.get("model_owner") or ""),
+            "model_validation_date": str(result.get("model_validation_date") or ""),
+            "production_allowed": bool(result.get("model_production_allowed", False)),
+            "valuation_time": str(result.get("calculation_timestamp") or ""),
+        },
     }
 
 
@@ -1732,8 +1747,116 @@ def implied_vol_ws(product_id: str, params: dict, market_price: float) -> dict:
             "implied_vol": float(iv)}
 
 
+# Params the client may send that are consumed outside ParameterSpec forms
+# (market-identity passthrough for capture/repricing).
+_EXTRA_PARAM_KEYS = {"secid"}
+
+
+def _effective_ws_params(product: WsProduct, params: dict, env=None,
+                         allowed_keys: set[str] | None = None) -> dict:
+    """Apply environment defaults exactly once for validation and pricing."""
+    values = dict(params)
+    if env is None:
+        return values
+    for key, value in (env.default_params or {}).items():
+        if allowed_keys is None or key in allowed_keys:
+            values.setdefault(key, value)
+    if product.needs_curve and not values.get("curve_id"):
+        discount_curve = (env.curve_map or {}).get("discount")
+        if discount_curve:
+            values["curve_id"] = discount_curve
+    if product.needs_proj and not values.get("proj_curve_id"):
+        projection_curve = (env.curve_map or {}).get("projection")
+        if projection_curve:
+            values["proj_curve_id"] = projection_curve
+    return values
+
+
+def validate_ws(product_id: str, engine_id: str | None, params: dict,
+                curve_ids: list[str] | None = None,
+                surface_ids: list[str] | None = None,
+                env=None) -> dict:
+    """Authoritative request validation (spec §7.5): fail-closed checks of
+    product, engine and every parameter against the published schema —
+    unknown keys, dtype mismatches, choice membership and numeric ranges.
+    Returns structured issues; never prices anything."""
+    issues: list[dict] = []
+
+    def issue(code: str, severity: str, message: str, param: str | None = None):
+        issues.append({"code": code, "severity": severity,
+                       "message": message, "param": param})
+
+    product = find_product(product_id)
+    if product is None:
+        issue("PRODUCT_UNKNOWN", "error", f"unknown product '{product_id}'")
+        return {"valid": False, "issues": issues,
+                "product": product_id, "engine": engine_id}
+
+    engine_ids = [e.id for e in product.engines]
+    if engine_id is None and env is not None:
+        engine_id = (env.pricer_overrides or {}).get(product_id)
+    if engine_id is not None and engine_id not in engine_ids:
+        issue("ENGINE_UNKNOWN", "error",
+              f"unknown engine '{engine_id}' for product '{product_id}'")
+        return {"valid": False, "issues": issues,
+                "product": product_id, "engine": engine_id}
+    resolved_engine = engine_id or engine_ids[0]
+    engine = next(e for e in product.engines if e.id == resolved_engine)
+
+    specs = {s.key: s for s in product.params_for(engine, curve_ids or [],
+                                                  surface_ids or [])}
+    effective_params = _effective_ws_params(product, params, env, set(specs))
+    for key, value in effective_params.items():
+        spec = specs.get(key)
+        if spec is None:
+            if key in _EXTRA_PARAM_KEYS:
+                continue
+            issue("SCHEMA_UNKNOWN_FIELD", "error",
+                  f"параметр '{key}' не входит в схему движка "
+                  f"'{resolved_engine}'", key)
+            continue
+        if value is None:
+            issue("TERMS_NULL_VALUE", "error",
+                  f"параметр '{spec.label}' не задан", key)
+            continue
+        if spec.dtype in ("float", "int"):
+            if isinstance(value, bool) or not isinstance(value, Real):
+                issue("SCHEMA_TYPE_MISMATCH", "error",
+                      f"'{spec.label}': ожидается число, получено "
+                      f"{type(value).__name__}", key)
+                continue
+            num = float(value)
+            if spec.dtype == "int" and num != int(num):
+                issue("SCHEMA_TYPE_MISMATCH", "error",
+                      f"'{spec.label}': ожидается целое число", key)
+            if spec.minimum is not None and num < spec.minimum:
+                issue("TERMS_OUT_OF_RANGE", "error",
+                      f"'{spec.label}': {num:g} ниже минимума "
+                      f"{spec.minimum:g}", key)
+            if spec.maximum is not None and num > spec.maximum:
+                issue("TERMS_OUT_OF_RANGE", "error",
+                      f"'{spec.label}': {num:g} выше максимума "
+                      f"{spec.maximum:g}", key)
+        elif spec.dtype == "choice":
+            allowed = list(spec.choices or [])
+            if allowed and str(value) not in allowed:
+                issue("TERMS_INVALID_CHOICE", "error",
+                      f"'{spec.label}': значение '{value}' не входит в "
+                      f"список выбора", key)
+
+    errors = [i for i in issues if i["severity"] == "error"]
+    return {
+        "valid": not errors,
+        "issues": issues,
+        "product": product_id,
+        "engine": resolved_engine,
+        "checked_params": sorted(specs.keys()),
+    }
+
+
 def price_ws(svc, snapshot, product_id: str, engine_id: str | None,
-             params: dict, env=None) -> dict:
+             params: dict, env=None, curve_ids: list[str] | None = None,
+             surface_ids: list[str] | None = None) -> dict:
     """Dispatch a workstation pricing request; returns the normalized result.
 
     ``env`` (PricingEnvironment, A1): контур задаёт ДЕФОЛТЫ — движок
@@ -1744,21 +1867,29 @@ def price_ws(svc, snapshot, product_id: str, engine_id: str | None,
     if product is None:
         raise ValueError(f"unknown product '{product_id}'")
     engine_ids = [e.id for e in product.engines]
-    if engine_id not in engine_ids and env is not None:
+    if engine_id is None and env is not None:
         engine_id = (env.pricer_overrides or {}).get(product_id)
-    values = dict(params)
-    if env is not None:
-        for key, val in (env.default_params or {}).items():
-            values.setdefault(key, val)
-        if product.needs_curve and not values.get("curve_id"):
-            disc = (env.curve_map or {}).get("discount")
-            if disc:
-                values["curve_id"] = disc
-        if product.needs_proj and not values.get("proj_curve_id"):
-            proj = (env.curve_map or {}).get("projection")
-            if proj:
-                values["proj_curve_id"] = proj
-    values["engine"] = engine_id if engine_id in engine_ids else engine_ids[0]
+    # Fail closed (spec §4.2): an unknown engine is an error, never a silent
+    # substitution with the default engine.
+    if engine_id is not None and engine_id not in engine_ids:
+        raise ValueError(
+            f"unknown engine '{engine_id}' for product '{product_id}'")
+    if curve_ids is None:
+        curve_ids = list((getattr(snapshot, "curves", None) or {}).keys())
+    if surface_ids is None:
+        surface_ids = list((getattr(snapshot, "vol_surfaces", None) or {}).keys())
+    validation = validate_ws(
+        product_id, engine_id, params,
+        curve_ids=curve_ids, surface_ids=surface_ids, env=env)
+    if not validation["valid"]:
+        messages = [f"{item['code']}: {item['message']}"
+                    for item in validation["issues"]
+                    if item["severity"] == "error"]
+        raise ValueError("invalid pricing request: " + "; ".join(messages))
+
+    values = _effective_ws_params(
+        product, params, env, set(validation["checked_params"]))
+    values["engine"] = engine_id or engine_ids[0]
     result = product.invoke(svc, values, snapshot)
     normalized = normalize_ws_result(result if isinstance(result, dict) else {},
                                      input_keys=set(params.keys()))

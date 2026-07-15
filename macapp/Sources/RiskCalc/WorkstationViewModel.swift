@@ -47,6 +47,50 @@ final class WorkstationViewModel {
     var serverDown = false
     var errorMessage: String?
 
+    // MARK: workspace state machines (spec §6)
+
+    /// Technical state of the current calculation.
+    var techState: RunTechState = .idle
+    /// Structured validation issues from the authoritative server check.
+    var issues: [WsValidationIssue] = []
+    /// Fingerprint of the last input set the server validated successfully.
+    private var validatedFingerprint: String?
+    /// Fingerprint of the last captured run.
+    private var capturedFingerprint: String?
+    /// The immutable run whose result is currently displayed.
+    var currentRun: PricingRunRecord?
+    /// Immutable history of completed runs in this workspace (newest first).
+    var runHistory: [PricingRunRecord] = []
+    /// secid restored from a historical run (when no live underlying picked).
+    private var restoredSecID: String?
+
+    /// Canonical fingerprint of the current user intent — the staleness key.
+    var currentFingerprint: String {
+        PricingFingerprint.compute(
+            product: productID ?? "", engine: selectedEngine?.id ?? "",
+            envID: envID.isEmpty ? nil : envID,
+            numeric: numericValues, choice: choiceValues,
+            secid: selectedUnderlying?.secid ?? restoredSecID)
+    }
+
+    /// Business state, derived from fingerprints — edits move it back to
+    /// Draft automatically because the fingerprint changes (spec §6.1).
+    var businessState: WorkspaceBusinessState {
+        let fp = currentFingerprint
+        if capturedFingerprint == fp { return .captured }
+        if currentRun?.fingerprint == fp { return .priced }
+        if validatedFingerprint == fp { return .validated }
+        return .draft
+    }
+
+    /// True when a result is on screen but no longer matches the inputs.
+    var isStale: Bool {
+        result != nil && currentRun != nil && currentRun?.fingerprint != currentFingerprint
+    }
+
+    /// Field keys carrying validation errors (for form highlighting).
+    var issueKeys: Set<String> { Set(issues.compactMap(\.param)) }
+
     private let client = BridgeClient()
     private var searchTask: Task<Void, Never>?
 
@@ -87,6 +131,9 @@ final class WorkstationViewModel {
         productID = id
         engineID = selectedProduct?.engines.first?.id
         result = nil
+        currentRun = nil
+        issues = []
+        restoredSecID = nil
         ladder = nil
         scenarios = nil
         ladderKey = nil
@@ -104,6 +151,14 @@ final class WorkstationViewModel {
         let saved = (numericValues, choiceValues)
         engineID = id
         result = nil
+        currentRun = nil
+        issues = []
+        // desk-risk outputs belong to the previous engine's runs — never show
+        // them as if they were produced by the new engine
+        ladder = nil
+        scenarios = nil
+        payoff = nil
+        grid2d = nil
         resetForSelection()
         // keep shared param values across engine switches (spot, strike, ...)
         for (k, v) in saved.0 where numericValues[k] != nil { numericValues[k] = v }
@@ -161,6 +216,7 @@ final class WorkstationViewModel {
         guard let category = hit.category, let spec = selectedProduct?.underlying else { return }
         underlyingHits = []
         underlyingQuery = ""
+        restoredSecID = nil                   // a live selection supersedes history
         do {
             let facts = try await client.underlyingFacts(category: category, secid: hit.secid)
             selectedUnderlying = facts
@@ -207,26 +263,100 @@ final class WorkstationViewModel {
         // Preserve the selected market identity through capture/incremental
         // requests. The bridge resolves FX futures (Si/Eu/CNY) to a pair and
         // equity-like instruments to their own historical factor series.
-        if let secid = selectedUnderlying?.secid {
+        if let secid = selectedUnderlying?.secid ?? restoredSecID {
             params["secid"] = BridgeValue(kind: .string(secid))
         }
         return params
+    }
+
+    /// Authoritative server validation of the exact request that Run would
+    /// send (spec §7.5). Successful validation pins the current fingerprint.
+    @discardableResult
+    func validate() async -> Bool {
+        guard let product = selectedProduct, let engine = selectedEngine else { return false }
+        techState = .validating
+        errorMessage = nil
+        defer { if techState == .validating { techState = .idle } }
+        do {
+            let v = try await client.wsValidate(product: product.id, engine: engine.id,
+                                                params: bridgeParams(),
+                                                envID: envID.isEmpty ? nil : envID)
+            issues = v.issues
+            if v.valid { validatedFingerprint = currentFingerprint }
+            return v.valid
+        } catch {
+            // validation transport failure is an error state, not a pass
+            issues = []
+            errorMessage = error.localizedDescription
+            techState = .failed(error.localizedDescription)
+            return false
+        }
     }
 
     func price() async {
         guard let product = selectedProduct, let engine = selectedEngine else { return }
         isPricing = true
         errorMessage = nil
+        // Validate → Run (fail closed): issues block the run and map to fields.
+        let fingerprint = currentFingerprint
+        guard await validate() else {
+            if issues.contains(where: \.isError) {
+                errorMessage = "Запрос не прошёл валидацию — исправь отмеченные поля"
+                techState = .failed("validation")
+            }
+            isPricing = false
+            return
+        }
+        techState = .running
         do {
             let priced = try await client.wsPrice(product: product.id, engine: engine.id,
                                                   params: bridgeParams(),
                                                   envID: envID.isEmpty ? nil : envID)
             result = priced
             if let first = priced.errors.first { errorMessage = first }
+            // record the immutable run (spec §6.1: edits mark it stale later,
+            // history never mutates)
+            let record = PricingRunRecord(
+                timestamp: Date(), fingerprint: fingerprint,
+                productID: product.id, productName: product.name,
+                engineID: engine.id, engineName: engine.name,
+                envID: envID.isEmpty ? nil : envID,
+                numericValues: numericValues, choiceValues: choiceValues,
+                underlyingSecID: selectedUnderlying?.secid ?? restoredSecID,
+                result: priced)
+            currentRun = record
+            runHistory.insert(record, at: 0)
+            if runHistory.count > 20 { runHistory.removeLast(runHistory.count - 20) }
+            techState = .idle
         } catch {
             errorMessage = error.localizedDescription
+            techState = .failed(error.localizedDescription)
         }
         isPricing = false
+    }
+
+    /// Restore a historical run's exact inputs (and show its immutable result —
+    /// same fingerprint ⇒ the evidence is current again).
+    func restore(_ run: PricingRunRecord) {
+        guard run.productID == productID || products.contains(where: { $0.id == run.productID })
+        else { return }
+        if productID != run.productID {
+            productID = run.productID
+        }
+        engineID = run.engineID
+        envID = run.envID ?? ""
+        numericValues = run.numericValues
+        choiceValues = run.choiceValues
+        clearUnderlying()
+        restoredSecID = run.underlyingSecID
+        result = run.result
+        currentRun = run
+        issues = []
+        errorMessage = nil
+        ladder = nil
+        scenarios = nil
+        payoff = nil
+        grid2d = nil
     }
 
     // MARK: trade capture
@@ -234,6 +364,12 @@ final class WorkstationViewModel {
     func addToPortfolio() async {
         guard let product = selectedProduct, product.capturable,
               let engine = selectedEngine else { return }
+        // Capture attaches to the exact priced run, never to an edited form
+        // (spec §7.7 invariant): the current inputs must match the run.
+        guard businessState == .priced || businessState == .captured else {
+            captureMessage = "Сначала посчитай текущие inputs (Run) — capture относится к конкретному расчёту"
+            return
+        }
         isCapturing = true
         captureMessage = nil
         do {
@@ -242,6 +378,7 @@ final class WorkstationViewModel {
                                                       params: bridgeParams(),
                                                       quantity: captureQuantity)
             captureMessage = "✓ \(res.positionID) — в книге \(res.positions) позиций"
+            capturedFingerprint = currentFingerprint
         } catch {
             captureMessage = error.localizedDescription
         }

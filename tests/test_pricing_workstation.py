@@ -32,16 +32,23 @@ def svc():
 
 
 def _default_params(product, engine) -> dict:
+    specs = product.params_for(engine, [], [])
     params = {}
-    for spec in product.params_for(engine, [], []):
+    for spec in specs:
         params[spec.key] = spec.default
     # keep the test matrix fast: shrink MC/lattice workloads
     fast = {"n_sims": 3000, "n_paths": 3000, "n": 2048, "steps": 30,
             "N": 120, "NS": 60, "Nv": 30, "Nt": 40, "N1": 40, "N2": 40,
             "n_z": 100, "n_strikes": 10}
-    for key, val in fast.items():
+    by_key = {spec.key: spec for spec in specs}
+    for key, value in fast.items():
         if key in params:
-            params[key] = val
+            spec = by_key[key]
+            if spec.minimum is not None:
+                value = max(value, spec.minimum)
+            if spec.maximum is not None:
+                value = min(value, spec.maximum)
+            params[key] = int(value) if spec.dtype == "int" else value
     return params
 
 
@@ -53,7 +60,8 @@ def test_every_engine_prices_with_defaults(svc, product_id, engine_id):
     product = find_product(product_id)
     engine = next(e for e in product.engines if e.id == engine_id)
     params = _default_params(product, engine)
-    params["curve_id"] = FLAT_CURVE          # no live snapshot in tests
+    if product.needs_curve:
+        params["curve_id"] = FLAT_CURVE      # no live snapshot in tests
 
     result = price_ws(svc, None, product_id, engine_id, params)
 
@@ -64,6 +72,7 @@ def test_every_engine_prices_with_defaults(svc, product_id, engine_id):
     if result["value"] is not None:
         assert result["value"] == result["value"], (   # NaN guard
             f"{product_id}/{engine_id} returned NaN")
+    assert result["model_id"] == engine.model_id
 
 
 def test_catalogue_serializes():
@@ -82,15 +91,65 @@ def test_catalogue_serializes():
             assert e["governance"]["status"], f"{p['id']}/{e['id']} no governance"
 
 
+def test_qw0_engine_identities_and_merton_cos_are_exposed():
+    product = find_product("european_option")
+    by_id = {engine.id: engine for engine in product.engines}
+    assert by_id["merton_cos"].model_id == "merton_cos"
+    assert by_id["heston_adi"].model_id == "heston_adi"
+
+    two_asset = find_product("two_asset_option")
+    legacy = next(engine for engine in two_asset.engines if engine.id == "adi")
+    assert legacy.model_id == "two_asset_adi"
+
+
+def test_qw0_analytics_lab_gates_merton_cos_and_heston_adi():
+    blocked = PricingService()
+    merton = blocked.price_levy_option(
+        "merton_cos", 100, 100, 1, 0.05, 0.2)
+    heston = blocked.price_heston_adi(
+        100, 100, 1, 0.03, 0.0, 0.04, 1.5, 0.04, 0.3, -0.6,
+        NS=40, Nv=20, Nt=20)
+    assert merton["value"] is None and merton["model_id"] == "merton_cos"
+    assert heston["value"] is None and heston["model_id"] == "heston_adi"
+    assert all(any("allow_analytics_lab=True" in error for error in result["errors"])
+               for result in (merton, heston))
+
+
 def test_unknown_product_raises(svc):
     with pytest.raises(ValueError):
         price_ws(svc, None, "no_such_product", None, {})
 
 
+def test_price_path_enforces_parameter_schema(svc):
+    product = find_product("european_option")
+    params = _default_params(product, product.engines[0])
+
+    with pytest.raises(ValueError, match="SCHEMA_UNKNOWN_FIELD"):
+        price_ws(svc, None, "european_option", "black_scholes",
+                 {**params, "sigmma": 0.2})
+    with pytest.raises(ValueError, match="TERMS_OUT_OF_RANGE"):
+        price_ws(svc, None, "european_option", "black_scholes",
+                 {**params, "sigma": -0.2})
+
+
+def test_validator_checks_environment_effective_params():
+    from api.pricing_workstation import validate_ws
+    from domain.pricing_environment import PricingEnvironment
+
+    env = PricingEnvironment(
+        "BAD", "bad defaults", default_params={"sigma": -0.2})
+    result = validate_ws(
+        "european_option", "black_scholes",
+        {"S": 100, "K": 100, "T": 1, "r": 0.05, "q": 0.0, "opt": "call"},
+        env=env)
+    assert result["valid"] is False
+    assert any(issue["param"] == "sigma" and issue["code"] == "TERMS_OUT_OF_RANGE"
+               for issue in result["issues"])
+
+
 def test_ladder_full_revaluation(svc):
     product = find_product("european_option")
     params = _default_params(product, product.engines[0])
-    params["curve_id"] = FLAT_CURVE
     out = ladder_ws(svc, None, "european_option", "black_scholes", params,
                     "S", 70.0, 130.0, steps=7)
     assert len(out["rows"]) == 7
@@ -145,6 +204,7 @@ def test_scenario_rate_shock_not_double_counted(svc):
 def test_normalizer_extracts_greeks_and_series():
     governed = {
         "value": 5.0, "model_id": "black_scholes", "model_status": "Approximation",
+        "calculation_timestamp": "2026-07-15T00:00:00+00:00",
         "raw": {"price": 5.0, "delta": 0.6, "gamma": 0.02,
                 "cashflows": [(0.5, 35.0), (1.0, 1035.0)],
                 "curve": [{"T": 1.0, "F": 101.0}]},
@@ -155,3 +215,4 @@ def test_normalizer_extracts_greeks_and_series():
     assert {g["key"] for g in out["greeks"]} == {"delta", "gamma"}
     assert len(out["series"]) == 2
     assert out["series"][0]["points"][0] == {"x": 0.5, "y": 35.0}
+    assert out["provenance"]["valuation_time"] == "2026-07-15T00:00:00+00:00"

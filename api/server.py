@@ -153,11 +153,11 @@ def health() -> dict:
     }
 
 
-def _vol_surface_ids() -> list[str]:
-    """Surface ids in the active snapshot, FORTS first — choices for the pricer's
+def _vol_surface_ids(snapshot=None) -> list[str]:
+    """Surface ids in the selected snapshot, FORTS first — choices for the pricer's
     vol_surface_id selector."""
     try:
-        ids = list(CONTEXT.snapshot.vol_surfaces.keys())
+        ids = list((snapshot or CONTEXT.snapshot).vol_surfaces.keys())
     except Exception:
         return []
     return sorted(ids, key=lambda s: (not s.endswith("_FORTS"), s))
@@ -173,14 +173,32 @@ def ws_catalogue() -> dict:
     return jsonable(pricing_workstation.build_ws_catalogue(curve_ids, _vol_surface_ids()))
 
 
+@app.post("/pricing/validate")
+def ws_validate(req: WsPriceRequest) -> dict:
+    """Authoritative fail-closed validation of a pricing request (spec §7.5):
+    product/engine existence, unknown params, dtype/choice/range checks."""
+    env = CONTEXT.environment(req.env_id) if req.env_id else None
+    snapshot = CONTEXT.env_snapshot(env) if env else CONTEXT.snapshot
+    try:
+        curve_ids = list(snapshot.curves.keys())
+    except Exception:
+        curve_ids = []
+    return jsonable(pricing_workstation.validate_ws(
+        req.product, req.engine, req.params,
+        curve_ids=curve_ids, surface_ids=_vol_surface_ids(snapshot), env=env))
+
+
 @app.post("/pricing/price")
 def ws_price(req: WsPriceRequest) -> dict:
     try:
         env = CONTEXT.environment(req.env_id) if req.env_id else None
         snapshot = CONTEXT.env_snapshot(env) if env else CONTEXT.snapshot
+        curve_ids = list((getattr(snapshot, "curves", None) or {}).keys())
+        surface_ids = _vol_surface_ids(snapshot)
         _svc.market_data = CONTEXT.market
         result = pricing_workstation.price_ws(
-            _svc, snapshot, req.product, req.engine, req.params, env=env)
+            _svc, snapshot, req.product, req.engine, req.params, env=env,
+            curve_ids=curve_ids, surface_ids=surface_ids)
     except KeyError as exc:
         raise HTTPException(status_code=422, detail=f"missing parameter {exc}")
     except ValueError as exc:

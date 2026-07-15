@@ -112,6 +112,34 @@ struct WsSeries: Decodable, Sendable, Identifiable, Hashable {
     var id: String { key }
 }
 
+/// Immutable calculation evidence (spec §10.3): the audit identifiers the
+/// backend produces per run. inputs_hash is the server-authoritative hash.
+struct WsProvenance: Decodable, Sendable {
+    let calculationID: String
+    let inputsHash: String
+    let snapshotID: String
+    let source: String
+    let quality: String
+    let modelVersion: String
+    let modelOwner: String
+    let modelValidationDate: String
+    let productionAllowed: Bool
+    let valuationTime: String
+
+    enum CodingKeys: String, CodingKey {
+        case calculationID = "calculation_id"
+        case inputsHash = "inputs_hash"
+        case snapshotID = "snapshot_id"
+        case source = "market_data_source"
+        case quality = "market_data_quality"
+        case modelVersion = "model_version"
+        case modelOwner = "model_owner"
+        case modelValidationDate = "model_validation_date"
+        case productionAllowed = "production_allowed"
+        case valuationTime = "valuation_time"
+    }
+}
+
 struct WsResult: Decodable, Sendable {
     let value: Double?
     let modelID: String
@@ -125,13 +153,34 @@ struct WsResult: Decodable, Sendable {
     let product: String
     let engine: String
     let environment: String?              // контур оценки, если задан env_id
+    let provenance: WsProvenance?         // immutable evidence (nil на старом мосте)
 
     enum CodingKeys: String, CodingKey {
         case value, greeks, measures, series, warnings, errors, limitations, product, engine
-        case environment
+        case environment, provenance
         case modelID = "model_id"
         case modelStatus = "model_status"
     }
+}
+
+// MARK: - Authoritative validation (spec §7.5 / §8.3)
+
+/// One structured validation problem, mapped to a form field via `param`.
+struct WsValidationIssue: Decodable, Sendable, Identifiable, Hashable {
+    let code: String
+    let severity: String                  // error | warning
+    let message: String
+    let param: String?
+
+    var id: String { code + "|" + (param ?? "") + "|" + message }
+    var isError: Bool { severity == "error" }
+}
+
+struct WsValidation: Decodable, Sendable {
+    let valid: Bool
+    let issues: [WsValidationIssue]
+    let product: String
+    let engine: String?
 }
 
 // MARK: - Desk risk: ladder + scenarios
@@ -309,6 +358,17 @@ extension BridgeClient {
             WsPriceBody(product: product, engine: engine, params: params,
                         env_id: envID))
         return try await post("pricing/price", body: body)
+    }
+
+    /// Authoritative fail-closed validation of the exact request that would be
+    /// priced (spec §7.5): unknown engine/params, dtype/choice/range issues.
+    func wsValidate(product: String, engine: String,
+                    params: [String: BridgeValue],
+                    envID: String? = nil) async throws -> WsValidation {
+        let body = try JSONEncoder().encode(
+            WsPriceBody(product: product, engine: engine, params: params,
+                        env_id: envID))
+        return try await post("pricing/validate", body: body)
     }
 
     func wsLadder(product: String, engine: String, params: [String: BridgeValue],

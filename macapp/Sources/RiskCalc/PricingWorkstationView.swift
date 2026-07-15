@@ -92,6 +92,7 @@ struct PricingWorkstationView: View {
                     PageHeader(product.name, subtitle: governanceLine(engine)) {
                         StatusChip(status: engine.governance.status)
                     }
+                    stateStrip
                     HStack(spacing: Theme.s4) {
                         enginePicker(product)
                         environmentPicker
@@ -108,12 +109,16 @@ struct PricingWorkstationView: View {
                             ForEach(["contract", "market", "model", "numerical"], id: \.self) { group in
                                 paramGroup(engine, group: group)
                             }
+                            issuesCard
                             calculateButton
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
 
-                        WorkstationResultPanel(vm: vm)
-                            .frame(width: 360)
+                        VStack(spacing: Theme.s4) {
+                            WorkstationResultPanel(vm: vm)
+                            RunHistoryCard(vm: vm)
+                        }
+                        .frame(width: 360)
                     }
                     if vm.result != nil {
                         HStack(alignment: .top, spacing: Theme.s4) {
@@ -140,6 +145,112 @@ struct PricingWorkstationView: View {
         [engine.governance.assetClass, engine.governance.modelFamily,
          engine.governance.method]
             .filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    // MARK: workspace state strip (spec §6.1)
+
+    /// Business lifecycle chips + staleness + technical state + input hash.
+    /// Status is never colour-only: each state carries an icon and a label.
+    private var stateStrip: some View {
+        HStack(spacing: Theme.s2) {
+            ForEach(WorkspaceBusinessState.allCases, id: \.self) { s in
+                stateChip(s)
+            }
+            if vm.isStale {
+                Label("Inputs изменены — результат устарел",
+                      systemImage: "exclamationmark.arrow.circlepath")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.warning)
+                    .padding(.horizontal, Theme.s2).padding(.vertical, 3)
+                    .background(Theme.warning.opacity(0.14), in: Capsule())
+            }
+            Spacer()
+            switch vm.techState {
+            case .validating:
+                HStack(spacing: 4) {
+                    ProgressView().controlSize(.mini)
+                    Text("Валидация…").font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            case .running:
+                HStack(spacing: 4) {
+                    ProgressView().controlSize(.mini)
+                    Text("Расчёт…").font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            case .failed:
+                Label("Ошибка", systemImage: "xmark.octagon")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.negative)
+            case .idle:
+                EmptyView()
+            }
+            Text("inputs \(String(vm.currentFingerprint.prefix(8)))")
+                .font(.system(size: 9)).monospaced().foregroundStyle(.tertiary)
+                .help("Локальный канонический fingerprint текущих inputs; авторитетный hash расчёта — в Provenance")
+        }
+    }
+
+    private func stateChip(_ s: WorkspaceBusinessState) -> some View {
+        let all = WorkspaceBusinessState.allCases
+        let currentIdx = all.firstIndex(of: vm.businessState) ?? 0
+        let idx = all.firstIndex(of: s) ?? 0
+        let isCurrent = s == vm.businessState
+        let reached = idx <= currentIdx
+        return HStack(spacing: 4) {
+            Image(systemName: reached && !isCurrent ? "checkmark" : s.icon)
+                .font(.system(size: 9, weight: .semibold))
+            Text(s.title).font(.system(size: 10, weight: isCurrent ? .semibold : .regular))
+        }
+        .foregroundStyle(isCurrent ? Color.white : (reached ? Theme.accent : .secondary))
+        .padding(.horizontal, Theme.s2).padding(.vertical, 3)
+        .background(isCurrent ? AnyShapeStyle(Theme.accent)
+                              : AnyShapeStyle(Color.primary.opacity(reached ? 0.07 : 0.04)),
+                    in: Capsule())
+        .help(stateHelp(s))
+    }
+
+    private func stateHelp(_ s: WorkspaceBusinessState) -> String {
+        switch s {
+        case .draft:     return "Есть невалидированные изменения inputs"
+        case .validated: return "Сервер подтвердил схему, типы и диапазоны текущих inputs"
+        case .priced:    return "Для текущих inputs существует завершённый immutable-расчёт"
+        case .captured:  return "Расчёт зафиксирован позицией в портфеле"
+        }
+    }
+
+    /// Structured validation issues with a jump reference to the field key
+    /// (spec §8.3) — shown between the form and the run control.
+    @ViewBuilder
+    private var issuesCard: some View {
+        if !vm.issues.isEmpty {
+            GlassCard {
+                VStack(alignment: .leading, spacing: Theme.s2) {
+                    BlockTitle("Валидация", icon: "checkmark.shield")
+                    ForEach(vm.issues) { issue in
+                        HStack(alignment: .top, spacing: Theme.s2) {
+                            Image(systemName: issue.isError
+                                  ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(issue.isError ? Theme.negative : Theme.warning)
+                                .padding(.top, 1)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(issue.message).font(.system(size: 11))
+                                HStack(spacing: Theme.s2) {
+                                    Text(issue.code)
+                                        .font(.system(size: 9)).monospaced()
+                                        .foregroundStyle(.tertiary)
+                                    if let p = issue.param {
+                                        Text("поле: \(p)")
+                                            .font(.system(size: 9, weight: .semibold)).monospaced()
+                                            .foregroundStyle(Theme.accent)
+                                    }
+                                }
+                            }
+                            Spacer()
+                        }
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -293,6 +404,13 @@ struct PricingWorkstationView: View {
                             .font(.system(size: 9))
                             .foregroundStyle(Theme.accent)
                     }
+                    // server-validation issue anchored to this field (spec §8.3)
+                    if let issue = vm.issues.first(where: { $0.param == spec.key }) {
+                        Label(issue.message, systemImage: "exclamationmark.circle.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(issue.isError ? Theme.negative : Theme.warning)
+                            .lineLimit(2)
+                    }
                 }
             }
         }
@@ -305,6 +423,15 @@ struct PricingWorkstationView: View {
                     .font(.caption).foregroundStyle(Theme.negative).lineLimit(2)
             }
             Spacer()
+            // Authoritative pre-run check without pricing (spec §7.5).
+            Button {
+                Task { await vm.validate() }
+            } label: {
+                Label("Validate", systemImage: "checkmark.shield")
+            }
+            .controlSize(.large)
+            .disabled(vm.techState.isBusy || vm.isPricing)
+            .help("Серверная валидация схемы, типов и диапазонов без запуска расчёта")
             Button {
                 Task { await vm.price() }
             } label: {
@@ -681,6 +808,18 @@ private struct WorkstationResultPanel: View {
         GlassCard {
             if let r = vm.result {
                 VStack(alignment: .leading, spacing: Theme.s3) {
+                    // A stale result must never look current (spec §6.2):
+                    // explicit banner + dimmed content until re-run.
+                    if vm.isStale {
+                        Label("УСТАРЕЛ — inputs изменены; Calculate пересчитает",
+                              systemImage: "exclamationmark.arrow.circlepath")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Theme.warning)
+                            .padding(Theme.s2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Theme.warning.opacity(0.14),
+                                        in: RoundedRectangle(cornerRadius: 6))
+                    }
                     HStack {
                         Text("PRESENT VALUE").font(.system(size: 10, weight: .semibold))
                             .tracking(0.5).foregroundStyle(.secondary)
@@ -735,6 +874,10 @@ private struct WorkstationResultPanel: View {
                                 .background(Theme.warning.opacity(0.12),
                                             in: RoundedRectangle(cornerRadius: 6))
                         }
+                    }
+                    if let prov = r.provenance {
+                        Divider()
+                        provenanceSection(prov)
                     }
                     if vm.supportsImpliedVol {
                         Divider()
@@ -800,7 +943,13 @@ private struct WorkstationResultPanel: View {
                         Text("В портфель")
                     }
                 }
-                .disabled(vm.isCapturing)
+                // Capture attaches to the exact priced run: edited (stale)
+                // inputs must be re-run first (spec §7.7 invariant).
+                .disabled(vm.isCapturing
+                          || (vm.businessState != .priced && vm.businessState != .captured))
+                .help(vm.businessState == .priced || vm.businessState == .captured
+                      ? "Зафиксировать позицию по текущему расчёту"
+                      : "Сначала Calculate: capture относится к конкретному расчёту, а не к форме")
             }
             if let msg = vm.captureMessage {
                 Text(msg)
@@ -835,6 +984,51 @@ private struct WorkstationResultPanel: View {
         }
     }
 
+    /// Immutable evidence of the displayed run (spec §7.6): calculation ID,
+    /// the server-authoritative inputs hash, snapshot lineage and model
+    /// version/owner. Nothing here is client-invented.
+    @ViewBuilder
+    private func provenanceSection(_ p: WsProvenance) -> some View {
+        VStack(alignment: .leading, spacing: Theme.s2) {
+            HStack {
+                Text("PROVENANCE").font(.system(size: 10, weight: .semibold))
+                    .tracking(0.5).foregroundStyle(.secondary)
+                Spacer()
+                if p.productionAllowed {
+                    Pill(text: "production", color: Theme.positive)
+                } else {
+                    Pill(text: "research", color: Theme.warning)
+                }
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                provRow("Calculation", String(p.calculationID.suffix(12)), full: p.calculationID)
+                provRow("Inputs hash", String(p.inputsHash.prefix(12)) + "…", full: p.inputsHash)
+                provRow("Snapshot", p.snapshotID, full: p.snapshotID)
+                provRow("Data", [p.source, p.quality].filter { !$0.isEmpty }
+                            .joined(separator: " · "), full: nil)
+                provRow("Model", "v\(p.modelVersion) · \(p.modelOwner)", full: nil)
+                if !p.valuationTime.isEmpty {
+                    provRow("Valued at", String(p.valuationTime.prefix(19))
+                                .replacingOccurrences(of: "T", with: " ") + " UTC",
+                            full: p.valuationTime)
+                }
+            }
+        }
+    }
+
+    private func provRow(_ key: String, _ value: String, full: String?) -> some View {
+        HStack(alignment: .top) {
+            Text(key).font(.system(size: 10)).foregroundStyle(.secondary)
+                .frame(width: 78, alignment: .leading)
+            Text(value.isEmpty ? "—" : value)
+                .font(.system(size: 10)).monospaced()
+                .textSelection(.enabled)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .help(full ?? value)
+    }
+
     @ViewBuilder
     private func measureGrid(_ title: String, _ items: [WsMeasure]) -> some View {
         Text(title).font(.system(size: 10, weight: .semibold))
@@ -848,7 +1042,7 @@ private struct WorkstationResultPanel: View {
     }
 
     @ViewBuilder
-    private func seriesChart(_ series: WsSeries) -> some View {
+    fileprivate func seriesChart(_ series: WsSeries) -> some View {
         VStack(alignment: .leading, spacing: Theme.s2) {
             Text(series.label.uppercased())
                 .font(.system(size: 10, weight: .semibold))
@@ -873,5 +1067,70 @@ private struct WorkstationResultPanel: View {
                 .frame(height: 110)
             }
         }
+    }
+}
+
+// MARK: - Run history
+
+/// Immutable run log of the workspace (spec §7.5): every completed calculation
+/// with its evidence hash; selecting an entry restores the exact inputs and
+/// shows that run's result again.
+private struct RunHistoryCard: View {
+    @Bindable var vm: WorkstationViewModel
+
+    var body: some View {
+        if !vm.runHistory.isEmpty {
+            GlassCard {
+                VStack(alignment: .leading, spacing: Theme.s2) {
+                    BlockTitle("История расчётов", icon: "clock.arrow.circlepath")
+                    ForEach(vm.runHistory.prefix(8)) { run in
+                        runRow(run)
+                    }
+                    if vm.runHistory.count > 8 {
+                        Text("… ещё \(vm.runHistory.count - 8)")
+                            .font(.system(size: 9)).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+    }
+
+    private func runRow(_ run: PricingRunRecord) -> some View {
+        let isCurrent = vm.currentRun?.id == run.id && !vm.isStale
+        return Button {
+            vm.restore(run)
+        } label: {
+            HStack(spacing: Theme.s2) {
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 4) {
+                        Text(run.timestamp, format: .dateTime.hour().minute().second())
+                            .font(.system(size: 10, weight: .medium)).monospacedDigit()
+                        Text(run.engineName)
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    HStack(spacing: 4) {
+                        Text(run.shortHash)
+                            .font(.system(size: 8)).monospaced().foregroundStyle(.tertiary)
+                        if let env = run.envID {
+                            Text(env).font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
+                }
+                Spacer(minLength: Theme.s2)
+                Text(run.result.value.map { Fmt.number($0, digits: 4) } ?? "—")
+                    .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                if isCurrent {
+                    Pill(text: "текущий", color: Theme.positive)
+                }
+            }
+            .padding(.horizontal, Theme.s2).padding(.vertical, 4)
+            .background(isCurrent ? Theme.accent.opacity(0.08) : .clear,
+                        in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Восстановить точные inputs этого расчёта (fingerprint \(run.shortHash))")
     }
 }
