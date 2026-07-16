@@ -397,7 +397,7 @@ struct ExprTreeEditor: View {
                     Text(name).tag(index)
                 }
             }
-            .labelsHidden().pickerStyle(.menu).fixedSize()
+            .labelsHidden().pickerStyle(.menu).neutralControlTint().fixedSize()
         case "nth_worst":
             TextField("", value: Binding(
                 get: { Int(node.value) },
@@ -441,7 +441,7 @@ struct ExprTreeEditor: View {
             )) {
                 ForEach(options, id: \.self) { Text($0).tag($0) }
             }
-            .labelsHidden().pickerStyle(.menu).fixedSize()
+            .labelsHidden().pickerStyle(.menu).neutralControlTint().fixedSize()
             .onAppear { if !options.contains(node.name) { node.name = options[0] } }
         }
     }
@@ -518,7 +518,7 @@ struct ActionEditor: View {
                 )) {
                     ForEach(defn.stateNames, id: \.self) { Text($0).tag($0) }
                 }
-                .labelsHidden().pickerStyle(.menu).fixedSize()
+                .labelsHidden().pickerStyle(.menu).neutralControlTint().fixedSize()
             }
         }
     }

@@ -31,8 +31,9 @@ def test_environment_roundtrip_appdb():
 
 def test_default_environments_cover_contours():
     envs = {e.env_id: e for e in default_environments()}
-    assert set(envs) == {"FO", "RISK", "EOD", "VAR", "STRESS"}
+    assert set(envs) == {"FO", "RISK", "EOD", "VAR", "STRESS", "LAB"}
     assert envs["FO"].purpose == "fo" and envs["STRESS"].purpose == "stress"
+    assert envs["LAB"].purpose == "research"
     for e in envs.values():
         assert e.snapshot_id is None                # все на активном снапшоте
         assert e.curve_map["discount"] == "GCURVE_RUB"
@@ -96,6 +97,23 @@ def test_audit_persists_and_survives_restart():
     assert trail[0]["inputs_hash"]
 
 
+def test_historical_adi_audit_is_contextually_canonicalized():
+    from services.audit_service import AuditService
+    from services.governance_service import GovernanceService
+
+    audit = AuditService()
+    audit.record_calculation(
+        user_action="Historical Heston ADI",
+        calculation_type="heston_adi_pricing",
+        model_id="adi",
+        model_version="0.1",
+    )
+    row = GovernanceService(audit=audit).audit_trail()[0]
+    assert row["model_id"] == "heston_adi"
+    assert row["requested_model_id"] == "adi"
+    assert row["deprecated_alias"] is True
+
+
 def test_governance_placeholder_without_db():
     from services.governance_service import GovernanceService
     trail = GovernanceService().audit_trail()
@@ -117,7 +135,7 @@ def test_context_seeds_default_environments():
     var_env = CONTEXT.environment("var")
     assert var_env.purpose == "var"
     ids = {e["env_id"] for e in CONTEXT.app_db.list_environments()}
-    assert {"FO", "RISK", "EOD", "VAR", "STRESS"} <= ids
+    assert {"FO", "RISK", "EOD", "VAR", "STRESS", "LAB"} <= ids
 
 
 @live

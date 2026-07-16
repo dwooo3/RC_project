@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 from numbers import Real
-from typing import Callable
+from typing import Callable, Mapping
 
 from api.instruments import CURVE_LABELS
 from models import registry
@@ -368,9 +368,21 @@ _AMERICAN_ARG = {"pde_cn": "pde", "binomial_crr": "binomial", "binomial_lr": "bi
 
 def _american(svc, v, snapshot):
     model = _AMERICAN_ARG.get(v.get("engine", "pde_cn"), "pde")
+    kwargs = {}
+    if model == "pde":
+        kwargs = {"ns": int(_num(v, "Ns", 400)),
+                  "nt": int(_num(v, "Nt", 400))}
+    elif model in ("binomial", "binomial_lr", "trinomial"):
+        kwargs = {"N": int(_num(v, "N", 501 if model == "binomial_lr" else
+                                  (300 if model == "trinomial" else 500)))}
+    elif model == "lsm":
+        kwargs = {"n_sims": int(_num(v, "n_sims", 50000)),
+                  "steps": int(_num(v, "steps", 50)),
+                  "seed": int(_num(v, "seed", 42))}
     return svc.price_american_option(_num(v, "S", 100), _num(v, "K", 100), _num(v, "T", 1),
                                      _num(v, "r", .05), _num(v, "sigma", .2), _num(v, "q", 0),
-                                     v.get("opt", "put"), model, snapshot=snapshot)
+                                     v.get("opt", "put"), model, snapshot=snapshot,
+                                     **kwargs)
 
 
 def _barrier(svc, v, snapshot):
@@ -379,7 +391,8 @@ def _barrier(svc, v, snapshot):
             v.get("opt", "call"), v.get("barrier_type", "down-out"))
     if v.get("engine") == "pde_cn":
         return svc.price_barrier_option_pde(
-            *args, ns=int(_num(v, "Ns", 400)), nt=int(_num(v, "Nt", 400)),
+            *args, rebate=_num(v, "rebate", 0.0),
+            ns=int(_num(v, "Ns", 400)), nt=int(_num(v, "Nt", 400)),
             snapshot=snapshot)
     return svc.price_barrier_option(*args, _num(v, "rebate", 0.0), snapshot=snapshot)
 
@@ -589,7 +602,8 @@ def _commodity_curve(svc, v, snapshot):
     return svc.commodity_futures_curve(model, _num(v, "spot", 100),
                                        _floats(v.get("tenors", "0.25,0.5,1,2,3,5")),
                                        _num(v, "r", .05), _num(v, "kappa", 1.0),
-                                       _num(v, "rho", .3), **kw)
+                                       _num(v, "rho", .3), snapshot=snapshot,
+                                       **kw)
 
 
 def _two_asset(svc, v, snapshot):
@@ -657,6 +671,35 @@ def _basket_note(svc, v, snapshot):
                                  cap=(cap or None), basket_type=v.get("basket_type", "average"),
                                  face=_num(v, "face", 1000),
                                  n_sims=int(_num(v, "n_sims", 20000)), snapshot=snapshot)
+
+
+def _multi_asset_autocall(svc, v, snapshot):
+    T = _num(v, "T", 3.0)
+    observations = _floats(v.get("observation_dates", ""))
+    return svc.price_multi_asset_autocall(
+        _parse_basket(v.get(
+            "basket",
+            "SBER:0.2,GAZP:0.2,LKOH:0.2,IMOEX:0.2,SU26238RMFS4:0.2:bond",
+        )),
+        _num(v, "r", 0.16),
+        T,
+        observation_dates=observations,
+        autocall_barrier=_num(v, "autocall_barrier", 1.20),
+        autocall_aggregation=v.get("autocall_aggregation", "best_of"),
+        protection_barrier=_num(v, "protection_barrier", 0.65),
+        protection_aggregation=v.get("protection_aggregation", "worst_of"),
+        protection_monitoring=v.get("protection_monitoring", "maturity"),
+        coupon_barrier=_num(v, "coupon_barrier", 0.65),
+        coupon_aggregation=v.get("coupon_aggregation", "worst_of"),
+        coupon_rate=_num(v, "coupon_rate", 0.0),
+        guaranteed_coupon=_num(v, "guaranteed_coupon", 0.05),
+        memory_coupon=v.get("memory_coupon", "yes") == "yes",
+        notional=_num(v, "notional", 1_000.0),
+        n_sims=int(_num(v, "n_sims", 20_000)),
+        steps=int(_num(v, "steps", 100)),
+        seed=int(_num(v, "seed", 42)),
+        snapshot=snapshot,
+    )
 
 
 # ── the catalogue ────────────────────────────────────────────────────
@@ -1397,6 +1440,52 @@ PRODUCTS: list[WsProduct] = [
         [E("structured_autocall", "GBM path MC")],
         _autocall, underlying=dict(_EQ_UNDERLYING, fill={"S0": "spot", "sigma": "vol"})),
     WsProduct(
+        "multi_asset_autocall", "Multi-Asset Autocall / Phoenix", "hybrid",
+        "Structured notes",
+        [P("basket", "Underlyings SECID:weight[:kind]",
+           "SBER:0.2, GAZP:0.2, LKOH:0.2, IMOEX:0.2, SU26238RMFS4:0.2:bond",
+           "market", dtype="schedule",
+           help="1–5 real equities, indices or bonds; weights drive average triggers"),
+         _rate("r", "Discount rate r", 0.16), _mat(3.0),
+         P("observation_dates", "Observation dates (y)",
+           "0.5,1,1.5,2,2.5,3", "contract", dtype="schedule",
+           help="strictly increasing dates in (0,T]; T is appended when omitted"),
+         P("autocall_aggregation", "Autocall trigger", "best_of", "contract",
+           dtype="choice", choices=["best_of", "worst_of", "average"]),
+         P("autocall_barrier", "Autocall barrier", 1.20, "contract",
+           minimum=0.01, maximum=5.0, help="relative to initial levels"),
+         P("coupon_aggregation", "Coupon trigger", "worst_of", "contract",
+           dtype="choice", choices=["worst_of", "best_of", "average"]),
+         P("coupon_barrier", "Conditional coupon barrier", 0.65, "contract",
+           minimum=0.0, maximum=5.0, help="relative to initial levels"),
+         P("coupon_rate", "Conditional coupon p.a.", 0.0, "contract",
+           minimum=0.0, maximum=5.0),
+         P("guaranteed_coupon", "Guaranteed coupon p.a.", 0.05, "contract",
+           minimum=0.0, maximum=5.0),
+         P("memory_coupon", "Conditional coupon memory", "yes", "contract",
+           dtype="choice", choices=["yes", "no"]),
+         P("protection_aggregation", "Protection trigger", "worst_of", "contract",
+           dtype="choice", choices=["worst_of", "best_of", "average"]),
+         P("protection_barrier", "Protection barrier", 0.65, "contract",
+           minimum=0.0, maximum=2.0, help="relative to initial levels"),
+         P("protection_monitoring", "Protection monitoring", "maturity", "contract",
+           dtype="choice", choices=["maturity", "continuous"]),
+         P("notional", "Notional", 1000.0, "contract", minimum=0.01),
+         P("n_sims", "MC paths", 20000, "numerical", dtype="int",
+           minimum=1000, maximum=100000, advanced=True),
+         P("steps", "Time steps", 100, "numerical", dtype="int",
+           minimum=10, maximum=1000, advanced=True),
+         P("seed", "Random seed", 42, "numerical", dtype="int",
+           minimum=0, maximum=4294967295, advanced=True)],
+        [E("multi_asset_autocall", "Correlated GBM path MC",
+           model_id="structured_autocall", params=[])],
+        _multi_asset_autocall,
+        underlying={"categories": ["equities", "indices", "bonds"],
+                    "fill": {}, "append_to": "basket"},
+        note=("Real market spots, historical vols, income/carry and full empirical "
+              "correlation. Constant-parameter GBM; bonds are price-index proxies, "
+              "not full cash-flow/default models.")),
+    WsProduct(
         "basket_note", "Basket Note (real underlyings)", "hybrid", "Structured notes",
         [P("basket", "Basket SECID:weight", "SBER:0.4, GAZP:0.3, LKOH:0.3", "contract",
            dtype="schedule", help="реальные бумаги из маркет даты"),
@@ -1416,7 +1505,7 @@ PRODUCTS: list[WsProduct] = [
            minimum=2000, maximum=200000)],
         [E("structured_basket_note", "Correlated GBM on market store")],
         _basket_note,
-        underlying={"categories": ["equities", "indices"], "fill": {},
+        underlying={"categories": ["equities", "indices", "bonds"], "fill": {},
                     "append_to": "basket"},
         note="Спот/волатильность/дивиденды/корреляции берутся из накопленного стора."),
     WsProduct(
@@ -1630,8 +1719,13 @@ def build_ws_catalogue(curve_ids: list[str] | None = None,
 
 
 # ── result normalization ─────────────────────────────────────────────
-_GREEK_KEYS = ["delta", "gamma", "vega", "theta", "rho", "vanna", "volga", "charm",
-               "dv01", "cs01", "stderr", "std_error"]
+_GREEK_KEYS = {
+    "delta", "gamma", "vega", "theta", "rho", "vanna", "volga", "charm",
+    "speed", "color", "zomma", "ultima",
+    "delta_spot", "delta_fwd", "delta_premium_adj", "fx_delta", "rho_d", "rho_f",
+    "dv01", "cs01", "pv01", "bpv", "ir_dv01", "real_dv01", "inflation_dv01",
+    "spread_dv01", "funding_dv01", "dv01_domestic", "dv01_foreign",
+}
 
 _MEASURE_LABELS = {
     "price": "Price", "npv": "NPV", "value": "Value", "fair_rate": "Fair rate",
@@ -1653,6 +1747,11 @@ _MEASURE_LABELS = {
     "invoice_price": "Invoice price", "theoretical_price": "Theoretical price",
     "carry": "Carry", "exercise_probability": "P(exercise)",
     "autocall_probability": "P(autocall)", "ki_probability": "P(knock-in)",
+    "survival_probability": "P(survival)",
+    "protection_breach_probability": "P(protection breach)",
+    "capital_loss_probability": "P(capital loss)",
+    "coupon_hit_probability": "P(conditional coupon)",
+    "memory_coupon_paid_probability": "P(memory catch-up)",
     "expected_life": "Expected life", "convexity_adjustment": "Convexity adj",
     "timing_adjustment": "Timing adj",
 }
@@ -2033,6 +2132,10 @@ def validate_ws(product_id: str, engine_id: str | None, params: dict,
                       f"{type(value).__name__}", key)
                 continue
             num = float(value)
+            if not math.isfinite(num):
+                issue("TERMS_NON_FINITE", "error",
+                      f"'{spec.label}': значение должно быть конечным числом", key)
+                continue
             if spec.dtype == "int" and num != int(num):
                 issue("SCHEMA_TYPE_MISMATCH", "error",
                       f"'{spec.label}': ожидается целое число", key)
@@ -2112,10 +2215,19 @@ def price_ws(svc, snapshot, product_id: str, engine_id: str | None,
                     if item["severity"] == "error"]
         raise ValueError("invalid pricing request: " + "; ".join(messages))
 
-    values = _effective_ws_params(
-        product, params, env, set(validation["checked_params"]))
-    values["engine"] = engine_id or engine_ids[0]
-    engine = next(item for item in product.engines if item.id == values["engine"])
+    # Materialise the complete request in precedence order:
+    # schema defaults < environment defaults < explicit user values.  Adapters
+    # historically applied omitted defaults internally; making them explicit
+    # here is essential for exact-run identity and replay.
+    resolved_engine = engine_id or engine_ids[0]
+    engine = next(item for item in product.engines if item.id == resolved_engine)
+    values = {
+        spec.key: spec.default
+        for spec in product.params_for(engine, curve_ids, surface_ids)
+    }
+    values.update(_effective_ws_params(
+        product, params, env, set(validation["checked_params"])))
+    values["engine"] = resolved_engine
     eligibility = _engine_eligibility(product, engine, values)
     engine_metadata = {
         "engine_eligibility_id": eligibility.engine_id,
@@ -2140,6 +2252,29 @@ def price_ws(svc, snapshot, product_id: str, engine_id: str | None,
             if eligibility.approval_expires_on else ""
         ),
     }
+    # The immutable run identity belongs to the FULL resolved workstation
+    # request, not to the hand-picked `inputs` dictionary of an individual
+    # pricing wrapper.  PricingService consumes this private context when it
+    # creates the audit record, so UI provenance, approvals and capture all
+    # use exactly the same authoritative hash.
+    engine_metadata["_resolved_pricing_request"] = {
+        "schema": "resolved-pricing-request-v1",
+        "product": product_id,
+        "engine": values["engine"],
+        "params": {key: values[key] for key in sorted(values)
+                   if key != "engine"},
+        "environment": str(getattr(env, "env_id", "") or ""),
+        "snapshot_id": str(getattr(snapshot, "snapshot_id", "") or ""),
+        "eligibility": {
+            "id": eligibility.engine_id,
+            "version": eligibility.version,
+            "model_definition_id": eligibility.model_ref.definition_id,
+            "model_definition_version": eligibility.model_ref.version,
+            "solver_definition_id": eligibility.solver_ref.definition_id,
+            "solver_definition_version": eligibility.solver_ref.version,
+            "runtime_variant": eligibility.runtime_variant,
+        },
+    }
     if hasattr(svc, "engine_context"):
         with svc.engine_context(engine_metadata):
             result = product.invoke(svc, values, snapshot)
@@ -2152,6 +2287,349 @@ def price_ws(svc, snapshot, product_id: str, engine_id: str | None,
     if env is not None:
         normalized["environment"] = env.env_id
     return normalized
+
+
+def _book_greeks(result: dict, quantity: float) -> list[dict]:
+    """Return finite, quantity-scaled Greeks in deterministic key order.
+
+    ``normalize_ws_result`` deliberately uses a list so the UI can retain
+    display labels.  A pricing book, however, must net values by stable key;
+    this helper validates the numeric payload and restores the list only at
+    the API boundary.  MC standard errors are not Greeks and cannot be netted
+    linearly, even though the legacy normalizer groups them with sensitivities.
+    """
+    by_key: dict[str, dict] = {}
+    for item in result.get("greeks") or []:
+        if not isinstance(item, Mapping):
+            continue
+        key = str(item.get("key") or "").strip()
+        value = item.get("value")
+        if (not key or key.lower() in {"stderr", "std_error"}
+                or isinstance(value, bool) or not isinstance(value, Real)):
+            continue
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            continue
+        scaled = numeric * quantity
+        if not math.isfinite(scaled):
+            raise ValueError(f"scaled Greek '{key}' is not finite")
+        by_key[key] = {
+            "key": key,
+            "label": str(item.get("label") or _prettify(key)),
+            "value": scaled,
+        }
+    return [by_key[key] for key in sorted(by_key)]
+
+
+# Mixed-product books may only net headlines when the product contract is an
+# actual monetary PV/premium and every successful leg declares the same
+# currency.  Product-native rates, vol points, spreads, futures quote points
+# and probability/loss ratios stay fail-closed even if a client supplies a
+# cosmetic currency code.
+_BOOK_CURRENCY_PV_PRODUCTS = frozenset({
+    "european_option", "american_option", "barrier_option", "asian_option",
+    "digital_option", "lookback_option", "equity_forward", "equity_swap",
+    "dividend_swap", "equity_future", "warrant", "term_deposit", "fra",
+    "irs", "cap_floor", "swaption", "bermudan_swaption", "cms_swap",
+    "fx_forward", "ndf", "fx_option", "fx_barrier", "fx_digital",
+    "fx_asian", "fx_lookback", "xccy_swap", "cds_index_option", "cds",
+    "risky_bond", "structural_credit", "commodity_option", "spread_option",
+    "two_asset_option", "basket_option", "rainbow_option",
+    "multi_asset_autocall", "basket_note", "convertible",
+})
+
+
+def price_book_ws(svc, snapshot, legs: list[dict], *, env=None,
+                  curve_ids: list[str] | None = None,
+                  surface_ids: list[str] | None = None) -> dict:
+    """Price and net up to 100 positions on one frozen workstation context.
+
+    The function has no dependency on the global API context.  Snapshot,
+    service, environment and market-data identities are resolved by the
+    caller once and reused unchanged for every leg.  Each leg receives a copy
+    of its terms, so neither a pricer nor environment-default materialisation
+    can mutate the book request.  A failing leg is reported in place and does
+    not suppress successfully valued positions.
+    """
+    if not isinstance(legs, (list, tuple)):
+        raise TypeError("pricing book legs must be a list")
+    if len(legs) > 100:
+        raise ValueError("pricing book supports at most 100 legs")
+
+    # IDs are the stable join key between rows, charts, errors and persisted
+    # exact-run inputs.  Ambiguous IDs would make a book impossible to replay
+    # or reconcile, so reject the whole request before starting any pricing.
+    requested_ids = [
+        str(leg.get("id") or f"leg-{index + 1}")
+        if isinstance(leg, Mapping) else f"leg-{index + 1}"
+        for index, leg in enumerate(legs)
+    ]
+    duplicate_ids = sorted({leg_id for leg_id in requested_ids
+                            if requested_ids.count(leg_id) > 1})
+    if duplicate_ids:
+        raise ValueError(
+            "pricing book leg ids must be unique: " + ", ".join(duplicate_ids)
+        )
+
+    # Resolve the market-data identities once.  Tuples make the shared
+    # request-local context immutable while remaining accepted by price_ws.
+    frozen_curve_ids = tuple(
+        curve_ids if curve_ids is not None
+        else (getattr(snapshot, "curves", None) or {}).keys()
+    )
+    frozen_surface_ids = tuple(
+        surface_ids if surface_ids is not None
+        else (getattr(snapshot, "vol_surfaces", None) or {}).keys()
+    )
+
+    priced_legs: list[dict] = []
+    errors: list[str] = []
+    total_value = 0.0
+    aggregate: dict[str, dict] = {}
+    success_count = 0
+    resolved_book_legs: list[dict] = []
+
+    for index, raw_leg in enumerate(legs):
+        leg = dict(raw_leg) if isinstance(raw_leg, Mapping) else {}
+        leg_id = str(leg.get("id") or f"leg-{index + 1}")
+        label = str(leg.get("label") or leg_id)
+        product_id = str(leg.get("product") or "")
+        requested_engine = leg.get("engine")
+        risk_factor_id = str(leg.get("risk_factor_id") or "").strip() or None
+        currency_raw = str(leg.get("currency") or "").strip().upper()
+        currency = currency_raw if len(currency_raw) == 3 and currency_raw.isalpha() else None
+        quantity_raw = leg.get("quantity", 1.0)
+        quantity = None
+        result = None
+        unit_value = None
+        position_value = None
+        scaled_greeks: list[dict] = []
+        error = None
+
+        try:
+            if isinstance(quantity_raw, bool) or not isinstance(quantity_raw, Real):
+                raise TypeError("quantity must be a finite number")
+            numeric_quantity = float(quantity_raw)
+            if not math.isfinite(numeric_quantity):
+                raise ValueError("quantity must be finite")
+            quantity = numeric_quantity
+            if not product_id:
+                raise ValueError("product is required")
+            params = leg.get("params", {})
+            if not isinstance(params, Mapping):
+                raise TypeError("params must be an object")
+
+            result = price_ws(
+                svc, snapshot, product_id, requested_engine, dict(params),
+                env=env, curve_ids=frozen_curve_ids,
+                surface_ids=frozen_surface_ids,
+            )
+            result_errors = [str(item) for item in result.get("errors") or []]
+            if result_errors:
+                raise ValueError("; ".join(result_errors))
+            raw_value = result.get("value")
+            if (isinstance(raw_value, bool)
+                    or not isinstance(raw_value, Real)
+                    or not math.isfinite(float(raw_value))):
+                raise ValueError("pricer did not return a finite scalar value")
+
+            unit_value = float(raw_value)
+            position_value = unit_value * quantity
+            if not math.isfinite(position_value):
+                raise ValueError("position value is not finite after quantity scaling")
+            scaled_greeks = _book_greeks(result, quantity)
+            candidate_total = total_value + position_value
+            if not math.isfinite(candidate_total):
+                raise ValueError("aggregate value is not finite")
+            pending_aggregate: dict[str, float] = {}
+            for greek in scaled_greeks:
+                key = greek["key"]
+                existing = float((aggregate.get(key) or {}).get("value", 0.0))
+                candidate = existing + greek["value"]
+                if not math.isfinite(candidate):
+                    raise ValueError(f"aggregate Greek '{key}' is not finite")
+                pending_aggregate[key] = candidate
+            # Commit the leg atomically only after all scaled outputs are
+            # finite.  A rejected row must not leave partial aggregate state.
+            total_value = candidate_total
+            for greek in scaled_greeks:
+                key = greek["key"]
+                aggregate[key] = {
+                    "key": key,
+                    "label": greek["label"],
+                    "value": pending_aggregate[key],
+                }
+            success_count += 1
+        except Exception as exc:  # per-position isolation is the book contract
+            error = str(exc) or type(exc).__name__
+            errors.append(f"{leg_id}: {error}")
+
+        priced_legs.append({
+            "id": leg_id,
+            "label": label,
+            "product": product_id,
+            "engine": (result.get("engine") if result is not None
+                       else requested_engine),
+            "risk_factor_id": risk_factor_id,
+            "currency": currency,
+            "quantity": quantity,
+            "unit_value": unit_value,
+            "position_value": position_value,
+            "greeks": scaled_greeks,
+            "result": result,
+            "error": error,
+        })
+
+        # A successful unit calculation already has an authoritative hash of
+        # every materialised schema/default/environment input.  Compose those
+        # hashes with the book-level economics (quantity, row identity and
+        # ordering).  Failed rows retain their raw request so the attempted
+        # book is still exactly identifiable and auditable.
+        unit_hash = None
+        if result is not None:
+            unit_hash = ((result.get("provenance") or {}).get("inputs_hash")
+                         or None)
+        resolved_book_legs.append({
+            "id": leg_id,
+            "label": label,
+            "product": product_id,
+            "engine": (result.get("engine") if result is not None
+                       else requested_engine),
+            "risk_factor_id": risk_factor_id,
+            "currency": currency,
+            "quantity": (quantity if quantity is not None
+                         else repr(quantity_raw)),
+            "unit_inputs_hash": unit_hash,
+            "failed_request_params": (dict(leg.get("params") or {})
+                                      if not unit_hash
+                                      and isinstance(leg.get("params"), Mapping)
+                                      else None),
+        })
+
+    environment_id = (getattr(env, "env_id", None)
+                      if env is not None else None)
+    snapshot_id = str(getattr(snapshot, "snapshot_id", "") or "")
+    context_payload = {
+        "schema": "pricing-book-context-v1",
+        "environment": environment_id,
+        "snapshot_id": snapshot_id,
+        "curve_ids": list(frozen_curve_ids),
+        "surface_ids": list(frozen_surface_ids),
+    }
+    book_inputs = {
+        "schema": "resolved-pricing-book-v1",
+        "context": context_payload,
+        # List order is intentional: it is the displayed/replayed book order.
+        "legs": resolved_book_legs,
+    }
+    audit = getattr(svc, "audit", None)
+    if audit is not None and hasattr(audit, "record_calculation"):
+        audit_record = audit.record_calculation(
+            user_action="Price workstation book",
+            calculation_type="pricing_book",
+            model_id="pricing_book",
+            model_version="v1",
+            market_data_snapshot_id=snapshot_id,
+            inputs=book_inputs,
+            result_id=f"pricing_book:{success_count}:{len(priced_legs)}",
+            details={
+                "environment": environment_id,
+                "success_count": success_count,
+                "count": len(priced_legs),
+                "errors": list(errors),
+            },
+        )
+        calculation_id = audit_record.record_id
+        calculation_timestamp = audit_record.timestamp.isoformat()
+        inputs_hash = audit_record.inputs_hash
+        context_hash = audit.hash_inputs(context_payload)
+    else:
+        calculation_id = ""
+        calculation_timestamp = ""
+        inputs_hash = ""
+        context_hash = ""
+
+    successful_products = sorted({
+        leg["product"] for leg in priced_legs if leg["error"] is None
+    })
+    successful_risk_factors = sorted({
+        leg.get("risk_factor_id") or f"product:{leg['product']}"
+        for leg in priced_legs if leg["error"] is None
+    })
+    successful_currencies = sorted({
+        leg.get("currency")
+        for leg in priced_legs if leg["error"] is None
+    }, key=lambda item: item or "")
+    same_product_contract = success_count > 0 and len(successful_products) == 1
+    typed_currency_contract = (
+        success_count > 0
+        and len(successful_products) > 1
+        and len(successful_currencies) == 1
+        and successful_currencies[0] is not None
+        and set(successful_products) <= _BOOK_CURRENCY_PV_PRODUCTS
+    )
+    aggregation_compatible = same_product_contract or typed_currency_contract
+    greeks_compatible = (
+        same_product_contract and len(successful_risk_factors) == 1
+    )
+    if not success_count:
+        aggregation_status = "unavailable"
+        aggregation_reason = "No positions were priced successfully."
+    elif not aggregation_compatible:
+        aggregation_status = "blocked"
+        aggregation_reason = (
+            "Mixed product-native headline values cannot be netted until "
+            "currency, measure, unit and quote-basis contracts are typed."
+        )
+    elif typed_currency_contract:
+        aggregation_status = "typed"
+        aggregation_reason = (
+            f"PV is netted across monetary products in explicit "
+            f"{successful_currencies[0]}; Greeks remain position-level because "
+            "cross-product sensitivity conventions are not yet typed."
+        )
+    else:
+        aggregation_status = "provisional"
+        if greeks_compatible:
+            aggregation_reason = (
+                "PV and Greeks are netted within one product/risk-factor "
+                "contract; explicit currency/unit typing is still required."
+            )
+        else:
+            aggregation_reason = (
+                "PV is provisionally aggregated within one product contract; "
+                "Greeks remain separated because risk-factor identities differ."
+            )
+
+    return {
+        "environment": environment_id,
+        "snapshot_id": snapshot_id,
+        "context_hash": context_hash,
+        "calculation_id": calculation_id,
+        "calculation_timestamp": calculation_timestamp,
+        "inputs_hash": inputs_hash,
+        "count": len(priced_legs),
+        "success_count": success_count,
+        "aggregation": {
+            "status": aggregation_status,
+            "compatible": aggregation_compatible,
+            "greeks_compatible": greeks_compatible,
+            "basis": (
+                f"currency:{successful_currencies[0]}|measure:pv"
+                if typed_currency_contract
+                else (f"product:{successful_products[0]}"
+                      if aggregation_compatible else None)
+            ),
+            "risk_factor_basis": (successful_risk_factors[0]
+                                  if greeks_compatible else None),
+            "reason": aggregation_reason,
+        },
+        "total_value": total_value if aggregation_compatible else None,
+        "greeks": ([aggregate[key] for key in sorted(aggregate)]
+                   if greeks_compatible else []),
+        "legs": priced_legs,
+        "errors": errors,
+    }
 
 
 # ── trade capture: workstation values -> portfolio Position ─────────
@@ -2423,6 +2901,16 @@ def ladder_ws(svc, snapshot, product_id: str, engine_id: str | None, params: dic
             "value": value,
             "pnl": (value - base_value) if (value is not None and base_value is not None)
                    else None,
+            "greeks": {
+                item["key"]: item["value"]
+                for item in r.get("greeks") or []
+                if (isinstance(item, dict)
+                    and isinstance(item.get("key"), str)
+                    and item["key"].lower() not in {"stderr", "std_error"}
+                    and isinstance(item.get("value"), Real)
+                    and not isinstance(item.get("value"), bool)
+                    and math.isfinite(float(item["value"])))
+            },
             "error": (r.get("errors") or [None])[0],
         })
         if hook is not None:

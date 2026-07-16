@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, FiniteFloat
 
 from api import (
     catalog,
@@ -43,8 +43,14 @@ from api import (
     timeseries,
     volsurface,
 )
-from api import capture_workflow, credit, custom_products, desk, marketrisk, pricing_jobs, pricing_workstation, underlying, xva
+from api import capture_workflow, credit, custom_products, desk, marketrisk, pricing_jobs, pricing_new_risk, pricing_workstation, underlying, xva
 from api.context import CONTEXT
+from api.pricing_new_runs import (
+    PricingNewRunError,
+    PricingNewRunNotFoundError,
+    PricingNewRunService,
+    PricingNewRunStoreError,
+)
 from api.serialization import jsonable
 from services.pricing_service import PricingService
 
@@ -66,6 +72,10 @@ _svc = PricingService(
     allow_non_production_models=True,
     audit=CONTEXT.audit,
 )
+
+# Separate immutable log for the experimental unified worksheet.  The current
+# Pricing screen keeps its existing behaviour; only /pricing-new writes here.
+_pricing_new_runs = PricingNewRunService()
 
 
 _WORKSTATION_ENV_PERMISSIONS = {
@@ -102,6 +112,43 @@ class WsPriceRequest(BaseModel):
     engine: str | None = None
     params: dict[str, float | int | str | None] = {}
     env_id: str | None = None
+
+
+class WsBookLegRequest(BaseModel):
+    id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    product: str = Field(min_length=1)
+    engine: str | None = None
+    risk_factor_id: str | None = None
+    params: dict[str, FiniteFloat | int | str | None] = Field(default_factory=dict)
+    quantity: FiniteFloat = 1.0
+
+
+class WsBookPriceRequest(BaseModel):
+    legs: list[WsBookLegRequest] = Field(default_factory=list, max_length=100)
+    env_id: str | None = None
+
+
+class PricingNewLegRequest(WsBookLegRequest):
+    """Pricing_new adds the explicit P&L currency required by transient risk."""
+
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+
+
+class PricingNewPriceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    legs: list[PricingNewLegRequest] = Field(
+        default_factory=list, min_length=1, max_length=5)
+    env_id: str | None = None
+
+
+class PricingNewRiskRequest(BaseModel):
+    confidence: FiniteFloat = Field(default=0.99, gt=0.0, lt=1.0)
+    window: int = Field(default=500, ge=60, le=10_000)
+    horizon: int = Field(default=1, ge=1, le=250)
+    model: str = "historical_full_reprice"
+    n_sims: int = Field(default=100_000, ge=1_000, le=2_000_000)
+    seed: int = Field(default=42, ge=0, le=2_147_483_647)
 
 
 class ActualPnlPayload(BaseModel):
@@ -207,6 +254,17 @@ def _workstation_runtime(env_id: str | None):
     return env, snapshot, _workstation_service(env), curve_ids, surface_ids
 
 
+class _SnapshotContext:
+    """Delegate to AppContext while pinning one request-local snapshot."""
+
+    def __init__(self, base, snapshot):
+        self._base = base
+        self.snapshot = snapshot
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
+
+
 # ── universal pricing workstation ────────────────────────
 @app.get("/pricing/catalogue")
 def ws_catalogue() -> dict:
@@ -253,6 +311,119 @@ def ws_price(req: WsPriceRequest) -> dict:
     return jsonable(result)
 
 
+@app.post("/pricing/book/price")
+def ws_book_price(req: WsBookPriceRequest) -> dict:
+    """Value and net a multi-instrument pricing book on one frozen runtime."""
+    try:
+        env, snapshot, ws_service, curve_ids, surface_ids = _workstation_runtime(
+            req.env_id
+        )
+        result = pricing_workstation.price_book_ws(
+            ws_service, snapshot,
+            [leg.model_dump() for leg in req.legs],
+            env=env, curve_ids=curve_ids, surface_ids=surface_ids,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return jsonable(result)
+
+
+# ── Pricing_new: one named worksheet, immutable history and transient risk ──
+@app.post("/pricing-new/runs/price")
+def pricing_new_price(req: PricingNewPriceRequest) -> dict:
+    """Price 1–5 editable legs on one frozen runtime and persist the exact run."""
+    try:
+        env, snapshot, ws_service, curve_ids, surface_ids = _workstation_runtime(
+            req.env_id
+        )
+        request_payload = req.model_dump(mode="json", exclude={"name"})
+        result = pricing_workstation.price_book_ws(
+            ws_service,
+            snapshot,
+            request_payload["legs"],
+            env=env,
+            curve_ids=curve_ids,
+            surface_ids=surface_ids,
+        )
+        record = _pricing_new_runs.save_run(
+            name=req.name,
+            request=request_payload,
+            result=jsonable(result),
+        )
+        return jsonable(record.as_dict())
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except (PricingNewRunError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except PricingNewRunStoreError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.get("/pricing-new/runs")
+def pricing_new_history(limit: int = 50, offset: int = 0) -> dict:
+    try:
+        return {
+            "runs": [row.as_dict() for row in _pricing_new_runs.list_runs(
+                limit=limit, offset=offset)]
+        }
+    except PricingNewRunError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except PricingNewRunStoreError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.get("/pricing-new/runs/{run_id}")
+def pricing_new_run(run_id: str) -> dict:
+    try:
+        return jsonable(_pricing_new_runs.get_run(run_id).as_dict())
+    except PricingNewRunNotFoundError:
+        raise HTTPException(status_code=404, detail=f"unknown Pricing_new run '{run_id}'")
+    except PricingNewRunStoreError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.get("/pricing-new/runs/{run_id}/risk/capabilities")
+def pricing_new_risk_capabilities(run_id: str) -> dict:
+    try:
+        record = _pricing_new_runs.get_run(run_id)
+        return jsonable(pricing_new_risk.evaluate_book_capabilities(
+            record.request.get("legs") or []))
+    except PricingNewRunNotFoundError:
+        raise HTTPException(status_code=404, detail=f"unknown Pricing_new run '{run_id}'")
+    except pricing_new_risk.PricingNewRiskError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_dict())
+
+
+@app.post("/pricing-new/runs/{run_id}/risk")
+def pricing_new_run_risk(run_id: str, req: PricingNewRiskRequest) -> dict:
+    """VaR/ES for exactly the saved worksheet, never the global portfolio."""
+    try:
+        record = _pricing_new_runs.get_run(run_id)
+        env_id = record.request.get("env_id")
+        _env, snapshot, _service, _curves, _surfaces = _workstation_runtime(env_id)
+        result = pricing_new_risk.calculate_transient_book_risk(
+            _SnapshotContext(CONTEXT, snapshot),
+            record.request.get("legs") or [],
+            confidence=req.confidence,
+            window=req.window,
+            horizon=req.horizon,
+            model=req.model,
+            n_sims=req.n_sims,
+            seed=req.seed,
+        )
+        result["pricing_run_id"] = record.run_id
+        result["pricing_run_name"] = record.name
+        return jsonable(result)
+    except PricingNewRunNotFoundError:
+        raise HTTPException(status_code=404, detail=f"unknown Pricing_new run '{run_id}'")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except pricing_new_risk.PricingNewRiskError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_dict())
+
+
 # ── pricing environments (A1: FO / Risk / EOD / VaR / Stress контуры) ──
 @app.get("/environments")
 def environments_list() -> dict:
@@ -296,6 +467,37 @@ def environments_delete(env_id: str) -> dict:
 def ws_underlying(category: str, secid: str) -> dict:
     try:
         return jsonable(underlying.facts(CONTEXT, category, secid))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/pricing-new/underlying/{env_id}/{category}/{secid}")
+def pricing_new_underlying(env_id: str, category: str, secid: str) -> dict:
+    """Environment-pinned market autofill with visible snapshot evidence."""
+    try:
+        _env, snapshot, _service, _curves, _surfaces = _workstation_runtime(env_id)
+        payload = underlying.facts(_SnapshotContext(CONTEXT, snapshot), category, secid)
+        snapshot_id = str(getattr(snapshot, "snapshot_id", "") or "")
+        # Instrument entities carry the latest quote.  Where the store exposes
+        # an explicit snapshot quote, pin the displayed spot to the exact
+        # pricing environment instead of mixing it with the latest entity row.
+        if category == "equities":
+            spot = CONTEXT.market_db.get_equity_spot(snapshot_id, secid)
+            if spot is not None:
+                payload["facts"]["spot"] = float(spot)
+        elif category == "bonds":
+            quote = CONTEXT.market_db.get_bond_quote(snapshot_id, secid) or {}
+            clean = quote.get("clean_price")
+            if clean is not None:
+                payload["facts"]["spot"] = float(clean)
+        payload.update({
+            "snapshot_id": snapshot_id,
+            "market_data_source": str(getattr(snapshot, "source", "") or ""),
+            "market_data_quality": str(getattr(snapshot, "quality", "") or ""),
+        })
+        return jsonable(payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -582,12 +784,15 @@ class CustomActionRequest(BaseModel):
 
 
 class CustomPriceRequest(BaseModel):
-    slots: dict[str, float] = {}
+    slots: dict[str, FiniteFloat] = {}
     # scalar r/sigma/q/rho, per-asset sigmas/qs lists, corr matrix
-    market: dict[str, float | list[float] | list[list[float]]] = {}
-    n_sims: int = 50_000
-    steps: int = 252
-    seed: int = 42
+    market: dict[
+        str,
+        FiniteFloat | list[FiniteFloat] | list[list[FiniteFloat]],
+    ] = {}
+    n_sims: int = Field(default=50_000, ge=1_000, le=200_000, strict=True)
+    steps: int = Field(default=252, ge=16, le=1_024, strict=True)
+    seed: int = Field(default=42, ge=0, le=2_147_483_647, strict=True)
 
 
 def _custom(fn):

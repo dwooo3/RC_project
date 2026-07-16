@@ -168,11 +168,27 @@ def test_price_rejects_wrong_sigma_vector_and_bad_corr():
     with pytest.raises(ValueError, match="sigmas"):
         price_definition(defn, {}, {"r": 0.05, "sigmas": [0.3]},
                          n_sims=1000, steps=16)
-    with pytest.raises(ValueError, match="положительно определена"):
+    with pytest.raises(ValueError, match="диапазоне"):
         price_definition(defn, {},
                          {"r": 0.05, "sigmas": [0.3, 0.3],
                           "corr": [[1.0, 2.0], [2.0, 1.0]]},
                          n_sims=1000, steps=16)
+    with pytest.raises(ValueError, match="симметричной"):
+        price_definition(defn, {},
+                         {"r": 0.05, "sigmas": [0.3, 0.3],
+                          "corr": [[1.0, 0.9], [0.0, 1.0]]},
+                         n_sims=1000, steps=16)
+    with pytest.raises(ValueError, match="диагональ"):
+        price_definition(defn, {},
+                         {"r": 0.05, "sigmas": [0.3, 0.3],
+                          "corr": [[0.8, 0.2], [0.2, 1.0]]},
+                         n_sims=1000, steps=16)
+    with pytest.raises(ValueError, match="конечным"):
+        price_definition(defn, {}, {"r": float("nan")},
+                         n_sims=1000, steps=16)
+    with pytest.raises(ValueError, match="seed"):
+        price_definition(defn, {}, {"r": 0.05},
+                         n_sims=1000, steps=16, seed=2_147_483_648)
 
 
 def test_seeding_is_idempotent_and_adds_missing_templates(tmp_path):

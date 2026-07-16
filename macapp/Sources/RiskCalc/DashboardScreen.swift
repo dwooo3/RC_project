@@ -27,8 +27,9 @@ struct DashboardScreen: View {
                     sub: "99% · 1d", accent: Theme.warning, icon: "waveform.path.ecg"),
             KPICard(label: "Key rate", value: d.market.keyRate.map { Fmt.percent($0, digits: 2) } ?? "—",
                     sub: "CBR", accent: Theme.bucketColor("Rates"), icon: "percent"),
-            KPICard(label: "Models", value: "\(validated)/\(d.governance.total)",
-                    sub: "validated", accent: Theme.positive, icon: "checkmark.seal.fill"),
+            KPICard(label: "Components", value: "\(validated)/\(d.governance.total)",
+                    sub: "legacy Validated status", accent: Theme.positive,
+                    icon: "checkmark.seal.fill"),
         ])
 
         HStack(alignment: .top, spacing: Theme.s4) {
@@ -85,7 +86,7 @@ struct DashboardScreen: View {
     private func governanceCard(_ g: GovernanceMini) -> some View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.s3) {
-                BlockTitle("Model governance", icon: "checkmark.seal")
+                BlockTitle("Implementation component status", icon: "checkmark.seal")
                 StatusBar(counts: g.counts)
                 HStack(spacing: Theme.s2) {
                     ForEach(["Validated", "Approximation", "Prototype", "Placeholder", "Broken"], id: \.self) { s in

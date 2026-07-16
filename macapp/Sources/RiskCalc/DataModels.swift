@@ -288,13 +288,66 @@ struct ScenarioRow: Decodable, Sendable, Identifiable {
 
 struct GovernanceData: Decodable, Sendable {
     let counts: [String: Int]
+    /// QW1 separates implementation components from mathematical models,
+    /// numerical solvers and product-qualified engine decisions. Optional so
+    /// archived pre-QW1 payloads still decode.
+    let quantCoverageSummary: QuantCoverageSummary?
     let models: [ModelRow]
     let limitations: [LimitationRow]
     let audit: [AuditRow]
+
+    enum CodingKeys: String, CodingKey {
+        case counts, models, limitations, audit
+        case quantCoverageSummary = "quant_coverage_summary"
+    }
+}
+
+struct QuantCoverageSummary: Decodable, Sendable, Hashable {
+    let schemaVersion: String
+    let componentCount: Int
+    let modelDefinitionCount: Int
+    let canonicalSolverCount: Int
+    let solverDefinitionCount: Int
+    let solverEvidenceCount: Int
+    let publicationCounts: [String: Int]
+    let modelQCounts: [String: Int]
+    let generatedOn: String
+    let workstationSelectorCount: Int
+    let engineEligibilityCount: Int
+    let productionEngineCount: Int
+    let declaredProductionEngineCount: Int?
+    let legacyTransitionEngineCount: Int?
+    let expiredTransitionEngineCount: Int?
+    let independentlyApprovedEngineCount: Int?
+    let researchEngineCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case componentCount = "component_count"
+        case modelDefinitionCount = "model_definition_count"
+        case canonicalSolverCount = "canonical_solver_count"
+        case solverDefinitionCount = "solver_definition_count"
+        case solverEvidenceCount = "solver_evidence_count"
+        case publicationCounts = "publication_counts"
+        case modelQCounts = "model_q_counts"
+        case generatedOn = "generated_on"
+        case workstationSelectorCount = "workstation_selector_count"
+        case engineEligibilityCount = "engine_eligibility_count"
+        case productionEngineCount = "production_engine_count"
+        case declaredProductionEngineCount = "declared_production_engine_count"
+        case legacyTransitionEngineCount = "legacy_transition_engine_count"
+        case expiredTransitionEngineCount = "expired_transition_engine_count"
+        case independentlyApprovedEngineCount = "independently_approved_engine_count"
+        case researchEngineCount = "research_engine_count"
+    }
 }
 
 struct ModelRow: Decodable, Sendable, Identifiable {
     let modelID: String
+    let canonicalComponentID: String?
+    let componentKind: String?
+    let qLevel: String?
+    let implementationScope: String?
     let status: String
     let version: String
     let owner: String
@@ -307,6 +360,10 @@ struct ModelRow: Decodable, Sendable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case modelID = "model_id"
+        case canonicalComponentID = "canonical_component_id"
+        case componentKind = "component_kind"
+        case qLevel = "q_level"
+        case implementationScope = "implementation_scope"
         case status, version, owner, name, domain
         case workflowLayer = "workflow_layer"
         case productionAllowed = "production_allowed"

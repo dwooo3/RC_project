@@ -59,6 +59,24 @@ class Method(str, Enum):
     SIMULATION = "simulation"     # historical / scenario
 
 
+class ComponentKind(str, Enum):
+    """Semantic role of a registered component.
+
+    This is deliberately independent from the legacy ``kind`` returned by
+    :func:`classify`.  The legacy field describes the workflow bucket used by
+    existing clients; this axis answers what the component actually is.
+    """
+
+    STOCHASTIC_MODEL = "stochastic_model"
+    MARKET_MODEL = "market_model"
+    SMILE_PARAMETERIZATION = "smile_parameterization"
+    NUMERICAL_SOLVER = "numerical_solver"
+    CALIBRATION_METHOD = "calibration_method"
+    PRODUCT_PRICER = "product_pricer"
+    RISK_METHODOLOGY = "risk_methodology"
+    MARKET_INFRASTRUCTURE = "market_infrastructure"
+
+
 # model_id -> (asset_class, model_family, method, kind)
 # kind: "pricer" (default) | "risk" | "portfolio" | "market"
 _A, _MF, _M = AssetClass, ModelFamily, Method
@@ -118,7 +136,8 @@ CLASSIFICATION: dict[str, tuple] = {
     "baw": (_A.EQUITY, _MF.ANALYTIC, _M.CLOSED_FORM),        # American approx
     "bjerksund_stensland": (_A.EQUITY, _MF.ANALYTIC, _M.CLOSED_FORM),
     "qmc": (_A.EQUITY, _MF.ANALYTIC, _M.MONTE_CARLO),        # Sobol quasi-MC
-    "adi": (_A.HYBRID, _MF.ANALYTIC, _M.PDE),                # 2-asset ADI PDE
+    "two_asset_adi": (_A.HYBRID, _MF.ANALYTIC, _M.PDE),      # 2-asset ADI PDE
+    "heston_adi": (_A.EQUITY, _MF.STOCH_VOL, _M.PDE),        # Heston (S,v) ADI PDE
     "garch": (_A.EQUITY, _MF.STATISTICAL, _M.CLOSED_FORM),
     # ── Short rate ────────────────────────────────────────
     "short_rate": (_A.RATES, _MF.SHORT_RATE, _M.LATTICE),
@@ -205,7 +224,6 @@ CLASSIFICATION: dict[str, tuple] = {
     "var_mc": (_A.RISK, _MF.STATISTICAL, _M.MONTE_CARLO),
     "evt_var": (_A.RISK, _MF.STATISTICAL, _M.CLOSED_FORM),
     "var_full_reprice": (_A.RISK, _MF.STATISTICAL, _M.SIMULATION),
-    "cva_exposure_risk": (_A.RISK, _MF.REDUCED_FORM, _M.MONTE_CARLO),
     "xva_suite": (_A.RISK, _MF.REDUCED_FORM, _M.MONTE_CARLO),   # M4: full XVA
     "portfolio_aggregation": (_A.PORTFOLIO, _MF.ANALYTIC, _M.CLOSED_FORM),
 }
@@ -213,18 +231,112 @@ CLASSIFICATION: dict[str, tuple] = {
 _RISK_FAMILIES = {AssetClass.RISK, AssetClass.PORTFOLIO, AssetClass.MARKET}
 
 
-def classify(model_id: str) -> dict:
-    """Return {asset_class, model_family, method, kind} for a model id."""
-    entry = CLASSIFICATION.get(model_id)
+# Compatibility aliases are selectors, not registered component identities.
+# ``adi`` historically identified two distinct implementations; new payloads
+# must use the canonical IDs below.  Historical records can be disambiguated by
+# calculation_type while a bare selector retains the former two-asset meaning.
+ID_ALIASES: dict[str, str] = {
+    "adi": "two_asset_adi",
+    "cva_exposure_risk": "cva_exposure",
+}
+
+CALCULATION_TYPE_ALIASES: dict[tuple[str, str], str] = {
+    ("adi", "heston_adi_pricing"): "heston_adi",
+    ("adi", "two_asset_option_pricing"): "two_asset_adi",
+}
+
+
+def canonical_component_id(component_id: str, calculation_type: str | None = None) -> str:
+    """Resolve a public/legacy selector to one canonical component ID."""
+    if calculation_type is not None:
+        resolved = CALCULATION_TYPE_ALIASES.get((component_id, calculation_type))
+        if resolved is not None:
+            component_id = resolved
+    seen: set[str] = set()
+    current = component_id
+    while current in ID_ALIASES:
+        if current in seen:
+            raise ValueError(f"component alias cycle at {current!r}")
+        seen.add(current)
+        current = ID_ALIASES[current]
+    return current
+
+
+# Explicit, exhaustive semantic partition of canonical registry identities.
+# Do not derive this from asset class, numerical method, or validation status:
+# those axes are orthogonal and inference would silently reintroduce ambiguity.
+COMPONENT_GROUPS: dict[ComponentKind, frozenset[str]] = {
+    ComponentKind.STOCHASTIC_MODEL: frozenset({
+        "bachelier", "bates", "bk", "black76", "black_cox", "black_scholes",
+        "cev", "cgmy", "clayton_copula", "displaced_diffusion", "g2pp", "garch",
+        "garman_kohlhagen", "gaussian_copula", "gibson_schwartz", "heston_cf",
+        "kmv", "kou", "lognormal_mixture", "merton_jump", "merton_structural",
+        "nig", "pilipovic", "rough_bergomi", "schwartz_smith", "short_rate",
+        "t_copula", "variance_gamma",
+    }),
+    ComponentKind.MARKET_MODEL: frozenset({"cheyette", "lmm", "swap_market_model"}),
+    ComponentKind.SMILE_PARAMETERIZATION: frozenset({"fx_smile", "sabr", "vanna_volga"}),
+    ComponentKind.NUMERICAL_SOLVER: frozenset({
+        "amc", "binomial_crr", "binomial_jr", "binomial_lr", "binomial_tian",
+        "carr_madan", "heston_adi", "local_vol_mc", "mc_gbm", "mc_heston",
+        "mc_heston_qe", "mc_lsm", "merton_cos", "pde_cn", "qmc", "trinomial",
+        "two_asset_adi",
+    }),
+    ComponentKind.CALIBRATION_METHOD: frozenset(),
+    ComponentKind.PRODUCT_PRICER: frozenset({
+        "abs", "accumulator", "afv_convertible", "amortizing_bond", "asian",
+        "asset_swap", "barrier", "basis_swap", "baw", "bermudan_swaption",
+        "bjerksund_stensland", "bond_future", "callable_bond", "capfloor", "cds",
+        "cds_curve", "cds_index", "cds_index_option", "cds_isda", "cln_ftd",
+        "cms_swap", "commercial_paper", "convertible_bond", "custom_bond", "digital",
+        "discrete_div_bsm", "dividend_swap", "equity_forward", "equity_future",
+        "equity_swap", "fixed_bond", "fra", "frn", "fx_forward",
+        "inflation_linked_bond", "inflation_swap", "irs", "lookback", "mbs",
+        "mm_deposit", "multi_asset", "ndf", "perpetual_bond", "repo", "risky_bond",
+        "step_bond", "stir_future", "structured_autocall", "structured_basket_note",
+        "swaption", "tarn", "term_deposit", "treasury_bill", "variance_swap",
+        "warrant", "xccy_swap",
+    }),
+    ComponentKind.RISK_METHODOLOGY: frozenset({
+        "copula_var", "cva_dva", "cva_exposure", "cva_wwr", "evt_var", "frtb_ima",
+        "frtb_sba", "portfolio_aggregation", "var_full_reprice", "var_historical",
+        "var_mc", "var_parametric", "xva_suite",
+    }),
+    ComponentKind.MARKET_INFRASTRUCTURE: frozenset({
+        "commodity_seasonal", "jarrow_yildirim", "swaption_cube", "xccy_curve",
+    }),
+}
+
+
+_COMPONENT_KIND_BY_ID: dict[str, ComponentKind] = {}
+for _component_kind, _component_ids in COMPONENT_GROUPS.items():
+    for _component_id in _component_ids:
+        if _component_id in _COMPONENT_KIND_BY_ID:
+            raise ValueError(f"duplicate component kind for {_component_id!r}")
+        _COMPONENT_KIND_BY_ID[_component_id] = _component_kind
+
+
+def component_kind_for(component_id: str, calculation_type: str | None = None) -> ComponentKind | None:
+    """Return the explicit semantic kind for a canonical or legacy ID."""
+    canonical_id = canonical_component_id(component_id, calculation_type)
+    return _COMPONENT_KIND_BY_ID.get(canonical_id)
+
+
+def classify(model_id: str, calculation_type: str | None = None) -> dict:
+    """Return all taxonomy axes for a canonical or compatibility model ID."""
+    canonical_id = canonical_component_id(model_id, calculation_type)
+    entry = CLASSIFICATION.get(canonical_id)
     if entry is None:
         return {"asset_class": None, "model_family": None,
-                "method": None, "kind": "unknown"}
+                "method": None, "kind": "unknown", "component_kind": None}
     ac, mf, m = entry
     kind = "risk" if ac == AssetClass.RISK else (
         "portfolio" if ac == AssetClass.PORTFOLIO else (
             "market" if ac == AssetClass.MARKET else "pricer"))
+    component_kind = component_kind_for(canonical_id)
     return {"asset_class": ac.value, "model_family": mf.value,
-            "method": m.value, "kind": kind}
+            "method": m.value, "kind": kind,
+            "component_kind": component_kind.value if component_kind else None}
 
 
 def models_by_asset_class(asset_class: str) -> list[str]:
@@ -249,15 +361,16 @@ def pricer_asset_classes() -> list[str]:
 # ── Instrument → applicable engines (one instrument, many engines) ───────
 # Each entry: instrument key -> [engine model_ids], first is the default.
 ENGINES: dict[str, list[str]] = {
-    # european_option: engines with a live service route (M0). mc_heston_qe /
-    # local_vol_mc rejoin once their option wrappers land (M1/M2).
+    # european_option: engines with a live service route. local_vol_mc rejoins
+    # once its governed surface-binding wrapper lands.
     "european_option": ["black_scholes", "binomial_crr", "binomial_lr",
                         "trinomial", "pde_cn", "mc_gbm", "heston_cf",
+                        "mc_heston", "mc_heston_qe",
                         "merton_jump", "bates", "rough_bergomi",
-                        "kou", "variance_gamma", "nig", "cgmy", "qmc"],
+                        "merton_cos", "kou", "variance_gamma", "nig", "cgmy", "qmc"],
     "american_option": ["pde_cn", "binomial_crr", "binomial_lr", "trinomial",
                         "mc_lsm", "baw", "bjerksund_stensland"],
-    "multi_asset_option": ["adi"],
+    "multi_asset_option": ["two_asset_adi"],
     "barrier_option": ["barrier", "pde_cn"],
     "asian_option": ["asian"],
     "digital_option": ["digital"],

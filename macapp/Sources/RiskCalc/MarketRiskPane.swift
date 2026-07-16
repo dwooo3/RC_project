@@ -393,7 +393,7 @@ struct MarketRiskPane: View {
                         Text(b.book).tag(b.book)
                     }
                 }
-                .pickerStyle(.menu).fixedSize()
+                .pickerStyle(.menu).neutralControlTint().fixedSize()
                 .help("Срез VaR по книге (полная переоценка без кэша)")
             }
             Button {

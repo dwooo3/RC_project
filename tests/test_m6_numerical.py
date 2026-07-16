@@ -92,8 +92,8 @@ def test_m6_wired():
     assert "baw" in tax.engines_for("american_option")
     assert "bjerksund_stensland" in tax.engines_for("american_option")
     assert "qmc" in tax.engines_for("european_option")
-    assert "adi" in tax.engines_for("multi_asset_option")
-    for mid in ("baw", "bjerksund_stensland", "qmc", "adi"):
+    assert "two_asset_adi" in tax.engines_for("multi_asset_option")
+    for mid in ("baw", "bjerksund_stensland", "qmc", "two_asset_adi"):
         assert R.MODEL_REGISTRY[mid]["status"].value in ("Approximation", "Validated")
         assert tax.classify(mid)["asset_class"] in ("equity", "hybrid")
 
@@ -109,4 +109,5 @@ def test_m6_service_routes():
     assert qm["errors"] == [] and qm["value"] > 0 and qm["model_id"] == "qmc"
     ad = svc.price_two_asset_option(100, 100, 1.0, 0.04, 0.02, 0.03, 0.25, 0.30, 0.3,
                                     N1=60, N2=60, Nt=60)
-    assert ad["errors"] == [] and ad["value"] > 0 and ad["model_id"] == "adi"
+    assert ad["errors"] == [] and ad["value"] > 0
+    assert ad["model_id"] == "two_asset_adi"

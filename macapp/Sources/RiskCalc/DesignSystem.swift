@@ -6,17 +6,33 @@ extension View {
     /// The app's single card look — Liquid Glass on macOS 26 (matching the
     /// toolbar pill), a soft floating panel as the fallback. Used by every
     /// card/panel for consistency.
+    ///
+    /// The glass carries a `cardFill` tint: untinted `.regular` glass samples
+    /// whatever sits behind each card, so panels drift apart in tone and go
+    /// nearly invisible when the window resigns key (worst in dark mode).
+    /// Tinting pins every surface to the same base while keeping the glass
+    /// edge lensing and highlights.
     @ViewBuilder
     func cardSurface(cornerRadius: CGFloat = Theme.cardRadius) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         if #available(macOS 26.0, *) {
-            self.glassEffect(.regular, in: shape)
+            self.glassEffect(.regular.tint(Theme.cardFill.opacity(0.6)), in: shape)
         } else {
             self.background(Theme.cardFill, in: shape)
                 .shadow(color: Theme.cardShadow, radius: 16, x: 0, y: 6)
                 .shadow(color: Theme.cardContactShadow, radius: 1.5, x: 0, y: 1)
         }
     }
+}
+
+// MARK: - Control tint (macOS 27 workaround)
+
+extension View {
+    /// macOS 27 (beta) started painting menu-picker labels with the window
+    /// tint, so every dropdown went brand-orange. Pin the control back to the
+    /// neutral label colour; effectively a no-op on macOS 26 where menu
+    /// labels were neutral already.
+    func neutralControlTint() -> some View { self.tint(Color.primary) }
 }
 
 // MARK: - Segmented control
@@ -227,7 +243,7 @@ struct SourceBadge: View {
             Text(label).font(Typography.caption).foregroundStyle(.secondary)
         }
         .padding(.horizontal, Theme.s3).padding(.vertical, Theme.s2)
-        .background(.regularMaterial, in: Capsule())
+        .background(Color.primary.opacity(0.06), in: Capsule())
     }
 }
 

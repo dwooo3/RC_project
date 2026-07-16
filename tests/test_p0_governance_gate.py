@@ -24,7 +24,7 @@ def _entry(status, *, tests=None, production_allowed=None) -> dict:
 
 
 def test_approximation_is_not_production_allowed_by_implicit_fallback(monkeypatch):
-    model_id = "p0_approximation_default"
+    model_id = "warrant"
     monkeypatch.setitem(
         registry.MODEL_REGISTRY,
         model_id,
@@ -43,7 +43,7 @@ def test_approximation_is_not_production_allowed_by_implicit_fallback(monkeypatc
 
 
 def test_approximation_can_only_be_enabled_by_explicit_registry_override(monkeypatch):
-    model_id = "p0_approximation_explicit"
+    model_id = "equity_swap"
     monkeypatch.setitem(
         registry.MODEL_REGISTRY,
         model_id,
@@ -82,7 +82,7 @@ def test_pricing_service_requires_explicit_analytical_opt_in_for_approximation()
 
 
 def test_analytics_lab_membership_cannot_be_overridden_in_entry(monkeypatch):
-    model_id = "p0_research_invariant"
+    model_id = "heston_cf"
     monkeypatch.setitem(
         registry.MODEL_REGISTRY,
         model_id,
@@ -91,26 +91,18 @@ def test_analytics_lab_membership_cannot_be_overridden_in_entry(monkeypatch):
             production_allowed=True,
         ) | {"workflow_layer": "Production", "analytics_lab_only": False},
     )
-    monkeypatch.setattr(
-        registry,
-        "ANALYTICS_LAB_MODELS",
-        {*registry.ANALYTICS_LAB_MODELS, model_id},
-    )
-
     entry = registry.get(model_id)
 
     assert entry["workflow_layer"] == "Research"
     assert entry["analytics_lab_only"] is True
     assert entry["production_allowed"] is False
-    with pytest.raises(ValueError, match="allow_analytics_lab=True"):
-        GovernanceService().enforce_model(model_id)
-    assert GovernanceService().enforce_model(
-        model_id, allow_analytics_lab=True).model_id == model_id
+    with pytest.raises(RuntimeError, match="production-allowed"):
+        GovernanceService()
 
 
 def test_production_models_follow_normalized_registry_not_legacy_allowlist(
         monkeypatch):
-    model_id = "p0_validated_production"
+    model_id = "fixed_bond"
     monkeypatch.setitem(
         registry.MODEL_REGISTRY,
         model_id,
@@ -171,15 +163,12 @@ def test_validation_gate_rejects_missing_evidence_file(monkeypatch):
 
 
 def test_validation_gate_accepts_existing_pytest_node_selector(monkeypatch):
-    model_id = "p0_validated_with_node_selector"
+    # Use a canonical component: the QW1 consistency gate correctly rejects
+    # ad-hoc Validated IDs that are absent from taxonomy/definitions.
+    model_id = "black_scholes"
     selector = (
         "tests/test_p0_governance_gate.py::"
         "test_validation_gate_accepts_existing_pytest_node_selector"
-    )
-    monkeypatch.setitem(
-        validation_program.MODEL_REGISTRY,
-        model_id,
-        _entry(registry.ModelStatus.VALIDATED),
     )
     monkeypatch.setitem(validation_program.TEST_MAP, model_id, [selector])
 

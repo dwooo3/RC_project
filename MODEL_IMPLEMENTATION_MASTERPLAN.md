@@ -158,7 +158,8 @@ ParameterSpec (автоконвертер). Все 586 тестов остают
 - t-copula / Clayton / Marshall-Olkin; base correlation для траншей.
 
 ### M8 — Прочее / нишевое — по запросу
-- Convertible AFV (Ayache-Forsyth-Vetzal PDE с кредитом).
+- Convertible Ayache-Forsyth-Vetzal PDE с кредитом — ещё не реализован;
+  legacy `afv_convertible` содержит Andersen-Buffum-style equity-linked hazard CRR.
 - MBS/prepayment (PSA/OAS) — нужен источник пулов.
 - FRTB SA + IMA, регуляторный капитал.
 - Displaced diffusion, CEV, discrete-dividend Merton.

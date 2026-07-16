@@ -11,7 +11,7 @@ struct StatusChip: View {
             .padding(.horizontal, Theme.s2)
             .padding(.vertical, 2)
             .background(Theme.statusColor(status).opacity(0.14), in: Capsule())
-            .accessibilityLabel("Model status \(status)")
+            .accessibilityLabel("Registry status \(status)")
     }
 }
 
@@ -107,7 +107,7 @@ struct ChoiceField: View {
             }
             .labelsHidden()
             .fixedSize()
-            .pickerStyle(.menu)
+            .pickerStyle(.menu).neutralControlTint()
         }
     }
 }

@@ -129,12 +129,18 @@ def risk(ctx) -> dict:
 def governance(ctx) -> dict:
     gs = ctx.governance
     return {
-        "counts": _safe(gs.status_counts, {}),
-        "models": _safe(gs.list_models, []),
-        "validation": _safe(gs.validation_status, []),
-        "limitations": _safe(gs.limitations_report, []),
+        "counts": gs.status_counts(),
+        "quant_coverage_summary": gs.quant_coverage_summary(),
+        "models": gs.list_models(),
+        "validation": gs.validation_status(),
+        "limitations": gs.limitations_report(),
         "audit": _safe(lambda: gs.audit_trail()[:40], []),
     }
+
+
+def quant_governance(ctx) -> dict:
+    """QW1 separated model/solver/eligibility/publication contract."""
+    return ctx.governance.quant_coverage()
 
 
 def analytics(ctx) -> dict:
@@ -151,7 +157,7 @@ def dashboard(ctx) -> dict:
     val = ps.value()
     overview = _safe(lambda: mv.market_overview(ctx.market_db, ctx.snapshot), {})
     var = ctx.parametric_var(0.99, 1)
-    counts = _safe(ctx.governance.status_counts, {})
+    counts = ctx.governance.status_counts()
     return {
         "snapshot": snapshot_meta(ctx),
         "portfolio": {

@@ -39,6 +39,11 @@ def test_merton_cos_matches_series():
 
 # ── Degenerate limits -> BSM ─────────────────────────────
 
+def test_merton_cos_lambda_zero_is_bsm():
+    assert L.merton_cos(S, K, T, r, SIG, q, lam=0.0)["price"] == pytest.approx(
+        BSM, abs=1e-6)
+
+
 def test_kou_lambda_zero_is_bsm():
     assert L.kou_price(S, K, T, r, SIG, q, lam=0.0)["price"] == pytest.approx(BSM, abs=1e-3)
 
@@ -51,6 +56,7 @@ def test_vg_nu_to_zero_is_bsm():
 # ── Put-call parity (all Lévy) ───────────────────────────
 
 @pytest.mark.parametrize("name,fn", [
+    ("merton_cos", lambda o: L.merton_cos(S, K, T, r, SIG, q, opt=o)["price"]),
     ("kou", lambda o: L.kou_price(S, K, T, r, SIG, q, opt=o)["price"]),
     ("vg", lambda o: L.vg_price(S, K, T, r, SIG, q, opt=o)["price"]),
     ("nig", lambda o: L.nig_price(S, K, T, r, 15.0, -5.0, 0.5, q, o)["price"]),

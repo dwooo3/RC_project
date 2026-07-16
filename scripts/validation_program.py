@@ -34,6 +34,7 @@ TEST_MAP: dict[str, list[str]] = {
     "lookback": ["tests/test_validation_identities.py"],
     "variance_swap": ["tests/test_validation_identities.py"],
     "merton_jump": ["tests/test_validation_identities.py"],
+    "merton_cos": ["tests/test_m1_levy_fourier.py"],
     "heston_cf": ["tests/test_m1_levy_fourier.py", "tests/test_validation_identities.py"],
     "fixed_bond": ["tests/test_fixed_income_pricing_service.py",
                    "tests/test_fi_production_validation.py"],
@@ -58,7 +59,8 @@ TEST_MAP: dict[str, list[str]] = {
     "baw": ["tests/test_m6_numerical.py"],
     "bjerksund_stensland": ["tests/test_m6_numerical.py"],
     "qmc": ["tests/test_m6_numerical.py"],
-    "adi": ["tests/test_m6_numerical.py"],
+    "two_asset_adi": ["tests/test_m6_numerical.py"],
+    "heston_adi": ["tests/test_task3_calibration_numerical.py"],
     "merton_structural": ["tests/test_m7_credit.py"],
     "gaussian_copula": ["tests/test_m7_credit.py"],
     "afv_convertible": ["tests/test_m8_niche.py"],
@@ -279,7 +281,8 @@ PROMOTED_BATCH_3 = [
 PROMOTED_BATCH_2 = [
     "binomial_crr", "pde_cn", "bates", "kou", "variance_gamma", "nig", "cgmy",
     "mc_gbm", "local_vol_mc", "rough_bergomi", "lmm", "bk", "cheyette",
-    "xccy_curve", "amc", "baw", "bjerksund_stensland", "qmc", "adi", "cds",
+    "xccy_curve", "amc", "baw", "bjerksund_stensland", "qmc",
+    "two_asset_adi", "heston_adi", "merton_cos", "cds",
     "cds_curve", "risky_bond", "merton_structural", "gaussian_copula",
     "schwartz_smith", "gibson_schwartz", "convertible_bond", "afv_convertible",
     "mbs", "inflation_linked_bond", "inflation_swap", "capfloor", "basis_swap",
@@ -319,7 +322,27 @@ def check_consistency() -> list[str]:
     нужен непустой ``TEST_MAP`` и каждый указанный pytest-файл должен
     существовать. Это не даёт gate пройти с нейтральным ``None``.
     """
-    problems = []
+    from api.pricing_workstation import PRODUCTS
+    from models.engine_eligibility import eligibility_consistency_errors
+    from models.quant_definitions import definition_consistency_errors
+    from models.registry import consistency_errors as registry_consistency_errors
+
+    problems = [
+        *(f"component-ledger: {item}" for item in registry_consistency_errors()),
+        *(f"quant-definitions: {item}" for item in definition_consistency_errors()),
+    ]
+    bindings = []
+    for product in PRODUCTS:
+        for engine in product.engines:
+            defaults = {
+                spec.key: spec.default
+                for spec in product.params_for(engine, [], [])
+            }
+            bindings.append((product.id, engine.id, engine.model_id, defaults))
+    problems.extend(
+        f"engine-eligibility: {item}"
+        for item in eligibility_consistency_errors(bindings)
+    )
     for mid, entry in MODEL_REGISTRY.items():
         if entry["status"] != ModelStatus.VALIDATED:
             continue

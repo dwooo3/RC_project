@@ -2,6 +2,12 @@ import Foundation
 
 struct Governance: Decodable, Hashable, Sendable {
     let status: String
+    let canonicalComponentID: String?
+    let requestedComponentID: String?
+    let deprecatedAlias: Bool?
+    let componentKind: String?
+    let qLevel: String?
+    let implementationScope: String?
     let assetClass: String
     let modelFamily: String
     let method: String
@@ -11,6 +17,12 @@ struct Governance: Decodable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case status, method, notes
+        case canonicalComponentID = "canonical_component_id"
+        case requestedComponentID = "requested_component_id"
+        case deprecatedAlias = "deprecated_alias"
+        case componentKind = "component_kind"
+        case qLevel = "q_level"
+        case implementationScope = "implementation_scope"
         case assetClass = "asset_class"
         case modelFamily = "model_family"
         case productionAllowed = "production_allowed"

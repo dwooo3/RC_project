@@ -362,6 +362,10 @@ struct WsLadderRow: Decodable, Sendable, Hashable {
     let value: Double?
     let pnl: Double?
     let error: String?
+    /// Additive profile payload returned by the same full revaluation.  Each
+    /// key is a normalized Greek (`delta`, `gamma`, `vega`, ...), allowing the
+    /// workstation to draw Greek curves without a second, inconsistent run.
+    let greeks: [String: Double]?
 }
 
 struct WsLadder: Decodable, Sendable {
@@ -455,6 +459,28 @@ struct UnderlyingFacts: Decodable, Sendable {
     let label: String
     let currency: String?
     let facts: [String: Double?]
+    let snapshotID: String?
+    let marketDataSource: String?
+    let marketDataQuality: String?
+
+    enum CodingKeys: String, CodingKey {
+        case secid, category, label, currency, facts
+        case snapshotID = "snapshot_id"
+        case marketDataSource = "market_data_source"
+        case marketDataQuality = "market_data_quality"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        secid = try c.decode(String.self, forKey: .secid)
+        category = try c.decode(String.self, forKey: .category)
+        label = try c.decode(String.self, forKey: .label)
+        currency = try c.decodeIfPresent(String.self, forKey: .currency)
+        facts = try c.decode([String: Double?].self, forKey: .facts)
+        snapshotID = try c.decodeIfPresent(String.self, forKey: .snapshotID)
+        marketDataSource = try c.decodeIfPresent(String.self, forKey: .marketDataSource)
+        marketDataQuality = try c.decodeIfPresent(String.self, forKey: .marketDataQuality)
+    }
 }
 
 // MARK: - Bridge calls
@@ -832,6 +858,11 @@ extension BridgeClient {
 
     func underlyingFacts(category: String, secid: String) async throws -> UnderlyingFacts {
         try await get("pricing/underlying/\(category)/\(secid)")
+    }
+
+    func pricingNewUnderlyingFacts(environment: String, category: String,
+                                   secid: String) async throws -> UnderlyingFacts {
+        try await get("pricing-new/underlying/\(environment)/\(category)/\(secid)")
     }
 
     func grid2d(product: String, engine: String, params: [String: BridgeValue],

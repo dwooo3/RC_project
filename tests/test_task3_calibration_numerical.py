@@ -149,10 +149,17 @@ def test_task3_service_routes():
     from services.pricing_service import PricingService
     from services.risk_service import RiskService
     ps = PricingService()
-    # Heston ADI engine
-    h = ps.price_heston_adi(100, 100, 1.0, 0.03, 0.0, 0.04, 1.5, 0.04, 0.3, -0.6,
-                            NS=80, Nv=40, Nt=50)
-    assert h["errors"] == [] and h["value"] > 0 and h["model_id"] == "adi"
+    # Heston ADI has its own canonical identity and is Analytics-Lab gated.
+    blocked = ps.price_heston_adi(
+        100, 100, 1.0, 0.03, 0.0, 0.04, 1.5, 0.04, 0.3, -0.6,
+        NS=80, Nv=40, Nt=50)
+    assert blocked["value"] is None
+    assert any("allow_analytics_lab=True" in error for error in blocked["errors"])
+    h = PricingService(allow_analytics_lab=True).price_heston_adi(
+        100, 100, 1.0, 0.03, 0.0, 0.04, 1.5, 0.04, 0.3, -0.6,
+        NS=80, Nv=40, Nt=50)
+    assert h["errors"] == [] and h["value"] > 0
+    assert h["model_id"] == "heston_adi"
     # commodity calibration
     from models.commodity import SchwartzSmith
     true = SchwartzSmith(chi0=0.05, xi0=np.log(55), kappa=1.2, sigma_chi=0.3,

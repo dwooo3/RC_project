@@ -30,12 +30,20 @@ struct BondInstrument: Decodable, Sendable, Identifiable, Hashable {
 
 struct BondGovernance: Decodable, Sendable, Hashable {
     let status: String
+    let canonicalComponentID: String?
+    let componentKind: String?
+    let qLevel: String?
+    let implementationScope: String?
     let assetClass: String
     let method: String
     let notes: String
 
     enum CodingKeys: String, CodingKey {
         case status, method, notes
+        case canonicalComponentID = "canonical_component_id"
+        case componentKind = "component_kind"
+        case qLevel = "q_level"
+        case implementationScope = "implementation_scope"
         case assetClass = "asset_class"
     }
 }

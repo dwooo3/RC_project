@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 
 GROUPS = ("contract", "market", "model", "numerical")
+PARAMETER_SCHEMA_VERSION = "1.0.0"
 
 
 @dataclass
@@ -87,6 +88,16 @@ def _pde_specs() -> list[ParameterSpec]:
     ]
 
 
+def _heston_specs() -> list[ParameterSpec]:
+    return [
+        P("v0", "Initial variance v0", 0.04, "model", minimum=1e-4, maximum=2.0),
+        P("kappa", "Mean reversion κ", 1.5, "model", minimum=1e-3, maximum=20.0),
+        P("theta", "Long-run variance θ", 0.04, "model", minimum=1e-4, maximum=2.0),
+        P("xi", "Vol of vol ξ", 0.5, "model", minimum=1e-3, maximum=3.0),
+        P("rho", "Spot-vol corr ρ", -0.6, "model", minimum=-0.999, maximum=0.999),
+    ]
+
+
 # ── Engine parameter library: model_id -> [ParameterSpec] (model+numerical) ──
 ENGINE_PARAMS: dict[str, list[ParameterSpec]] = {
     "black_scholes": [],
@@ -105,19 +116,18 @@ ENGINE_PARAMS: dict[str, list[ParameterSpec]] = {
         P("xi", "Vol of vol ξ", 0.5, "model", minimum=1e-3, maximum=3.0),
         P("rho", "Spot-vol corr ρ", -0.6, "model", minimum=-0.999, maximum=0.999),
     ],
-    "mc_heston_qe": [
-        P("v0", "Initial variance v0", 0.04, "model", minimum=1e-4, maximum=2.0),
-        P("kappa", "Mean reversion κ", 1.5, "model", minimum=1e-3, maximum=20.0),
-        P("theta", "Long-run variance θ", 0.04, "model", minimum=1e-4, maximum=2.0),
-        P("xi", "Vol of vol ξ", 0.5, "model", minimum=1e-3, maximum=3.0),
-        P("rho", "Spot-vol corr ρ", -0.6, "model", minimum=-0.999, maximum=0.999),
-        P("scheme", "MC scheme", "qe", "numerical", dtype="choice", choices=["qe", "euler"]),
-        *_mc_specs(100_000, 100),
-    ],
+    "mc_heston": [*_heston_specs(), *_mc_specs(100_000, 100)],
+    "mc_heston_qe": [*_heston_specs(), *_mc_specs(100_000, 100)],
     "merton_jump": [
         P("lam", "Jump intensity λ", 0.3, "model", minimum=0.0, maximum=10.0),
         P("mu_j", "Mean jump μ_J", -0.10, "model", minimum=-1.0, maximum=1.0),
         P("delta_j", "Jump vol δ_J", 0.15, "model", minimum=1e-3, maximum=2.0),
+    ],
+    "merton_cos": [
+        P("lam", "Jump intensity λ", 0.3, "model", minimum=0.0, maximum=10.0),
+        P("mu_j", "Mean jump μ_J", -0.10, "model", minimum=-1.0, maximum=1.0),
+        P("delta_j", "Jump vol δ_J", 0.15, "model", minimum=1e-3, maximum=2.0),
+        P("N", "COS terms", 256, "numerical", dtype="int", minimum=64, maximum=2048),
     ],
     "bates": [
         P("v0", "Initial variance v0", 0.04, "model", minimum=1e-4, maximum=2.0),
@@ -239,10 +249,20 @@ ENGINE_PARAMS: dict[str, list[ParameterSpec]] = {
         P("n", "Sobol paths", 16384, "numerical", dtype="int",
           minimum=256, maximum=2**20),
     ],
-    "adi": [
+    "two_asset_adi": [
         P("N1", "S1 grid steps", 80, "numerical", dtype="int", minimum=20, maximum=400),
         P("N2", "S2 grid steps", 80, "numerical", dtype="int", minimum=20, maximum=400),
         P("Nt", "Time steps", 100, "numerical", dtype="int", minimum=20, maximum=1000),
+    ],
+    "heston_adi": [
+        P("v0", "Initial variance v0", 0.04, "model", minimum=1e-4, maximum=2.0),
+        P("kappa", "Mean reversion κ", 1.5, "model", minimum=1e-3, maximum=20.0),
+        P("theta", "Long-run variance θ", 0.04, "model", minimum=1e-4, maximum=2.0),
+        P("xi", "Vol of vol ξ", 0.3, "model", minimum=1e-3, maximum=3.0),
+        P("rho", "Spot-vol corr ρ", -0.6, "model", minimum=-0.999, maximum=0.999),
+        P("NS", "Spot grid steps", 160, "numerical", dtype="int", minimum=40, maximum=800),
+        P("Nv", "Variance grid steps", 80, "numerical", dtype="int", minimum=20, maximum=400),
+        P("Nt", "Time steps", 120, "numerical", dtype="int", minimum=20, maximum=2000),
     ],
     "cds_curve": [
         P("recovery", "Recovery rate", 0.4, "model", minimum=0.0, maximum=0.99),
@@ -264,7 +284,8 @@ ENGINE_PARAMS: dict[str, list[ParameterSpec]] = {
 
 def engine_params(engine_id: str) -> list[ParameterSpec]:
     """Model + numerical specs for an engine (empty for plain analytic)."""
-    return list(ENGINE_PARAMS.get(engine_id, []))
+    from models.taxonomy import canonical_component_id
+    return list(ENGINE_PARAMS.get(canonical_component_id(engine_id), []))
 
 
 def specs_by_group(specs: list[ParameterSpec]) -> dict[str, list[ParameterSpec]]:

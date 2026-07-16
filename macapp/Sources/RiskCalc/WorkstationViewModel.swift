@@ -929,14 +929,25 @@ final class WorkstationViewModel {
     }
 
     func selectLadderKey(_ key: String) {
+        guard !key.isEmpty else {
+            ladderKey = nil
+            ladder = nil
+            ladderPartial = []
+            return
+        }
         ladderKey = key
         ladder = nil
+        ladderPartial = []
         let current = numericValues[key] ?? 0
+        let spec = ladderableParams.first { $0.key == key }
         if current == 0 {
-            ladderLo = -1; ladderHi = 1
+            ladderLo = max(spec?.minimum ?? -0.01, -0.01)
+            ladderHi = min(spec?.maximum ?? 0.01, 0.01)
         } else {
-            ladderLo = current * 0.7
-            ladderHi = current * 1.3
+            let rawLo = min(current * 0.7, current * 1.3)
+            let rawHi = max(current * 0.7, current * 1.3)
+            ladderLo = max(spec?.minimum ?? -.infinity, rawLo)
+            ladderHi = min(spec?.maximum ?? .infinity, rawHi)
         }
     }
 

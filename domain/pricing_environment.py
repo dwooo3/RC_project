@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
-PURPOSES = ("fo", "risk", "eod", "var", "stress")
+PURPOSES = ("fo", "risk", "eod", "var", "stress", "research")
 
 # Роли кривых, которые понимают каталог/адаптеры.
 CURVE_ROLES = ("discount", "projection", "real", "credit")
@@ -49,7 +49,7 @@ class PricingEnvironment:
 def default_environments() -> list[PricingEnvironment]:
     """Сид-набор контуров: FO — живой снапшот; Risk/EOD/VaR — пока = FO
     (различия появятся, когда появятся разные источники/снапшоты); Stress —
-    тот же снапшот, помечен назначением."""
+    тот же снапшот, помечен назначением; LAB — явный research-контур."""
     # projection-роль в сид-набор НЕ входит: дефолтная проекция == дисконту
     # (single-curve, как вело себя всё до появления контуров); dual-curve
     # включается явным заданием curve_map["projection"] в своём контуре.
@@ -62,4 +62,8 @@ def default_environments() -> list[PricingEnvironment]:
         PricingEnvironment("VAR", "Market Risk / VaR", "var", None, dict(base_curves)),
         PricingEnvironment("STRESS", "Stress", "stress", None, dict(base_curves),
                            metadata={"note": "стрессовые окна задаются в Market Risk"}),
+        PricingEnvironment(
+            "LAB", "Analytics Lab", "research", None, dict(base_curves),
+            metadata={"note": "research/non-production pricing; server-owned policy"},
+        ),
     ]

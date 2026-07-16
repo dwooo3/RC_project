@@ -554,13 +554,32 @@ def price_definition(defn: dict, slots: dict, market: dict,
     if issues:
         raise ValueError("определение не проходит компиляцию: "
                          + "; ".join(i["message"] for i in issues[:3]))
+    def _finite(value, label: str) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"{label}: требуется число") from exc
+        if not np.isfinite(numeric):
+            raise ValueError(f"{label}: значение должно быть конечным")
+        return numeric
+
+    def _bounded_int(value, label: str, lower: int, upper: int) -> int:
+        if isinstance(value, bool):
+            raise ValueError(f"{label}: требуется целое число")
+        numeric = _finite(value, label)
+        integer = int(numeric)
+        if numeric != integer or not lower <= integer <= upper:
+            raise ValueError(f"{label}: требуется целое число {lower} … {upper}")
+        return integer
+
     slot_specs = defn.get("slots") or {}
-    merged = {k: float(v.get("default")) for k, v in slot_specs.items()}
+    merged = {k: _finite(v.get("default"), f"слот '{k}'")
+              for k, v in slot_specs.items()}
     for key, value in (slots or {}).items():
         if key not in slot_specs:
             raise ValueError(f"неизвестный слот '{key}'")
         spec = slot_specs[key]
-        value = float(value)
+        value = _finite(value, f"слот '{key}'")
         if spec.get("min") is not None and value < spec["min"]:
             raise ValueError(f"слот '{key}': {value} ниже минимума {spec['min']}")
         if spec.get("max") is not None and value > spec["max"]:
@@ -569,43 +588,73 @@ def price_definition(defn: dict, slots: dict, market: dict,
 
     assets = _asset_names(defn)
     n_assets = len(assets)
-    r = float(market.get("r", 0.05))
+    r = _finite(market.get("r", 0.05), "market.r")
+    if not -1.0 <= r <= 2.0:
+        raise ValueError("market.r: значение должно быть в диапазоне -1 … 2")
     sched = defn.get("schedule") or {}
-    maturity = float(_resolve_scalar(sched.get("maturity"), slot_specs, merged))
-    n_sims = max(1000, min(int(n_sims), 200_000))
-    steps = max(16, min(int(steps), 1024))
+    maturity = _finite(
+        _resolve_scalar(sched.get("maturity"), slot_specs, merged),
+        "schedule.maturity",
+    )
+    if maturity <= 0:
+        raise ValueError("schedule.maturity: срок должен быть положительным")
+    n_sims = _bounded_int(n_sims, "n_sims", 1_000, 200_000)
+    steps = _bounded_int(steps, "steps", 16, 1_024)
+    seed = _bounded_int(seed, "seed", 0, 2_147_483_647)
 
     def _vector(key_list, key_scalar, default):
         listed = market.get(key_list)
         if listed is not None:
-            values = [float(v) for v in listed]
+            values = [_finite(v, f"market.{key_list}[{index}]")
+                      for index, v in enumerate(listed)]
             if len(values) != n_assets:
                 raise ValueError(f"{key_list}: нужно {n_assets} значений "
                                  f"(активы {', '.join(assets)})")
             return np.asarray(values)
-        return np.full(n_assets, float(market.get(key_scalar, default)))
+        return np.full(
+            n_assets,
+            _finite(market.get(key_scalar, default), f"market.{key_scalar}"),
+        )
 
     sigma_vec = _vector("sigmas", "sigma", 0.2)
     q_vec = _vector("qs", "q", 0.0)
+    if np.any((sigma_vec < 0.0) | (sigma_vec > 5.0)):
+        raise ValueError("market.sigmas: значения должны быть в диапазоне 0 … 5")
+    if np.any((q_vec < -1.0) | (q_vec > 1.0)):
+        raise ValueError("market.qs: значения должны быть в диапазоне -1 … 1")
 
     if n_assets == 1:
         paths = gbm_paths(1.0, r, float(q_vec[0]), float(sigma_vec[0]),
-                          maturity, steps, n_sims, seed=int(seed))[:, :, None]
+                          maturity, steps, n_sims, seed=seed)[:, :, None]
         corr_out = None
     else:
         corr_raw = market.get("corr")
         if corr_raw is not None:
-            corr = np.asarray(corr_raw, dtype=float)
+            try:
+                corr = np.asarray(corr_raw, dtype=float)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("corr: все элементы должны быть числами") from exc
             if corr.shape != (n_assets, n_assets):
                 raise ValueError(f"corr: нужна матрица {n_assets}×{n_assets}")
         else:
-            rho = float(market.get("rho", 0.5))
+            rho = _finite(market.get("rho", 0.5), "market.rho")
+            if not -0.999 <= rho <= 0.999:
+                raise ValueError("market.rho: значение должно быть в диапазоне -0.999 … 0.999")
             corr = np.full((n_assets, n_assets), rho)
             np.fill_diagonal(corr, 1.0)
+        if not np.all(np.isfinite(corr)):
+            raise ValueError("corr: все элементы должны быть конечными")
+        if np.any(np.abs(corr) > 1.0):
+            raise ValueError("corr: корреляции должны быть в диапазоне -1 … 1")
+        if not np.allclose(corr, corr.T, rtol=0.0, atol=1e-12):
+            raise ValueError("corr: матрица должна быть симметричной")
+        if not np.allclose(np.diag(corr), 1.0, rtol=0.0, atol=1e-12):
+            raise ValueError("corr: диагональ должна быть равна 1")
         try:
+            np.linalg.cholesky(corr)
             raw = multi_asset_paths(np.ones(n_assets), r, q_vec, sigma_vec,
                                     corr, maturity, steps, n_sims,
-                                    seed=int(seed))
+                                    seed=seed)
         except np.linalg.LinAlgError:
             raise ValueError("корреляционная матрица не положительно "
                              "определена") from None
@@ -626,7 +675,7 @@ def price_definition(defn: dict, slots: dict, market: dict,
         "slots": merged,
         "assets": assets,
         "market": market_out,
-        "n_sims": n_sims, "steps": steps, "seed": int(seed),
+        "n_sims": n_sims, "steps": steps, "seed": seed,
         "engine": "custom_mc_gbm" if n_assets == 1 else "custom_mc_multi_gbm",
     }
 

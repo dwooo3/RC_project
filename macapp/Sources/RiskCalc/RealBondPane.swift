@@ -111,7 +111,7 @@ struct RealBondPane: View {
                         Text("All boards").tag("")
                         ForEach(vm.boards, id: \.self) { Text($0).tag($0) }
                     }
-                    .labelsHidden().pickerStyle(.menu)
+                    .labelsHidden().pickerStyle(.menu).neutralControlTint()
                     .onChange(of: vm.board) { _, _ in Task { await vm.applyFilters() } }
                 }
                 HStack {

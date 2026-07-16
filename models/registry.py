@@ -42,6 +42,7 @@ ANALYTICS_LAB_MODELS = {
     "cgmy",
     "merton_cos",
     "rough_bergomi",
+    "heston_adi",
 }
 
 
@@ -125,6 +126,18 @@ MODEL_REGISTRY: dict[str, dict] = {
             "jumps); Greeks as the weighted mixture. Series truncated at 60 "
             "terms with mass check. Jump params are inputs — no calibration."
         ),
+    },
+    "merton_cos": {
+        "name": "Merton Jump-Diffusion (COS solver)",
+        "status": ModelStatus.VALIDATED,
+        "domain": "Analytics",
+        "tests": ["lambda_zero_is_bsm", "put_call_parity", "cos_matches_series"],
+        "notes": (
+            "Merton jump-diffusion priced with the Fourier COS numerical solver. "
+            "The implementation is callable and independently cross-checked "
+            "against the Poisson-mixture series; Analytics Lab only."
+        ),
+        "implementation_scope": "european_vanilla_fourier_cos",
     },
     "bates": {
         "name": "Bates (Heston + Jumps)",
@@ -726,12 +739,16 @@ MODEL_REGISTRY: dict[str, dict] = {
                   "first → shorter WAL. Sequential pay only (no pro-rata/triggers)."),
     },
     "jarrow_yildirim": {
-        "name": "Jarrow-Yildirim inflation",
+        "name": "Deterministic CPI carry / breakeven identities (legacy Jarrow-Yildirim ID)",
         "status": ModelStatus.VALIDATED, "domain": "Pricing",
         "tests": ["equal_curves_zero_breakeven", "zciis_is_forward_cpi"],
-        "notes": ("Gap batch 4: foreign-currency analogue (nominal/real curves + "
-                  "CPI). Forward CPI = P_real/P_nom → ZCIIS fair rate and breakeven. "
-                  "Flat curves here; stochastic-vol caplet extension deferred."),
+        "notes": ("Deterministic flat nominal/real curve identities: forward CPI "
+                  "= P_real/P_nom, ZCIIS fair rate and breakeven. This is not the "
+                  "full stochastic Jarrow-Yildirim three-factor model; stochastic "
+                  "nominal/real rates, inflation volatility and cap/floor pricing "
+                  "are outside the implemented scope."),
+        "implementation_scope": "deterministic_flat_nominal_real_carry",
+        "q_level": "Q1",
     },
     "cva_wwr": {
         "name": "CVA with wrong-way risk",
@@ -797,23 +814,34 @@ MODEL_REGISTRY: dict[str, dict] = {
             "Randomised (scrambled) for an unbiased estimator + error bar."
         ),
     },
-    "adi": {
-        "name": "ADI 2-D PDE (two-asset, Douglas)",
+    "two_asset_adi": {
+        "name": "ADI 2-D PDE (two-asset Black-Scholes, Douglas)",
         "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
-        "tests": ["exchange_matches_margrabe", "spread_equals_exchange_at_zero",
-                  "heston_adi_matches_cf", "heston_adi_put_call_parity"],
+        "tests": ["exchange_matches_margrabe", "spread_equals_exchange_at_zero"],
         "notes": (
-            "M6 + task-3: Douglas ADI for 2-D PDEs — explicit predictor carrying "
-            "the cross-derivative, then two implicit tridiagonal sweeps. "
-            "(1) Two-asset Black-Scholes in log-space: exchange == Margrabe within "
+            "M6: Douglas ADI for the two-asset Black-Scholes PDE — explicit "
+            "predictor carrying the cross-derivative, then two implicit "
+            "tridiagonal sweeps. Exchange == Margrabe within "
             "~0.07% across moneyness and ρ∈{-0.5,0,0.5}; prices spread/basket. "
-            "(2) Heston (S,v) with the Hout-Foulon v=0 boundary — diffusion "
+            "The legacy public selector 'adi' resolves to this component."
+        ),
+        "implementation_scope": "two_asset_black_scholes_douglas_adi",
+    },
+    "heston_adi": {
+        "name": "Heston ADI PDE (S,v, Douglas)",
+        "status": ModelStatus.VALIDATED,
+        "domain": "Analytics",
+        "tests": ["heston_adi_matches_cf", "heston_adi_put_call_parity"],
+        "notes": (
+            "Task-3: Douglas ADI for the Heston (S,v) PDE with the Hout-Foulon "
+            "v=0 boundary — diffusion "
             "vanishes there so the row is evolved with a one-sided forward U_v "
             "(upwind κθ>0) rather than frozen; matches the Heston CF within ~0.2% "
             "(fine grid) / <1% (coarse), put-call parity exact. Earlier frozen-v=0 "
-            "attempt mispriced by ~14%."
+            "attempt mispriced by ~14%. Analytics Lab only."
         ),
+        "implementation_scope": "heston_spot_variance_douglas_adi",
     },
     "cds_isda": {
         "name": "ISDA CDS Standard Model (upfront)",
@@ -883,7 +911,7 @@ MODEL_REGISTRY: dict[str, dict] = {
         ),
     },
     "afv_convertible": {
-        "name": "AFV (Andersen-Buffum) convertible bond",
+        "name": "Andersen-Buffum-style equity-linked hazard convertible (legacy AFV ID)",
         "status": ModelStatus.VALIDATED,
         "domain": "Pricing",
         "tests": ["conv_zero_is_defaultable_bond", "lambda_zero_is_convertible",
@@ -895,8 +923,10 @@ MODEL_REGISTRY: dict[str, dict] = {
             "conv_ratio→0 == defaultable straight bond, λ0→0 == no-default "
             "convertible (matches Tsiveriotis-Fernandes), deep ITM → parity, price "
             "falls as the hazard rises. Hazard capped at 10 for S→0. Equity-credit "
-            "link unlike the constant-spread TF model."
+            "link unlike the constant-spread TF model. Despite the legacy ID, "
+            "this is not the Ayache-Forsyth-Vetzal coupled PDE formulation."
         ),
+        "implementation_scope": "equity_linked_hazard_crr_tree",
     },
     "mbs": {
         "name": "MBS pass-through (PSA prepayment)",
@@ -1312,16 +1342,28 @@ MODEL_REGISTRY: dict[str, dict] = {
 }
 
 
-def get(model_id: str) -> dict:
-    entry = dict(MODEL_REGISTRY.get(model_id, {
-        "name": model_id,
+def canonical_model_id(model_id: str, calculation_type: str | None = None) -> str:
+    """Return the canonical registry identity for a public or historical ID."""
+    from models.taxonomy import canonical_component_id
+    return canonical_component_id(model_id, calculation_type)
+
+
+def is_registered(model_id: str, calculation_type: str | None = None) -> bool:
+    return canonical_model_id(model_id, calculation_type) in MODEL_REGISTRY
+
+
+def get(model_id: str, calculation_type: str | None = None) -> dict:
+    canonical_id = canonical_model_id(model_id, calculation_type)
+    entry = dict(MODEL_REGISTRY.get(canonical_id, {
+        "name": canonical_id,
         "status": ModelStatus.PLACEHOLDER,
         "domain": "Unknown",
         "tests": [],
         "notes": "Not registered.",
     }))
-    workflow_layer = "Research" if model_id in ANALYTICS_LAB_MODELS else "Production"
-    analytics_lab_only = model_id in ANALYTICS_LAB_MODELS
+    registered = canonical_id in MODEL_REGISTRY
+    workflow_layer = "Research" if canonical_id in ANALYTICS_LAB_MODELS else "Production"
+    analytics_lab_only = canonical_id in ANALYTICS_LAB_MODELS
     if analytics_lab_only:
         # Analytics-Lab membership is an authoritative hard invariant.  A
         # stale/hand-written entry must not opt a research model into a
@@ -1342,13 +1384,20 @@ def get(model_id: str) -> dict:
         entry.setdefault("production_allowed", True)
     else:
         entry.setdefault("production_allowed", False)
-    # M0: enrich with taxonomy axes (asset_class / model_family / method / kind)
-    try:
-        from models.taxonomy import classify
-        for k, v in classify(model_id).items():
-            entry.setdefault(k, v)
-    except Exception:
-        pass
+    # Identity and component role are derived from the canonical taxonomy.
+    # Registered inconsistencies are errors, never silently downgraded to
+    # unknown metadata.
+    from models.taxonomy import classify
+    taxonomy = classify(canonical_id)
+    if registered and (taxonomy["asset_class"] is None or taxonomy["component_kind"] is None):
+        raise RuntimeError(f"registered component {canonical_id!r} is missing taxonomy metadata")
+    for key, value in taxonomy.items():
+        entry[key] = value
+    entry["canonical_component_id"] = canonical_id
+    entry["requested_component_id"] = model_id
+    entry["deprecated_alias"] = model_id != canonical_id
+    entry.setdefault("q_level", "")
+    entry.setdefault("implementation_scope", "")
     return entry
 
 
@@ -1383,7 +1432,7 @@ def can_promote_to_validated(model_id: str) -> bool:
     (b) carries registered tests (identity/benchmark). Eligibility only —
     promotion stays an explicit registry edit so it is reviewable.
     """
-    entry = MODEL_REGISTRY.get(model_id)
+    entry = MODEL_REGISTRY.get(canonical_model_id(model_id))
     if not entry:
         return False
     return (entry["status"] in {ModelStatus.APPROXIMATION, ModelStatus.VALIDATED}
@@ -1394,3 +1443,96 @@ def validation_candidates() -> list[str]:
     """Approximation models with tests — ready for a Validated review."""
     return [m for m, e in MODEL_REGISTRY.items()
             if e["status"] == ModelStatus.APPROXIMATION and len(e.get("tests", [])) > 0]
+
+
+def consistency_errors() -> list[str]:
+    """Return deterministic registry/taxonomy consistency violations.
+
+    The canonical inventory is intentionally fail-closed: an engine may not be
+    partially registered, ambiguously aliased, or silently left unclassified.
+    """
+    from models.taxonomy import (
+        CLASSIFICATION,
+        CALCULATION_TYPE_ALIASES,
+        COMPONENT_GROUPS,
+        ComponentKind,
+        ENGINES,
+        ID_ALIASES,
+        canonical_component_id,
+    )
+
+    errors: list[str] = []
+    registry_ids = set(MODEL_REGISTRY)
+    classification_ids = set(CLASSIFICATION)
+    component_ids = {component_id for ids in COMPONENT_GROUPS.values() for component_id in ids}
+
+    if set(COMPONENT_GROUPS) != set(ComponentKind):
+        missing = sorted(kind.value for kind in set(ComponentKind) - set(COMPONENT_GROUPS))
+        extra = sorted(str(kind) for kind in set(COMPONENT_GROUPS) - set(ComponentKind))
+        errors.append(f"component-kind groups mismatch: missing={missing}, extra={extra}")
+
+    if registry_ids != classification_ids:
+        missing = sorted(registry_ids - classification_ids)
+        extra = sorted(classification_ids - registry_ids)
+        errors.append(f"registry/classification mismatch: missing={missing}, extra={extra}")
+    if registry_ids != component_ids:
+        missing = sorted(registry_ids - component_ids)
+        extra = sorted(component_ids - registry_ids)
+        errors.append(f"registry/component-kind mismatch: missing={missing}, extra={extra}")
+    component_count = sum(len(ids) for ids in COMPONENT_GROUPS.values())
+    if component_count != len(component_ids):
+        errors.append("component-kind partition contains duplicate IDs")
+
+    for alias, target in sorted(ID_ALIASES.items()):
+        if alias in registry_ids:
+            errors.append(f"alias {alias!r} shadows a canonical registry ID")
+        try:
+            resolved = canonical_component_id(alias)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        if resolved not in registry_ids:
+            errors.append(f"alias {alias!r} targets unknown component {target!r}")
+
+    for (legacy_id, calculation_type), target in sorted(CALCULATION_TYPE_ALIASES.items()):
+        try:
+            resolved = canonical_component_id(legacy_id, calculation_type)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        if resolved not in registry_ids:
+            errors.append(
+                f"calculation-type alias {(legacy_id, calculation_type)!r} "
+                f"targets unknown component {target!r}"
+            )
+
+    required_fields = {"name", "status", "domain", "tests", "notes"}
+    for model_id, entry in sorted(MODEL_REGISTRY.items()):
+        missing_fields = sorted(required_fields - set(entry))
+        if missing_fields:
+            errors.append(f"{model_id}: missing required fields {missing_fields}")
+        if entry.get("status") not in set(ModelStatus):
+            errors.append(f"{model_id}: invalid status {entry.get('status')!r}")
+        for field in ("name", "domain", "notes"):
+            if field in entry and not isinstance(entry[field], str):
+                errors.append(f"{model_id}: {field} must be a string")
+        if "tests" in entry and not isinstance(entry["tests"], list):
+            errors.append(f"{model_id}: tests must be a list")
+
+    for model_id in sorted(ANALYTICS_LAB_MODELS):
+        if model_id not in registry_ids:
+            errors.append(f"Analytics Lab references unknown component {model_id!r}")
+        elif MODEL_REGISTRY[model_id].get("production_allowed") is True:
+            errors.append(f"Analytics Lab component {model_id!r} is production-allowed")
+
+    for instrument_id, engine_ids in sorted(ENGINES.items()):
+        for engine_id in engine_ids:
+            if canonical_component_id(engine_id) not in registry_ids:
+                errors.append(f"instrument {instrument_id!r} references unknown engine {engine_id!r}")
+    return errors
+
+
+def assert_registry_consistent() -> None:
+    errors = consistency_errors()
+    if errors:
+        raise RuntimeError("Model registry is inconsistent: " + "; ".join(errors))

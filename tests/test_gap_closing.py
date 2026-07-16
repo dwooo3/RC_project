@@ -93,7 +93,14 @@ def test_carr_madan_parity_and_service():
     c = carr_madan_bsm(100, 100, 1, 0.05, 0.2, 0, "call")
     p = carr_madan_bsm(100, 100, 1, 0.05, 0.2, 0, "put")
     assert c - p == pytest.approx(100 - 100 * np.exp(-0.05), abs=1e-6)
-    r = PricingService().price_carr_madan("heston", 100, 100, 1.0, 0.03, q=0.0, v0=0.04)
+    blocked = PricingService().price_carr_madan(
+        "heston", 100, 100, 1.0, 0.03, q=0.0, v0=0.04
+    )
+    assert blocked["value"] is None
+    assert any("ENGINE_RESEARCH_ONLY" in error for error in blocked["errors"])
+    r = PricingService(allow_analytics_lab=True).price_carr_madan(
+        "heston", 100, 100, 1.0, 0.03, q=0.0, v0=0.04
+    )
     assert r["errors"] == [] and r["value"] > 0 and r["model_id"] == "carr_madan"
 
 

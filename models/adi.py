@@ -16,9 +16,9 @@ In log-space the coefficients are constant, so the boundaries are clean and the
 scheme reaches the exact Margrabe exchange-option price (the validation target);
 it then prices a general two-asset payoff (spread, basket, best/worst-of).
 
-A Heston (S, v) ADI is deferred: its degenerate v=0 boundary needs the
-Hout-Foulon upwind treatment, and the Heston CF already serves as the
-production stochastic-vol pricer.
+The module also implements a separate Heston (S, v) Douglas ADI solver. Its
+degenerate v=0 row uses the Hout-Foulon one-sided upwind treatment and is
+governed under the distinct canonical identity ``heston_adi``.
 """
 
 from __future__ import annotations

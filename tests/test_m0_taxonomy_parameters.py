@@ -18,6 +18,17 @@ def test_every_registered_model_is_classified():
     assert unclassified == [], f"unclassified models: {unclassified}"
 
 
+def test_canonical_inventory_and_component_kind_partition_are_exact():
+    component_ids = {
+        model_id
+        for ids in tax.COMPONENT_GROUPS.values()
+        for model_id in ids
+    }
+    assert set(R.MODEL_REGISTRY) == set(tax.CLASSIFICATION) == component_ids
+    assert sum(len(ids) for ids in tax.COMPONENT_GROUPS.values()) == len(component_ids)
+    assert R.consistency_errors() == []
+
+
 def test_classify_axes_valid():
     for mid in R.MODEL_REGISTRY:
         c = tax.classify(mid)
@@ -25,12 +36,14 @@ def test_classify_axes_valid():
         assert c["model_family"] in {f.value for f in tax.ModelFamily}
         assert c["method"] in {m.value for m in tax.Method}
         assert c["kind"] in {"pricer", "risk", "portfolio", "market"}
+        assert c["component_kind"] in {kind.value for kind in tax.ComponentKind}
 
 
 def test_classify_examples():
     assert tax.classify("black_scholes") == {
         "asset_class": "equity", "model_family": "analytic",
-        "method": "closed_form", "kind": "pricer"}
+        "method": "closed_form", "kind": "pricer",
+        "component_kind": "stochastic_model"}
     assert tax.classify("heston_cf")["method"] == "fourier"
     assert tax.classify("var_historical")["kind"] == "risk"
     assert tax.classify("cds_curve")["asset_class"] == "credit"
@@ -49,6 +62,7 @@ def test_grouping_helpers():
 def test_engine_matrix():
     eng = tax.engines_for("european_option")
     assert "black_scholes" in eng and "heston_cf" in eng and "merton_jump" in eng
+    assert "merton_cos" in eng
     assert tax.default_engine("european_option") == "black_scholes"
     assert tax.default_engine("american_option") == "pde_cn"
     assert tax.engines_for("nonexistent") == []
@@ -58,7 +72,44 @@ def test_engine_ids_are_registered():
     """Every engine in the matrix must be a real registered model."""
     for instrument, engines in tax.ENGINES.items():
         for e in engines:
-            assert e in R.MODEL_REGISTRY, f"{instrument} -> unregistered engine {e}"
+            assert R.is_registered(e), f"{instrument} -> unregistered engine {e}"
+
+
+def test_legacy_aliases_resolve_without_polluting_canonical_inventory():
+    assert tax.canonical_component_id("adi") == "two_asset_adi"
+    assert tax.canonical_component_id("adi", "heston_adi_pricing") == "heston_adi"
+    assert tax.classify("adi") == tax.classify("two_asset_adi")
+    assert R.get("adi")["canonical_component_id"] == "two_asset_adi"
+    assert R.get("adi")["deprecated_alias"] is True
+    assert R.get("adi", "heston_adi_pricing")["canonical_component_id"] == "heston_adi"
+    assert R.get("cva_exposure_risk")["canonical_component_id"] == "cva_exposure"
+    assert not (set(tax.ID_ALIASES) & set(R.MODEL_REGISTRY))
+
+    from services.governance_service import GovernanceService
+    listed = {model.model_id for model in GovernanceService().list_models()}
+    assert not (set(tax.ID_ALIASES) & listed)
+
+
+def test_consistency_diagnostics_are_fail_closed_and_taxonomy_authoritative(monkeypatch):
+    monkeypatch.setitem(
+        R.MODEL_REGISTRY["black_scholes"], "component_kind", "product_pricer")
+    assert R.get("black_scholes")["component_kind"] == "stochastic_model"
+
+    monkeypatch.delitem(tax.CLASSIFICATION, "heston_adi")
+    errors = R.consistency_errors()
+    assert any("heston_adi" in error and "classification" in error
+               for error in errors)
+
+
+def test_governance_startup_rejects_unclassified_registry_entry(monkeypatch):
+    from services.governance_service import GovernanceService
+
+    monkeypatch.setitem(R.MODEL_REGISTRY, "unclassified_test_component", {
+        "name": "Test", "status": R.ModelStatus.PROTOTYPE, "domain": "Test",
+        "tests": [], "notes": "test-only malformed entry",
+    })
+    with pytest.raises(RuntimeError, match="unclassified_test_component"):
+        GovernanceService()
 
 
 # ── Registry enrichment ──────────────────────────────────
@@ -67,6 +118,17 @@ def test_registry_get_carries_taxonomy():
     e = R.get("black_scholes")
     assert e["asset_class"] == "equity" and e["model_family"] == "analytic"
     assert e["method"] == "closed_form" and e["kind"] == "pricer"
+    assert e["component_kind"] == "stochastic_model"
+
+
+def test_legacy_scope_metadata_is_explicit_and_honest():
+    afv = R.get("afv_convertible")
+    jy = R.get("jarrow_yildirim")
+    assert afv["implementation_scope"] == "equity_linked_hazard_crr_tree"
+    assert "not the Ayache-Forsyth-Vetzal" in afv["notes"]
+    assert jy["implementation_scope"] == "deterministic_flat_nominal_real_carry"
+    assert jy["q_level"] == "Q1"
+    assert "not the full stochastic Jarrow-Yildirim" in jy["notes"]
 
 
 def test_by_asset_class_and_family():
@@ -114,6 +176,10 @@ def test_engine_params_library():
     assert P.engine_params("black_scholes") == []
     # MC engine carries numerical specs
     assert any(s.key == "n_sims" for s in P.engine_params("mc_gbm"))
+    assert {s.key for s in P.engine_params("adi")} == {
+        s.key for s in P.engine_params("two_asset_adi")}
+    assert {"lam", "mu_j", "delta_j", "N"} <= {
+        s.key for s in P.engine_params("merton_cos")}
 
 
 def test_specs_by_group():
@@ -151,7 +217,7 @@ def test_vanilla_product_is_engine_aware():
     prod = next(p for p in products_by_category("Option") if p.id == "vanilla")
     engines = prod.engines()
     assert "black_scholes" in engines and "merton_jump" in engines
-    assert "mc_heston_qe" not in engines           # no service route yet
+    assert {"mc_heston", "mc_heston_qe"} <= set(engines)
 
 
 def test_vanilla_engine_dispatch_agrees_and_differs():

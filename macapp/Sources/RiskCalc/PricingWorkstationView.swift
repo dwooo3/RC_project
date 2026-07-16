@@ -5,7 +5,20 @@ import Charts
 /// by asset class, with an engine selector, market-data underlying autofill,
 /// a generic grouped parameter form and a measure/series-aware result panel.
 struct PricingWorkstationView: View {
+    let onAddToBook: ((PricingRunRecord) -> Void)?
     @State private var vm = WorkstationViewModel()
+    @State private var analysisMode: AnalysisMode = .risk
+
+    private enum AnalysisMode: String, CaseIterable, Hashable {
+        case risk = "Risk & Greeks"
+        case payoff = "Payoff & What-if"
+        case diagnostics = "Diagnostics"
+        case simulation = "Simulation"
+    }
+
+    init(onAddToBook: ((PricingRunRecord) -> Void)? = nil) {
+        self.onAddToBook = onAddToBook
+    }
 
     var body: some View {
         Group {
@@ -96,10 +109,7 @@ struct PricingWorkstationView: View {
                         }
                     }
                     stateStrip
-                    HStack(spacing: Theme.s4) {
-                        enginePicker(product)
-                        environmentPicker
-                    }
+                    pricingConfigurationBar(product, engine: engine)
                     if !product.note.isEmpty {
                         Label(product.note, systemImage: "info.circle")
                             .font(.caption).foregroundStyle(.secondary)
@@ -114,7 +124,7 @@ struct PricingWorkstationView: View {
                                 paramGroup(engine, group: group)
                             }
                             issuesCard
-                            calculateButton
+                            calculateControls
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -125,31 +135,7 @@ struct PricingWorkstationView: View {
                         .frame(width: 360)
                     }
                     if vm.result != nil {
-                        analyticsSection(
-                            "Desk Risk · чувствительность и сценарии",
-                            help: "Полная переоценка текущего инструмента: лестницы, исторические сценарии, payoff и what-if сетка")
-                        HStack(alignment: .top, spacing: Theme.s4) {
-                            LadderCard(vm: vm)
-                            ScenarioCard(vm: vm)
-                        }
-                        PayoffCard(vm: vm)
-                        if vm.gridKeys != nil {
-                            Grid2DCard(vm: vm)
-                        }
-                        analyticsSection(
-                            "Диагностика модели",
-                            help: "Сравнение движков на замороженном контексте, сходимость, break-even")
-                        ModelComparisonCard(vm: vm)
-                        HStack(alignment: .top, spacing: Theme.s4) {
-                            ConvergenceCard(vm: vm)
-                            SolveForCard(vm: vm)
-                        }
-                        if vm.supportsSimLab {
-                            analyticsSection(
-                                "Симуляция",
-                                help: "Иллюстративный GBM-превью траекторий — не расчёт выбранного движка")
-                            SimulationLabCard(vm: vm)
-                        }
+                        analysisWorkspace
                     }
                     conventionsFooter
                 }
@@ -160,6 +146,55 @@ struct PricingWorkstationView: View {
         } else {
             ContentUnavailableView("Select an instrument", systemImage: "function")
         }
+    }
+
+    private var availableAnalysisModes: [AnalysisMode] {
+        AnalysisMode.allCases.filter { $0 != .simulation || vm.supportsSimLab }
+    }
+
+    @ViewBuilder
+    private var analysisWorkspace: some View {
+        VStack(alignment: .leading, spacing: Theme.s4) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("ANALYSIS WORKSPACE")
+                        .font(.system(size: 10, weight: .semibold)).tracking(0.5)
+                        .foregroundStyle(.secondary)
+                    Text("Один расчёт, один frozen context — без длинной ленты пустых модулей")
+                        .font(.caption).foregroundStyle(.tertiary)
+                }
+                Spacer()
+                SegmentedBar(
+                    items: availableAnalysisModes.map { ($0, $0.rawValue) },
+                    selection: $analysisMode,
+                    compact: true)
+            }
+
+            switch analysisMode {
+            case .risk:
+                HStack(alignment: .top, spacing: Theme.s4) {
+                    LadderCard(vm: vm)
+                    ScenarioCard(vm: vm)
+                }
+            case .payoff:
+                PayoffCard(vm: vm)
+                if vm.gridKeys != nil { Grid2DCard(vm: vm) }
+            case .diagnostics:
+                ModelComparisonCard(vm: vm)
+                HStack(alignment: .top, spacing: Theme.s4) {
+                    ConvergenceCard(vm: vm)
+                    SolveForCard(vm: vm)
+                }
+            case .simulation:
+                if vm.supportsSimLab {
+                    SimulationLabCard(vm: vm)
+                } else {
+                    ContentUnavailableView("Simulation is unavailable for this instrument",
+                                           systemImage: "waveform.path.ecg")
+                }
+            }
+        }
+        .padding(.top, Theme.s3)
     }
 
     /// Section divider grouping the analytics cards (workspace structure).
@@ -365,6 +400,96 @@ struct PricingWorkstationView: View {
         }
     }
 
+    /// The workstation's economic decision chain.  The catalogue still
+    /// publishes product-qualified engine routes, but the UI no longer calls
+    /// that opaque selector a "Model": it exposes the resolved model and the
+    /// numerical pricer/solver as separate facts.
+    private func pricingConfigurationBar(_ product: WsProductModel,
+                                         engine: WsEngineModel) -> some View {
+        let eligibility = vm.selectedEligibility ?? engine.eligibility
+        let model = eligibility?.modelDefinitionID ?? engine.modelID
+        let solver = eligibility?.solverDefinitionID ?? engine.governance.method
+        return GlassCard(padding: Theme.s3) {
+            HStack(spacing: Theme.s3) {
+                configurationStep(1, title: "INSTRUMENT", value: product.name,
+                                  detail: product.assetClass.capitalized,
+                                  icon: "doc.text")
+                configurationDivider
+                configurationStep(2, title: "MODEL", value: model,
+                                  detail: engine.governance.modelFamily,
+                                  icon: "function")
+                configurationDivider
+                VStack(alignment: .leading, spacing: 3) {
+                    configurationLabel(3, "PRICER / SOLVER")
+                    if product.engines.count > 1 {
+                        Picker("", selection: Binding(
+                            get: { vm.engineID ?? product.engines.first?.id ?? "" },
+                            set: { vm.selectEngine($0) }
+                        )) {
+                            ForEach(product.engines) { candidate in
+                                Text(enginePickerLabel(candidate)).tag(candidate.id)
+                            }
+                        }
+                        .labelsHidden().pickerStyle(.menu).neutralControlTint().fixedSize()
+                    } else {
+                        Text(engine.name)
+                            .font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                    }
+                    Text(solver)
+                        .font(.system(size: 10)).monospaced().foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                configurationDivider
+                VStack(alignment: .leading, spacing: 3) {
+                    configurationLabel(4, "ENVIRONMENT")
+                    if !vm.environments.isEmpty {
+                        Picker("", selection: $vm.envID) {
+                            ForEach(vm.environments) { env in
+                                Text("\(env.envID) · \(env.name)").tag(env.envID)
+                            }
+                        }
+                        .labelsHidden().pickerStyle(.menu).neutralControlTint().fixedSize()
+                    } else {
+                        Text(vm.envID).font(.system(size: 12, weight: .semibold))
+                    }
+                    Text(vm.selectedEnvironment?.purpose.uppercased() ?? "PRICING CONTEXT")
+                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func configurationStep(_ number: Int, title: String, value: String,
+                                   detail: String, icon: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            configurationLabel(number, title)
+            Label(value, systemImage: icon)
+                .font(.system(size: 12, weight: .semibold)).lineLimit(1)
+            Text(detail)
+                .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func configurationLabel(_ number: Int, _ title: String) -> some View {
+        HStack(spacing: 5) {
+            Text("\(number)")
+                .font(.system(size: 9, weight: .bold)).monospacedDigit()
+                .foregroundStyle(.white)
+                .frame(width: 16, height: 16)
+                .background(Theme.accent, in: Circle())
+            Text(title)
+                .font(.system(size: 9, weight: .semibold)).tracking(0.45)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var configurationDivider: some View {
+        Rectangle().fill(.quaternary).frame(width: 1, height: 46)
+    }
+
     @ViewBuilder
     private func enginePicker(_ product: WsProductModel) -> some View {
         if product.engines.count > 1 {
@@ -380,7 +505,7 @@ struct PricingWorkstationView: View {
                     }
                 }
                 .labelsHidden()
-                .pickerStyle(.menu)
+                .pickerStyle(.menu).neutralControlTint()
                 .fixedSize()
                 if let engine = vm.selectedEngine {
                     Circle().fill(Theme.statusColor(engine.governance.status))
@@ -451,7 +576,7 @@ struct PricingWorkstationView: View {
                     }
                 }
                 .labelsHidden()
-                .pickerStyle(.menu)
+                .pickerStyle(.menu).neutralControlTint()
                 .fixedSize()
                 .help("Контур оценки: снапшот, кривые ролей и движки по умолчанию")
             }
@@ -546,7 +671,7 @@ struct PricingWorkstationView: View {
         }
     }
 
-    private var calculateButton: some View {
+    private var calculateControls: some View {
         HStack {
             if let message = vm.errorMessage, !vm.serverDown {
                 Label(message, systemImage: "exclamationmark.triangle.fill")
@@ -578,6 +703,18 @@ struct PricingWorkstationView: View {
             .disabled(vm.isPricing || !vm.canRunSelectedEngine)
             .help(vm.eligibilityBlockReason
                   ?? "Validate → Calculate в выбранном pricing environment")
+            if let onAddToBook, let run = vm.currentRun,
+               run.fingerprint == vm.currentFingerprint,
+               run.result.value != nil, run.result.errors.isEmpty {
+                Button {
+                    onAddToBook(run)
+                } label: {
+                    Label("Add to Pricing Set", systemImage: "text.badge.plus")
+                }
+                .controlSize(.large)
+                .buttonStyle(.bordered)
+                .help("Добавить точный immutable run в совместный расчёт позиций")
+            }
         }
     }
 }
@@ -784,12 +921,13 @@ private struct FallbackTable: View {
 private struct LadderCard: View {
     @Bindable var vm: WorkstationViewModel
     @State private var showTable = false
+    @State private var metric = "pnl"
 
     var body: some View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.s3) {
                 HStack {
-                    BlockTitle("Sensitivity ladder", icon: "chart.line.uptrend.xyaxis")
+                    BlockTitle("Greeks & sensitivity profiles", icon: "chart.line.uptrend.xyaxis")
                     Spacer()
                     if vm.ladder != nil || !vm.ladderPartial.isEmpty {
                         ChartTableToggle(showTable: $showTable)
@@ -811,7 +949,7 @@ private struct LadderCard: View {
                             Text(spec.label).tag(spec.key)
                         }
                     }
-                    .labelsHidden().pickerStyle(.menu).fixedSize()
+                    .labelsHidden().pickerStyle(.menu).neutralControlTint().fixedSize()
 
                     TextField("от", value: $vm.ladderLo, format: .number)
                         .textFieldStyle(.roundedBorder).frame(width: 80).monospacedDigit()
@@ -832,6 +970,9 @@ private struct LadderCard: View {
                               || !vm.canRunSelectedEngine)
                     Spacer()
                 }
+                if vm.ladder == nil && vm.ladderPartial.isEmpty {
+                    quickProfiles
+                }
                 AnalyticsJobBar(vm: vm, kind: "ladder")
                 if let ladder = vm.ladder {
                     content(ladder.rows, key: ladder.bumpKey)
@@ -841,9 +982,9 @@ private struct LadderCard: View {
                     // live partial stream — never presented as a completed run
                     content(vm.ladderPartial, key: vm.ladderKey ?? "x")
                 } else {
-                    Text("Выберите параметр (спот, вола, ставка, корреляция…) и постройте P&L-профиль полной переоценкой.")
+                    Text("Один клик строит профиль полной переоценки и графики доступных греков. Любой числовой параметр можно выбрать вручную.")
                         .font(.caption).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 120)
+                        .frame(maxWidth: .infinity, minHeight: 72)
                 }
             }
         }
@@ -851,21 +992,41 @@ private struct LadderCard: View {
 
     @ViewBuilder
     private func content(_ rows: [WsLadderRow], key: String) -> some View {
+        let keys = metricKeys(rows)
+        let activeMetric = keys.contains(metric) ? metric : "pnl"
+        HStack {
+            Text("Displayed measure")
+                .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+            Picker("", selection: $metric) {
+                ForEach(keys, id: \.self) { item in
+                    Text(metricLabel(item)).tag(item)
+                }
+            }
+            .labelsHidden().pickerStyle(.menu).neutralControlTint().fixedSize()
+            if activeMetric != "pnl" && activeMetric != "value" {
+                Pill(text: "Greek profile", color: Theme.accent)
+            }
+            Spacer()
+        }
         if showTable {
+            let greekKeys = keys.filter { $0 != "value" && $0 != "pnl" }
+            let tableRows = rows.map { row in
+                ladderTableRow(row, greekKeys: greekKeys)
+            }
             FallbackTable(
-                header: [key, "Value", "P&L"],
-                rows: rows.map { [Fmt.number($0.x, digits: 4),
-                                  $0.value.map { Fmt.number($0, digits: 4) } ?? "—",
-                                  $0.pnl.map { Fmt.number($0, digits: 4) } ?? ($0.error ?? "—")] })
+                header: [key, "Value", "P&L"] + greekKeys.map(metricLabel),
+                rows: tableRows)
         } else {
-            let pts = rows.filter { $0.pnl != nil }
+            let pts = rows.filter { metricValue($0, activeMetric) != nil }
             Chart(pts, id: \.x) { row in
                 LineMark(x: .value(key, row.x),
-                         y: .value("P&L", row.pnl ?? 0))
+                         y: .value(metricLabel(activeMetric),
+                                   metricValue(row, activeMetric) ?? 0))
                     .foregroundStyle(Theme.accent)
                     .interpolationMethod(.monotone)
                 AreaMark(x: .value(key, row.x),
-                         y: .value("P&L", row.pnl ?? 0))
+                         y: .value(metricLabel(activeMetric),
+                                   metricValue(row, activeMetric) ?? 0))
                     .foregroundStyle(
                         LinearGradient(colors: [Theme.accent.opacity(0.18), .clear],
                                        startPoint: .top, endPoint: .bottom))
@@ -875,18 +1036,97 @@ private struct LadderCard: View {
                     .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [3]))
             }
             .frame(height: 180)
+            .chartYAxisLabel(metricLabel(activeMetric))
+            .onChange(of: metricSignature(rows), initial: true) { _, _ in
+                if metric == "pnl", keys.contains("delta") { metric = "delta" }
+            }
         }
+    }
+
+    private var quickProfiles: some View {
+        let preferred: [(Set<String>, String, String)] = [
+            (["S", "S0", "spot"], "Spot + Greeks", "scope"),
+            (["sigma", "vol"], "Volatility", "waveform.path.ecg"),
+            (["r", "rate"], "Rates", "percent"),
+        ]
+        return HStack(spacing: Theme.s2) {
+            Text("Quick profiles")
+                .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+            ForEach(Array(preferred.enumerated()), id: \.offset) { _, item in
+                if let spec = vm.ladderableParams.first(where: { item.0.contains($0.key) }) {
+                    Button {
+                        vm.selectLadderKey(spec.key)
+                        Task { await vm.runLadder() }
+                    } label: {
+                        Label(item.1, systemImage: item.2)
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .disabled(vm.isRunningLadder || !vm.canRunSelectedEngine)
+                }
+            }
+            Spacer()
+        }
+    }
+
+    private func metricKeys(_ rows: [WsLadderRow]) -> [String] {
+        let greekKeys = Set(rows.flatMap { row in
+            row.greeks.map { Array($0.keys) } ?? []
+        })
+        let priority = ["delta", "gamma", "vega", "theta", "rho", "vanna", "volga", "charm"]
+        let ordered = priority.filter(greekKeys.contains)
+        return ["pnl", "value"] + ordered + greekKeys.subtracting(ordered).sorted()
+    }
+
+    private func metricSignature(_ rows: [WsLadderRow]) -> String {
+        metricKeys(rows).joined(separator: "|")
+    }
+
+    private func metricValue(_ row: WsLadderRow, _ key: String) -> Double? {
+        if key == "pnl" { return row.pnl }
+        if key == "value" { return row.value }
+        return row.greeks?[key]
+    }
+
+    private func metricLabel(_ key: String) -> String {
+        if key == "pnl" { return "P&L" }
+        if key == "value" { return "PV" }
+        return key.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private func ladderTableRow(_ row: WsLadderRow,
+                                greekKeys: [String]) -> [String] {
+        var cells = [
+            Fmt.number(row.x, digits: 4),
+            row.value.map { Fmt.number($0, digits: 4) } ?? "—",
+            row.pnl.map { Fmt.number($0, digits: 4) } ?? (row.error ?? "—"),
+        ]
+        for greek in greekKeys {
+            cells.append(row.greeks?[greek].map { Fmt.number($0, digits: 6) } ?? "—")
+        }
+        return cells
+    }
+
+    private func ladderCSVRow(_ row: WsLadderRow,
+                              greekKeys: [String]) -> [String] {
+        var cells = [
+            String(row.x),
+            row.value.map { String($0) } ?? "",
+            row.pnl.map { String($0) } ?? "",
+        ]
+        for greek in greekKeys {
+            cells.append(row.greeks?[greek].map { String($0) } ?? "")
+        }
+        cells.append(row.error ?? "")
+        return cells
     }
 
     private func exportCSV() {
         let rows = vm.ladder?.rows ?? vm.ladderPartial
+        let greekKeys = metricKeys(rows).filter { $0 != "value" && $0 != "pnl" }
         CSVExport.save(
             suggestedName: "ladder_\(vm.ladderKey ?? "x")",
-            header: [vm.ladderKey ?? "x", "value", "pnl", "error"],
-            rows: rows.map { ["\($0.x)",
-                              $0.value.map { "\($0)" } ?? "",
-                              $0.pnl.map { "\($0)" } ?? "",
-                              $0.error ?? ""] })
+            header: [vm.ladderKey ?? "x", "value", "pnl"] + greekKeys + ["error"],
+            rows: rows.map { ladderCSVRow($0, greekKeys: greekKeys) })
     }
 }
 
@@ -1440,7 +1680,7 @@ private struct SolveForCard: View {
                             Text(spec.label).tag(spec.key)
                         }
                     }
-                    .labelsHidden().pickerStyle(.menu).fixedSize()
+                    .labelsHidden().pickerStyle(.menu).neutralControlTint().fixedSize()
                     Text("PV =").font(.system(size: 11)).foregroundStyle(.secondary)
                     TextField("цель", value: $vm.solveTarget, format: .number)
                         .textFieldStyle(.roundedBorder).frame(width: 90).monospacedDigit()

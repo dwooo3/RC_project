@@ -168,8 +168,9 @@ class AppContext:
         """Resolve a PricingEnvironment (seeded on first access; default FO)."""
         from domain.pricing_environment import PricingEnvironment, default_environments
         db = self.app_db
-        if not db.list_environments():
-            for env in default_environments():
+        existing_ids = {row["env_id"] for row in db.list_environments()}
+        for env in default_environments():
+            if env.env_id not in existing_ids:
                 db.save_environment(env)
         payload = db.load_environment((env_id or "FO").upper())
         if payload is None:

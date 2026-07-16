@@ -7,7 +7,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from domain.model_governance import ModelDefinition, ModelRegistryEntry
+from domain.model_governance import ModelRegistryEntry
 from models import registry
 from services.governance_service import GovernanceService
 from services.pricing_service import PricingService
@@ -18,7 +18,6 @@ def test_governance_returns_model_registry_entry_fields():
     entry = GovernanceService().get_model("fixed_bond")
 
     assert isinstance(entry, ModelRegistryEntry)
-    assert isinstance(entry, ModelDefinition)
     assert entry.model_id == "fixed_bond"
     assert entry.version
     assert entry.owner
@@ -130,21 +129,34 @@ def test_governance_blocks_placeholder_models():
     assert any("Placeholder" in error for error in result["errors"])
 
 
+def test_legacy_alias_provenance_keeps_requested_and_canonical_ids():
+    result = PricingService().workflow_status("adi")
+
+    assert result["model_id"] == "two_asset_adi"
+    assert result["requested_model_id"] == "adi"
+    assert result["deprecated_model_alias"] is True
+    assert result["model_metadata"]["requested_component_id"] == "adi"
+    assert result["model_metadata"]["deprecated_alias"] is True
+    assert result["audit_record"].model_id == "two_asset_adi"
+    assert result["audit_record"].details["requested_model_id"] == "adi"
+    assert result["calculation_timestamp"] == result["audit_record"].timestamp.isoformat()
+
+
 def test_governance_blocks_broken_models(monkeypatch):
+    model_id = "fixed_bond"
+    original = dict(registry.MODEL_REGISTRY[model_id])
     monkeypatch.setitem(
         registry.MODEL_REGISTRY,
-        "broken_test_model",
+        model_id,
         {
-            "name": "Broken Test Model",
+            **original,
             "status": registry.ModelStatus.BROKEN,
-            "domain": "Risk",
-            "tests": [],
             "notes": "Injected broken model for enforcement test.",
         },
     )
 
     try:
-        GovernanceService().enforce_model("broken_test_model")
+        GovernanceService().enforce_model(model_id)
     except ValueError as exc:
         assert "Broken" in str(exc)
     else:

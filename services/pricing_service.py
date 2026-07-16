@@ -50,7 +50,15 @@ class PricingService:
     @contextmanager
     def engine_context(self, metadata: dict) -> Iterator[None]:
         """Attach exact engine/model/solver provenance to one calculation."""
-        token = _ENGINE_EXECUTION_CONTEXT.set(dict(metadata))
+        # Engine wrappers may add a more specific eligibility variant inside
+        # the workstation's outer exact-request context (Carr-Madan is one
+        # example).  Replacing the ContextVar here silently discarded the
+        # outer resolved request and made environment/snapshot changes hash to
+        # the same run.  Merge scopes instead; the innermost metadata wins for
+        # overlapping provenance keys while private outer identity survives.
+        merged = dict(_ENGINE_EXECUTION_CONTEXT.get() or {})
+        merged.update(metadata)
+        token = _ENGINE_EXECUTION_CONTEXT.set(merged)
         try:
             yield
         finally:
@@ -88,9 +96,10 @@ class PricingService:
         if snapshot is None:
             return []
         warnings = []
-        if snapshot.is_demo:
+        if bool(getattr(snapshot, "is_demo", False)):
             warnings.append("Market data snapshot is DEMO/MANUAL and not production quality.")
-        warning = snapshot.metadata.get("warning")
+        metadata = getattr(snapshot, "metadata", {}) or {}
+        warning = metadata.get("warning") if isinstance(metadata, dict) else None
         if warning:
             warnings.append(str(warning))
         return warnings
@@ -98,7 +107,7 @@ class PricingService:
     def _market_data_source(self, snapshot: MarketDataSnapshot | None) -> str:
         if snapshot is None:
             return ""
-        source = snapshot.source
+        source = getattr(snapshot, "source", "")
         return source.value if hasattr(source, "value") else str(source)
 
     def _result(
@@ -122,13 +131,17 @@ class PricingService:
         model_metadata = self.governance.metadata_for_model(model_id)
         snapshot_id = snapshot.snapshot_id if snapshot else ""
         engine_context = dict(_ENGINE_EXECUTION_CONTEXT.get() or {})
+        # Workstation composition supplies the complete resolved request.  It
+        # is private execution context (not response metadata) and replaces
+        # wrapper-specific partial inputs for audit/hash purposes.
+        resolved_request = engine_context.pop("_resolved_pricing_request", None)
         audit_record = self.audit.record_calculation(
             user_action=user_action,
             calculation_type=calculation_type,
             model_id=canonical_model_id,
             model_version=model.version,
             market_data_snapshot_id=snapshot_id,
-            inputs=inputs,
+            inputs=resolved_request if resolved_request is not None else inputs,
             result_id=f"{calculation_type}:{canonical_model_id}",
             details={
                 "model_status": model.status,
@@ -159,7 +172,7 @@ class PricingService:
             "errors": errors or [],
             "market_data_snapshot_id": snapshot_id,
             "market_data_source": self._market_data_source(snapshot),
-            "market_data_quality": snapshot.quality if snapshot else "",
+            "market_data_quality": getattr(snapshot, "quality", "") if snapshot else "",
             "calculation_id": audit_record.record_id,
             "calculation_timestamp": audit_record.timestamp.isoformat(),
             "inputs_hash": audit_record.inputs_hash,
@@ -1072,6 +1085,105 @@ class PricingService:
                     "basket_type": basket_type, "face": face, "n_sims": int(n_sims)},
             snapshot=snapshot, user_action="Price basket structured note")
 
+    def price_multi_asset_autocall(
+        self,
+        specs,
+        r,
+        T,
+        *,
+        observation_dates=None,
+        autocall_barrier=1.20,
+        autocall_aggregation="best_of",
+        protection_barrier=0.65,
+        protection_aggregation="worst_of",
+        protection_monitoring="maturity",
+        coupon_barrier=0.65,
+        coupon_aggregation="worst_of",
+        coupon_rate=0.0,
+        guaranteed_coupon=0.05,
+        memory_coupon=True,
+        notional=1_000.0,
+        n_sims=20_000,
+        steps=100,
+        seed=42,
+        snapshot=None,
+    ) -> dict:
+        """Autocall/Phoenix on 1--5 real equities, indices or bonds.
+
+        ``specs`` contains ``secid``, ``kind`` and ``weight``.  The market-data
+        service resolves current spot, historical volatility, income/carry and
+        the full empirical correlation matrix before the path engine runs.
+        Trigger aggregations are independent, allowing e.g. best-of autocall
+        with worst-of coupon/protection tests.
+        """
+        from instruments.structured.multi_asset_autocall import multi_asset_autocall
+
+        specs = [dict(spec) for spec in specs]
+        resolved_observations = list(observation_dates or [])
+
+        def _engine():
+            constituents, correlation = self.market_data.basket_market_inputs(specs, T)
+            return multi_asset_autocall(
+                constituents,
+                r,
+                T,
+                correlation,
+                observation_dates=resolved_observations,
+                autocall_barrier=autocall_barrier,
+                autocall_aggregation=autocall_aggregation,
+                protection_barrier=protection_barrier,
+                protection_aggregation=protection_aggregation,
+                protection_monitoring=protection_monitoring,
+                coupon_barrier=coupon_barrier,
+                coupon_aggregation=coupon_aggregation,
+                coupon_rate=coupon_rate,
+                guaranteed_coupon=guaranteed_coupon,
+                memory_coupon=memory_coupon,
+                notional=notional,
+                n_sims=int(n_sims),
+                steps=int(steps),
+                seed=int(seed),
+            )
+
+        limitations = [
+            "Multi-asset autocall uses correlated GBM with constant volatility, "
+            "correlation, carry and discount rate over the full maturity.",
+        ]
+        if any(str(spec.get("kind", "")).lower() == "bond" for spec in specs):
+            limitations.append(
+                "Bond underlyings are simulated as price-index GBMs using "
+                "historical volatility and YTM carry; coupon cashflows, "
+                "duration/convexity and issuer default are not modelled."
+            )
+        return self._priced(
+            model_id="structured_autocall",
+            calculation_type="multi_asset_autocall_pricing",
+            engine=_engine,
+            inputs={
+                "specs": specs,
+                "r": r,
+                "T": T,
+                "observation_dates": resolved_observations,
+                "autocall_barrier": autocall_barrier,
+                "autocall_aggregation": autocall_aggregation,
+                "protection_barrier": protection_barrier,
+                "protection_aggregation": protection_aggregation,
+                "protection_monitoring": protection_monitoring,
+                "coupon_barrier": coupon_barrier,
+                "coupon_aggregation": coupon_aggregation,
+                "coupon_rate": coupon_rate,
+                "guaranteed_coupon": guaranteed_coupon,
+                "memory_coupon": memory_coupon,
+                "notional": notional,
+                "n_sims": int(n_sims),
+                "steps": int(steps),
+                "seed": int(seed),
+            },
+            snapshot=snapshot,
+            user_action="Price multi-asset autocall / Phoenix",
+            warnings=limitations,
+        )
+
     def price_bond(
         self,
         face: float | BondPricingRequest,
@@ -1458,10 +1570,15 @@ class PricingService:
             snapshot=snapshot, user_action="Price commodity futures option")
 
     def commodity_futures_curve(self, model, spot, tenors, r=0.05, kappa=1.0,
-                                rho=0.3, **params) -> dict:
+                                rho=0.3, snapshot=None, **params) -> dict:
         """Futures term structure F(0,T) under SS/GS (M5)."""
         from models.commodity import SchwartzSmith, GibsonSchwartz, commodity_futures_curve
+        inputs = {
+            "model": model, "spot": spot, "tenors": list(tenors), "r": r,
+            "kappa": kappa, "rho": rho, **params,
+        }
         try:
+            self._enforce_model(model)
             if model == "gibson_schwartz":
                 m = GibsonSchwartz(spot=spot, delta0=params.get("delta0", 0.05), kappa=kappa,
                                    sigma_S=params.get("sigma_S", 0.30),
@@ -1474,10 +1591,22 @@ class PricingService:
                                   sigma_chi=params.get("sigma_chi", 0.30),
                                   mu_xi=params.get("mu_xi", 0.0),
                                   sigma_xi=params.get("sigma_xi", 0.15), rho=rho, r=r)
-            return {"errors": [], "model_id": model,
-                    "curve": commodity_futures_curve(m, tenors)}
+            curve = commodity_futures_curve(m, tenors)
+            governed = self._result(
+                value=None, model_id=model, raw={"curve": curve},
+                snapshot=snapshot,
+                calculation_type="commodity_futures_curve",
+                inputs=inputs, user_action="Build commodity futures curve",
+            )
+            # Preserve the established direct-service convenience key while
+            # also returning the governed raw/provenance envelope.
+            governed["curve"] = curve
+            return governed
         except Exception as exc:                       # noqa: BLE001
-            return {"errors": [str(exc)], "model_id": model}
+            return self._error_result(
+                model_id=model, error=exc, snapshot=snapshot,
+                calculation_type="commodity_futures_curve", inputs=inputs,
+            )
 
     def price_amc_bermudan_swaption(self, notional, K, exercise_dates, T_end,
                                     freq=2, kappa=0.1, sigma_r=0.012, opt="payer",
@@ -1601,7 +1730,9 @@ class PricingService:
 
     # ── Phase 3: numerical engines ────────────────────────────────────
     def price_american_option(self, S, K, T, r, sigma, q=0.0, opt="put",
-                              model="pde", snapshot=None) -> dict:
+                              model="pde", snapshot=None, *, N=None,
+                              ns=None, nt=None, n_sims=None, steps=None,
+                              seed=None) -> dict:
         """American option. model: pde | binomial | binomial_lr | trinomial | lsm
         | baw (Barone-Adesi-Whaley) | bjerksund_stensland (M6 analytic approx)."""
         if model in ("baw", "bjerksund_stensland"):
@@ -1619,9 +1750,12 @@ class PricingService:
                     "lsm": "mc_lsm"}.get(model, model)
         return self._priced(
             model_id=model_id, calculation_type="american_option_pricing",
-            engine=lambda: american(S, K, T, r, sigma, q, opt, model),
+            engine=lambda: american(
+                S, K, T, r, sigma, q, opt, model,
+                N=N, ns=ns, nt=nt, n_sims=n_sims, steps=steps, seed=seed),
             inputs={"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q,
-                    "opt": opt, "model": model},
+                    "opt": opt, "model": model, "N": N, "Ns": ns, "Nt": nt,
+                    "n_sims": n_sims, "steps": steps, "seed": seed},
             snapshot=snapshot, user_action="Price American option")
 
     def price_vanilla_extra(self, model, S, K, T, r, sigma, q=0.0, opt="call",

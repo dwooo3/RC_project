@@ -92,7 +92,8 @@ class RiskService:
         user_action: str = "RiskService calculation",
     ) -> dict:
         model = self.governance.get_model(model_id)
-        all_warnings = self.governance.warnings_for_model(model_id)
+        canonical_model_id = model.model_id
+        all_warnings = self.governance.warnings_for_model(canonical_model_id)
         all_warnings.extend(self._market_data_warnings(snapshot))
         all_warnings.extend(warnings or [])
         model_metadata = self.governance.metadata_for_model(model_id)
@@ -100,16 +101,24 @@ class RiskService:
         audit_record = self.audit.record_calculation(
             user_action=user_action,
             calculation_type=calculation_type,
-            model_id=model_id,
+            model_id=canonical_model_id,
             model_version=model.version,
             market_data_snapshot_id=snapshot_id,
             inputs=inputs,
-            result_id=f"{calculation_type}:{model_id}",
-            details={"model_status": model.status, "errors": errors or []},
+            result_id=f"{calculation_type}:{canonical_model_id}",
+            details={
+                "model_status": model.status,
+                "errors": errors or [],
+                "requested_model_id": model.requested_component_id,
+                "canonical_component_id": canonical_model_id,
+                "deprecated_alias": model.deprecated_alias,
+            },
         )
         return {
             "value": value,
-            "model_id": model_id,
+            "model_id": canonical_model_id,
+            "requested_model_id": model.requested_component_id,
+            "deprecated_model_alias": model.deprecated_alias,
             "model_status": model.status,
             "model_metadata": model_metadata,
             "model_version": model.version,
@@ -126,6 +135,7 @@ class RiskService:
             "market_data_source": self._market_data_source(snapshot),
             "market_data_quality": snapshot.quality if snapshot else "",
             "calculation_id": audit_record.record_id,
+            "calculation_timestamp": audit_record.timestamp.isoformat(),
             "inputs_hash": audit_record.inputs_hash,
             "audit_record": audit_record,
             "calculation_record": audit_record,

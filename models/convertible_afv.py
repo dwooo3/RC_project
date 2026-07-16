@@ -1,5 +1,5 @@
 """
-AFV (Andersen-Buffum) convertible bond, Master-plan M8.
+Andersen-Buffum-style equity-linked hazard convertible, Master-plan M8.
 
 A defaultable equity model on a binomial tree: the stock diffuses but can jump to
 zero at a hazard intensity that rises as the share price falls,
@@ -17,6 +17,9 @@ ties credit to the equity, capturing the empirical equity-credit link. Validated
 conv_ratio→0 recovers a defaultable straight bond, λ0→0 recovers the
 no-default convertible, deep in-the-money → conversion value, and the price falls
 as the hazard rises.
+
+The public ``afv_convertible`` ID is retained for compatibility. This module
+does not implement the Ayache-Forsyth-Vetzal coupled PDE formulation.
 """
 
 from __future__ import annotations

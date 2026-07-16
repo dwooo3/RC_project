@@ -28,6 +28,9 @@ struct RootView: View {
                 .frame(minWidth: 640)
         }
         .background(TitlebarSeparatorRemover())
+        // No toolbar band: the title/toolbar area stays fully transparent —
+        // only the floating pills remain, no strip or hairline under them.
+        .toolbarBackground(.hidden, for: .windowToolbar)
         .task { await model.start() }
         .onChange(of: model.section) { _, new in
             Task { await model.load(new) }
@@ -160,8 +163,9 @@ struct RootView: View {
             Divider().opacity(0.5)
             footer
         }
-        // Same clean surface as the content blocks: solid white, no vibrancy.
-        .background(Theme.cardFill.ignoresSafeArea())
+        // No custom background: the system sidebar material shows through
+        // (behind-window vibrancy — the desktop wallpaper reads through the
+        // column, like Finder/Notes sidebars).
     }
 
     private var brand: some View {
@@ -321,8 +325,8 @@ extension View {
     }
 }
 
-/// Sidebar navigation row — a rounded accent pill when selected (matching the
-/// content blocks), with a soft hover highlight otherwise.
+/// Sidebar navigation row — neutral selection: a soft primary-tinted rounded
+/// highlight (no accent pill), with a lighter wash on hover.
 private struct NavRow: View {
     let section: AppSection
     let selected: Bool
@@ -334,19 +338,19 @@ private struct NavRow: View {
             HStack(spacing: Theme.s3) {
                 Image(systemName: section.icon)
                     .font(.system(size: 13))
-                    .foregroundStyle(selected ? Color.white : Color.secondary)
+                    .foregroundStyle(selected ? Color.primary : Color.secondary)
                     .frame(width: 20)
                 Text(section.title)
                     .font(.system(size: 13, weight: selected ? .semibold : .regular))
-                    .foregroundStyle(selected ? Color.white : .primary)
+                    .foregroundStyle(Color.primary)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, Theme.s3)
             .padding(.vertical, 7)
             .background {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(selected ? AnyShapeStyle(Theme.accent)
-                                   : AnyShapeStyle(hovering ? Color.primary.opacity(0.06) : Color.clear))
+                    .fill(selected ? Color.primary.opacity(0.09)
+                                   : (hovering ? Color.primary.opacity(0.05) : Color.clear))
             }
             .contentShape(Rectangle())
         }

@@ -344,7 +344,13 @@ def _governance(model_id: str) -> dict:
     e = registry.get(model_id)
     status = e.get("status")
     return {"status": status.value if hasattr(status, "value") else str(status),
-            "asset_class": e.get("asset_class", "rates"),
+            "canonical_component_id": e.get("canonical_component_id", model_id),
+            "requested_component_id": e.get("requested_component_id", model_id),
+            "deprecated_alias": bool(e.get("deprecated_alias", False)),
+            "component_kind": e.get("component_kind") or "",
+            "q_level": e.get("q_level") or "",
+            "implementation_scope": e.get("implementation_scope") or "",
+            "asset_class": e.get("asset_class") or "",
             "method": e.get("method", ""), "notes": e.get("notes", "")}
 
 

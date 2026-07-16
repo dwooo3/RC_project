@@ -61,22 +61,32 @@ def european(S, K, T, r, sigma, q=0.0, opt="call", model="bsm",
         raise ValueError(f"Unknown model: {model}")
 
 
-def american(S, K, T, r, sigma, q=0.0, opt="call", model="binomial") -> dict:
+def american(S, K, T, r, sigma, q=0.0, opt="call", model="binomial", *,
+             N=None, ns=None, nt=None, n_sims=None, steps=None, seed=None) -> dict:
     """
     American option.
     model: binomial | binomial_lr | trinomial | lsm
     """
     if model == "binomial":
-        return binomial_crr(S, K, T, r, sigma, q, N=500, opt=opt, exercise="american")
+        return binomial_crr(S, K, T, r, sigma, q, N=int(N or 500),
+                            opt=opt, exercise="american")
     elif model == "binomial_lr":
-        return binomial_lr(S, K, T, r, sigma, q, N=501, opt=opt, exercise="american")
+        grid = int(N or 501)
+        if grid % 2 == 0:
+            grid += 1
+        return binomial_lr(S, K, T, r, sigma, q, N=grid,
+                           opt=opt, exercise="american")
     elif model == "trinomial":
-        return trinomial(S, K, T, r, sigma, q, N=300, opt=opt, exercise="american")
+        return trinomial(S, K, T, r, sigma, q, N=int(N or 300),
+                         opt=opt, exercise="american")
     elif model == "lsm":
-        return lsm(S, K, T, r, sigma, q, opt=opt)
+        return lsm(S, K, T, r, sigma, q,
+                   n_sims=int(n_sims or 50_000), steps=int(steps or 252),
+                   opt=opt, seed=int(seed) if seed is not None else 42)
     elif model == "pde":
         from models.pde import cn_vanilla
-        return cn_vanilla(S, K, T, r, sigma, q, opt, "american")
+        return cn_vanilla(S, K, T, r, sigma, q, opt, "american",
+                          Ns=int(ns or 400), Nt=int(nt or 400))
     else:
         raise ValueError(f"Unknown model: {model}")
 

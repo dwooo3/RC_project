@@ -3,7 +3,7 @@ import Observation
 
 /// Top-level navigation sections (mirrors the desktop workspaces).
 enum AppSection: String, CaseIterable, Identifiable, Sendable {
-    case dashboard, portfolio, risk, market, dataControls, pricing, governance, analytics
+    case dashboard, portfolio, risk, market, dataControls, pricing, pricingNew, governance, analytics
 
     var id: String { rawValue }
 
@@ -15,6 +15,7 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
         case .market:       return "Market Data"
         case .dataControls: return "Контроль данных"
         case .pricing:      return "Pricing"
+        case .pricingNew:   return "Pricing_new"
         case .governance:   return "Governance"
         case .analytics:    return "Analytics Lab"
         }
@@ -28,6 +29,7 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
         case .market:       return "chart.line.uptrend.xyaxis"
         case .dataControls: return "checklist"
         case .pricing:      return "function"
+        case .pricingNew:   return "rectangle.3.group.fill"
         case .governance:   return "checkmark.seal.fill"
         case .analytics:    return "flask.fill"
         }
@@ -41,7 +43,8 @@ enum AppSection: String, CaseIterable, Identifiable, Sendable {
         case .market:       return "Live MOEX curves & quotes"
         case .dataControls: return "Качество и загрузка данных"
         case .pricing:      return "Instrument valuation"
-        case .governance:   return "Model registry & validation"
+        case .pricingNew:   return "Multi-instrument pricing worksheet"
+        case .governance:   return "Quant definitions, solvers & engine publication"
         case .analytics:    return "Scenarios & what-if"
         }
     }
@@ -201,8 +204,8 @@ final class AppModel {
             if force || governance.value == nil { await loadGovernance() }
         case .analytics:
             if force || analytics.value == nil { await loadAnalytics() }
-        case .pricing:
-            break   // PricingWorkstationView manages its own state
+        case .pricing, .pricingNew:
+            break   // Pricing workspaces manage their own state
         case .dataControls:
             break   // DataControlsScreen manages its own state
         }

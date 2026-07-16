@@ -22,20 +22,15 @@ struct GovernanceScreen: View {
 
     @ViewBuilder
     private func content(_ d: GovernanceData) -> some View {
-        let total = d.counts.values.reduce(0, +)
+        let total = d.quantCoverageSummary?.componentCount
+            ?? d.counts.values.reduce(0, +)
         let order = ["Validated", "Approximation", "Prototype", "Placeholder", "Broken"]
         let slices = order.compactMap { s -> StatusSlice? in
             guard let n = d.counts[s], n > 0 else { return nil }
             return StatusSlice(status: s, count: n)
         }
 
-        KPIStrip(items: [
-            KPICard(label: "Total models", value: "\(total)", sub: "registry", accent: Theme.accent, icon: "square.stack.3d.up.fill"),
-            KPICard(label: "Validated", value: "\(d.counts["Validated"] ?? 0)", sub: "production", accent: Theme.positive, icon: "checkmark.seal.fill"),
-            KPICard(label: "Approximation", value: "\(d.counts["Approximation"] ?? 0)", sub: "documented", accent: Theme.accent, icon: "function"),
-            KPICard(label: "Prototype", value: "\(d.counts["Prototype"] ?? 0)", sub: "research", accent: Theme.warning, icon: "hammer.fill"),
-            KPICard(label: "Broken", value: "\(d.counts["Broken"] ?? 0)", sub: "blocked", accent: Theme.negative, icon: "xmark.octagon.fill"),
-        ])
+        KPIStrip(items: governanceKPIs(d, componentTotal: total))
 
         HStack(alignment: .top, spacing: Theme.s4) {
             donutCard(slices, total: total)
@@ -44,10 +39,53 @@ struct GovernanceScreen: View {
         limitationsCard(d.limitations)
     }
 
+    private func governanceKPIs(_ d: GovernanceData,
+                                componentTotal: Int) -> [KPICard] {
+        guard let q = d.quantCoverageSummary else {
+            return [
+                KPICard(label: "Components", value: "\(componentTotal)",
+                        sub: "legacy implementation registry", accent: Theme.accent,
+                        icon: "square.stack.3d.up.fill"),
+                KPICard(label: "Validated status", value: "\(d.counts["Validated"] ?? 0)",
+                        sub: "component status, not prod approval", accent: Theme.positive,
+                        icon: "checkmark.seal.fill"),
+                KPICard(label: "Approximation", value: "\(d.counts["Approximation"] ?? 0)",
+                        sub: "legacy component status", accent: Theme.accent, icon: "function"),
+                KPICard(label: "Prototype", value: "\(d.counts["Prototype"] ?? 0)",
+                        sub: "legacy component status", accent: Theme.warning, icon: "hammer.fill"),
+                KPICard(label: "Broken", value: "\(d.counts["Broken"] ?? 0)",
+                        sub: "blocked component", accent: Theme.negative,
+                        icon: "xmark.octagon.fill"),
+            ]
+        }
+        return [
+            KPICard(label: "Components", value: "\(q.componentCount)",
+                    sub: "implementation/publication routes", accent: Theme.accent,
+                    icon: "shippingbox.fill"),
+            KPICard(label: "Model definitions", value: "\(q.modelDefinitionCount)",
+                    sub: "mathematical dynamics", accent: Theme.accent,
+                    icon: "function"),
+            KPICard(label: "Solver definitions", value: "\(q.solverDefinitionCount)",
+                    sub: "\(q.canonicalSolverCount) canonical components", accent: Theme.accent,
+                    icon: "cpu.fill"),
+            KPICard(label: "Transition engines",
+                    value: "\(q.legacyTransitionEngineCount ?? q.productionEngineCount)/\(q.engineEligibilityCount)",
+                    sub: "temporary product-qualified approvals", accent: Theme.positive,
+                    icon: "checkmark.shield.fill"),
+            KPICard(label: "Independent approvals",
+                    value: "\(q.independentlyApprovedEngineCount ?? 0)",
+                    sub: "QW5 target", accent: Theme.warning,
+                    icon: "checkmark.seal.fill"),
+            KPICard(label: "Research engines", value: "\(q.researchEngineCount)",
+                    sub: "explicit Analytics Lab only", accent: Theme.warning,
+                    icon: "flask.fill"),
+        ]
+    }
+
     private func donutCard(_ slices: [StatusSlice], total: Int) -> some View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.s3) {
-                BlockTitle("Status mix", icon: "chart.pie.fill")
+                BlockTitle("Legacy component status", icon: "chart.pie.fill")
                 Chart(slices) { s in
                     SectorMark(angle: .value("Count", s.count), innerRadius: .ratio(0.62), angularInset: 1.5)
                         .foregroundStyle(Theme.statusColor(s.status))
@@ -58,7 +96,7 @@ struct GovernanceScreen: View {
                 .overlay {
                     VStack(spacing: 0) {
                         Text("\(total)").font(.system(size: 22, weight: .bold)).monospacedDigit()
-                        Text("models").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text("components").font(.system(size: 10)).foregroundStyle(.secondary)
                     }
                 }
                 VStack(alignment: .leading, spacing: 4) {
@@ -76,25 +114,29 @@ struct GovernanceScreen: View {
         .frame(width: 240)
     }
 
-    private func registryCard(_ models: [ModelRow]) -> some View {
+    private func registryCard(_ components: [ModelRow]) -> some View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.s3) {
-                BlockTitle("Model registry", icon: "tablecells")
-                Table(sortedModels(models)) {
-                    TableColumn("ID") { m in
-                        Text(m.modelID).font(.system(size: 12, weight: .medium))
+                BlockTitle("Implementation component registry", icon: "tablecells")
+                Table(sortedComponents(components)) {
+                    TableColumn("Component") { m in
+                        Text(m.canonicalComponentID ?? m.modelID)
+                            .font(.system(size: 12, weight: .medium))
                     }
                     TableColumn("Name") { m in
                         Text(m.name).foregroundStyle(.secondary).lineLimit(1)
                     }
-                    TableColumn("Status") { m in
+                    TableColumn("Registry status") { m in
                         Text(m.status).font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(Theme.statusColor(m.status))
                     }
-                    TableColumn("Domain") { m in Text(m.domain) }
-                    TableColumn("Prod") { m in
+                    TableColumn("Kind") { m in
+                        Text(m.componentKind ?? "—").font(.system(size: 10))
+                    }
+                    TableColumn("Legacy gate") { m in
                         Image(systemName: m.productionAllowed ? "checkmark.circle.fill" : "minus.circle")
                             .foregroundStyle(m.productionAllowed ? Theme.positive : .secondary)
+                            .help("Legacy component-level flag; production execution is governed by EngineEligibility")
                     }
                 }
                 .frame(minHeight: 420)
@@ -102,9 +144,9 @@ struct GovernanceScreen: View {
         }
     }
 
-    private func sortedModels(_ models: [ModelRow]) -> [ModelRow] {
+    private func sortedComponents(_ components: [ModelRow]) -> [ModelRow] {
         let rank = ["Validated": 0, "Approximation": 1, "Prototype": 2, "Placeholder": 3, "Broken": 4]
-        return models.sorted {
+        return components.sorted {
             let a = rank[$0.status] ?? 9, b = rank[$1.status] ?? 9
             return a != b ? a < b : $0.modelID < $1.modelID
         }
@@ -113,7 +155,7 @@ struct GovernanceScreen: View {
     private func limitationsCard(_ limitations: [LimitationRow]) -> some View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.s3) {
-                BlockTitle("Model limitations", icon: "exclamationmark.triangle")
+                BlockTitle("Implementation limitations", icon: "exclamationmark.triangle")
                 ForEach(limitations.prefix(20)) { l in
                     HStack(alignment: .top, spacing: Theme.s2) {
                         Text(l.modelID)

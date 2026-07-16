@@ -51,7 +51,155 @@ struct CustomMarketPayload: Encodable, Sendable {
     var q: Double? = nil
     var sigma: Double? = nil
     var sigmas: [Double]? = nil
+    var qs: [Double]? = nil
     var rho: Double? = nil
+    var corr: [[Double]]? = nil
+}
+
+/// Pure helpers for keeping the multi-asset valuation inputs aligned with the
+/// product definition.  They live outside SwiftUI so resize/mirroring and the
+/// request contract can be pinned by ordinary unit tests.
+enum CustomMarketInputGrid {
+    static func resizedVector(_ values: [Double], count: Int,
+                              defaultValue: Double) -> [Double] {
+        let n = max(1, count)
+        if values.count >= n { return Array(values.prefix(n)) }
+        return values + Array(repeating: defaultValue, count: n - values.count)
+    }
+
+    static func resizedCorrelation(_ matrix: [[Double]], count: Int,
+                                   defaultOffDiagonal: Double) -> [[Double]] {
+        let n = max(1, count)
+        var result = Array(repeating: Array(repeating: defaultOffDiagonal,
+                                            count: n), count: n)
+        for row in 0..<n {
+            result[row][row] = 1.0
+            for column in (row + 1)..<n {
+                let old = existingSymmetricValue(matrix, row: row, column: column)
+                let value = old ?? defaultOffDiagonal
+                result[row][column] = value
+                result[column][row] = value
+            }
+        }
+        return result
+    }
+
+    static func settingCorrelation(_ matrix: [[Double]], row: Int,
+                                   column: Int, value: Double) -> [[Double]] {
+        let n = max(matrix.count, max(row, column) + 1)
+        var result = resizedCorrelation(matrix, count: n,
+                                        defaultOffDiagonal: 0.0)
+        guard row >= 0, column >= 0, row < n, column < n else { return result }
+        if row == column {
+            result[row][column] = 1.0
+        } else {
+            result[row][column] = value
+            result[column][row] = value
+        }
+        return result
+    }
+
+    static func equicorrelation(count: Int, rho: Double) -> [[Double]] {
+        resizedCorrelation([], count: count, defaultOffDiagonal: rho)
+    }
+
+    static func validationIssues(sigmas: [Double], qs: [Double],
+                                 correlation: [[Double]], assetCount: Int,
+                                 rate: Double, nSims: Double, steps: Double,
+                                 seed: Double) -> [String] {
+        let n = max(1, assetCount)
+        var issues: [String] = []
+        if !rate.isFinite || rate < -1 || rate > 2 {
+            issues.append("Risk-free r должен быть в диапазоне −1 … 2.")
+        }
+        if sigmas.count != n {
+            issues.append("Нужно по одной волатильности на каждый актив (\(n)).")
+        } else if sigmas.contains(where: { !$0.isFinite || $0 < 0 || $0 > 5 }) {
+            issues.append("Волатильности должны быть в диапазоне 0 … 5.")
+        }
+        if qs.count != n {
+            issues.append("Нужно по одной дивидендной доходности на каждый актив (\(n)).")
+        } else if qs.contains(where: { !$0.isFinite || $0 < -1 || $0 > 1 }) {
+            issues.append("Дивидендные доходности должны быть в диапазоне −1 … 1.")
+        }
+        if !isIntegerInRange(nSims, 1_000...200_000) {
+            issues.append("MC paths должно быть целым числом 1 000 … 200 000.")
+        }
+        if !isIntegerInRange(steps, 16...1_024) {
+            issues.append("Time steps должно быть целым числом 16 … 1 024.")
+        }
+        if !seed.isFinite || seed < 0 || seed > Double(Int32.max)
+            || seed.rounded() != seed {
+            issues.append("Seed должен быть целым числом 0 … \(Int32.max).")
+        }
+        if n > 1 {
+            if !hasValidShape(correlation, count: n) {
+                issues.append("Корреляционная матрица должна иметь размер \(n)×\(n).")
+            } else if !isSymmetricCorrelation(correlation) {
+                issues.append("Корреляции должны быть симметричными, с диагональю 1 и значениями от −0,999 до 0,999.")
+            } else if !isPositiveDefinite(correlation) {
+                issues.append("Корреляционная матрица должна быть положительно определённой.")
+            }
+        }
+        return issues
+    }
+
+    private static func existingSymmetricValue(_ matrix: [[Double]], row: Int,
+                                               column: Int) -> Double? {
+        if row < matrix.count, column < matrix[row].count {
+            return matrix[row][column]
+        }
+        if column < matrix.count, row < matrix[column].count {
+            return matrix[column][row]
+        }
+        return nil
+    }
+
+    private static func isIntegerInRange(_ value: Double,
+                                         _ range: ClosedRange<Int>) -> Bool {
+        value.isFinite && value.rounded() == value
+            && value >= Double(range.lowerBound)
+            && value <= Double(range.upperBound)
+    }
+
+    private static func hasValidShape(_ matrix: [[Double]], count: Int) -> Bool {
+        matrix.count == count && matrix.allSatisfy { $0.count == count }
+    }
+
+    private static func isSymmetricCorrelation(_ matrix: [[Double]]) -> Bool {
+        for row in matrix.indices {
+            if !matrix[row][row].isFinite || abs(matrix[row][row] - 1.0) > 1e-10 {
+                return false
+            }
+            for column in (row + 1)..<matrix.count {
+                let value = matrix[row][column]
+                if !value.isFinite || value < -0.999 || value > 0.999
+                    || abs(value - matrix[column][row]) > 1e-10 {
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
+    /// Cholesky feasibility check matching the backend's fail-closed MC gate.
+    private static func isPositiveDefinite(_ matrix: [[Double]]) -> Bool {
+        let n = matrix.count
+        var lower = Array(repeating: Array(repeating: 0.0, count: n), count: n)
+        for row in 0..<n {
+            for column in 0...row {
+                var sum = matrix[row][column]
+                for k in 0..<column { sum -= lower[row][k] * lower[column][k] }
+                if row == column {
+                    if !sum.isFinite || sum <= 1e-12 { return false }
+                    lower[row][column] = sqrt(sum)
+                } else {
+                    lower[row][column] = sum / lower[column][column]
+                }
+            }
+        }
+        return true
+    }
 }
 
 struct CustomCompileIssue: Decodable, Sendable, Hashable, Identifiable {
@@ -141,14 +289,24 @@ struct CustomPriceResult: Decodable, Sendable {
     let version: Int
     let watermark: String?
     let nSims: Int
+    let steps: Int?
     let seed: Int
+    let engine: String?
 
     enum CodingKeys: String, CodingKey {
-        case value, stderr, state, version, watermark, seed
+        case value, stderr, state, version, watermark, steps, seed, engine
         case earlyRedemptionProb = "early_redemption_prob"
         case definitionHash = "definition_hash"
         case nSims = "n_sims"
     }
+}
+
+struct CustomPriceRequestBody: Encodable, Sendable {
+    let slots: [String: Double]
+    let market: CustomMarketPayload
+    let n_sims: Int
+    let steps: Int
+    let seed: Int
 }
 
 // MARK: - Bridge calls
@@ -228,15 +386,10 @@ extension BridgeClient {
 
     func customPrice(_ id: String, slots: [String: Double],
                      market: CustomMarketPayload, nSims: Int,
-                     seed: Int) async throws -> CustomPriceResult {
-        struct Body: Encodable {
-            let slots: [String: Double]
-            let market: CustomMarketPayload
-            let n_sims: Int
-            let seed: Int
-        }
-        let body = try JSONEncoder().encode(Body(
-            slots: slots, market: market, n_sims: nSims, seed: seed))
+                     steps: Int, seed: Int) async throws -> CustomPriceResult {
+        let body = try JSONEncoder().encode(CustomPriceRequestBody(
+            slots: slots, market: market, n_sims: nSims,
+            steps: steps, seed: seed))
         return try await post("custom/products/\(id)/price", body: body)
     }
 }

@@ -1,16 +1,24 @@
 import SwiftUI
 
-/// Pricing route: the universal derivatives workstation (every pricer in the
-/// model library, grouped by asset class) plus the dedicated fixed-income pane.
+/// Pricing is organised by user intent rather than implementation subsystem:
+/// calculate one trade, price a transient set of positions, or build a payoff.
 struct PricingScreen: View {
     enum Category: String, CaseIterable, Identifiable {
-        case derivatives = "Derivatives"
-        case bond = "Bond"
-        case custom = "Custom"
+        case calculator = "Calculator"
+        case set = "Pricing Set"
+        case builder = "Custom Builder"
         var id: String { rawValue }
     }
 
-    @State private var category: Category = .derivatives
+    enum CalculatorFamily: String, CaseIterable, Identifiable {
+        case derivatives = "Derivatives & structured"
+        case bonds = "Bonds"
+        var id: String { rawValue }
+    }
+
+    @State private var category: Category = .calculator
+    @State private var calculatorFamily: CalculatorFamily = .derivatives
+    @State private var book = PricingBookViewModel()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -18,15 +26,48 @@ struct PricingScreen: View {
                 SegmentedBar(items: Category.allCases.map { ($0, $0.rawValue) },
                              selection: $category)
                     .fixedSize()
+                if !book.legs.isEmpty {
+                    Pill(text: "\(book.legs.count) positions", color: Theme.accent)
+                }
                 Spacer()
             }
             .padding(.horizontal, Theme.s5)
             .padding(.vertical, Theme.s2)
             Divider()
             switch category {
-            case .derivatives: PricingWorkstationView()
-            case .bond: BondPane()
-            case .custom: CustomProductsView()
+            case .calculator:
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("INSTRUMENT FAMILY")
+                            .font(.system(size: 9, weight: .semibold)).tracking(0.45)
+                            .foregroundStyle(.tertiary)
+                        SegmentedBar(
+                            items: CalculatorFamily.allCases.map { ($0, $0.rawValue) },
+                            selection: $calculatorFamily,
+                            compact: true)
+                        Spacer()
+                        if !book.legs.isEmpty {
+                            Button {
+                                category = .set
+                            } label: {
+                                Label("Open Pricing Set", systemImage: "arrow.right.circle")
+                            }
+                            .buttonStyle(.bordered).controlSize(.small)
+                        }
+                    }
+                    .padding(.horizontal, Theme.s5).padding(.vertical, Theme.s2)
+                    Divider()
+                    switch calculatorFamily {
+                    case .derivatives:
+                        PricingWorkstationView { run in book.add(run) }
+                    case .bonds:
+                        BondPane()
+                    }
+                }
+            case .set:
+                PricingBookView(vm: book)
+            case .builder:
+                CustomProductsView()
             }
         }
     }
@@ -100,7 +141,7 @@ struct ParamFieldView: View {
             Picker("", selection: string) {
                 ForEach(spec.choices ?? [], id: \.self) { Text($0).tag($0) }
             }
-            .labelsHidden().pickerStyle(.menu)
+            .labelsHidden().pickerStyle(.menu).neutralControlTint()
         } else if spec.dtype == "date", string != nil {
             DatePicker("", selection: dateBinding, displayedComponents: .date)
                 .labelsHidden().datePickerStyle(.compact)

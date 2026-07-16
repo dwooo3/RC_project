@@ -1,5 +1,5 @@
 """
-Jarrow-Yildirim inflation model, gap-closing batch 4.
+Deterministic CPI carry and breakeven identities (legacy JY ID).
 
 A foreign-currency analogue: nominal and real economies each carry a (flat here)
 discount curve, and the CPI index I(t) is the "exchange rate" with
@@ -10,6 +10,9 @@ dI/I = (n - r) dt + σ_I dW. The risk-neutral forward CPI is therefore
 so a zero-coupon inflation-indexed swap's fair rate and the breakeven inflation
 follow directly. Validated: equal nominal/real curves → zero breakeven; the
 ZCIIS fair leg equals the forward CPI ratio.
+
+This is not the full stochastic Jarrow-Yildirim model: stochastic nominal and
+real rates, inflation volatility and cap/floor pricing are outside this module.
 """
 
 from __future__ import annotations

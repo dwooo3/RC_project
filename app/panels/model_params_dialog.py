@@ -25,7 +25,7 @@ def model_metadata(engine: str) -> dict:
     """Governance + taxonomy metadata for a model id (best-effort)."""
     from models import registry as R
     from models import taxonomy as tax
-    reg = R.MODEL_REGISTRY.get(engine, {})
+    reg = R.get(engine)
     cls = tax.classify(engine)
     status = reg.get("status")
     return {

@@ -17,14 +17,35 @@ final class CustomProductsViewModel {
     var marketR: Double = 0.05
     var marketQ: Double = 0.0
     var marketSigma: Double = 0.25
-    /// Per-asset vols + equicorrelation, used when the definition declares
-    /// a multi-asset basket.
+    /// Per-asset market inputs used by the correlated-GBM evaluator.
     var marketSigmas: [Double] = []
+    var marketQs: [Double] = []
+    var marketCorrelation: [[Double]] = []
+    /// Default for correlation cells created when an asset is appended.
     var marketRho: Double = 0.5
     var nSims: Double = 50_000
+    var mcSteps: Double = 252
     var seed: Double = 42
 
-    var assetNames: [String] { detail?.definition.assetNames ?? ["S"] }
+    var assetNames: [String] {
+        let names = editor?.assets.isEmpty == false
+            ? editor?.assets : detail?.definition.assetNames
+        return (names?.isEmpty == false ? names! : ["S"]).enumerated().map {
+            let trimmed = $0.element.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "Asset \($0.offset + 1)" : trimmed
+        }
+    }
+
+    var engineLabel: String {
+        assetNames.count > 1 ? "custom_mc_multi_gbm" : "custom_mc_gbm"
+    }
+
+    var valuationIssues: [String] {
+        CustomMarketInputGrid.validationIssues(
+            sigmas: marketSigmas, qs: marketQs,
+            correlation: marketCorrelation, assetCount: assetNames.count,
+            rate: marketR, nSims: nSims, steps: mcSteps, seed: seed)
+    }
 
     var author: String = NSUserName().isEmpty ? "trader" : NSUserName()
     var approver: String = "risk-control"
@@ -48,22 +69,36 @@ final class CustomProductsViewModel {
 
     /// Advanced editor document for the selected product (full AST).
     var editor: EDefinition?
+    /// Canonical local JSON of the definition last loaded/saved on the server.
+    /// The server definition remains authoritative for pricing and lifecycle.
+    private var savedEditorJSON: Data?
+
+    var isEditorDirty: Bool {
+        guard let editor, let savedEditorJSON,
+              let current = canonicalEditorJSON(editor) else { return false }
+        return current != savedEditorJSON
+    }
 
     func select(_ id: String) async {
         selectedID = id
         priceResult = nil
         message = nil
         editor = nil
+        savedEditorJSON = nil
         do {
             let d = try await client.customProduct(id)
             detail = d
             slotValues = d.definition.slots.mapValues(\.defaultValue)
-            marketSigmas = Array(repeating: marketSigma,
-                                 count: d.definition.assetNames.count)
+            marketSigmas = []
+            marketQs = []
+            marketCorrelation = []
+            synchronizeMarketInputs(assetCount: d.definition.assetNames.count)
             let raw = try await client.customProductRaw(id)
             if let obj = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
                let definition = obj["definition"] as? [String: Any] {
                 editor = EDefinition.fromJSON(definition)
+                savedEditorJSON = editor.flatMap(canonicalEditorJSON)
+                synchronizeMarketInputs(assetCount: editor?.assets.count ?? 1)
             }
         } catch {
             message = error.localizedDescription
@@ -111,7 +146,9 @@ final class CustomProductsViewModel {
             products = try await client.customProducts()
             if let d = detail {
                 slotValues = d.definition.slots.mapValues(\.defaultValue)
+                synchronizeMarketInputs(assetCount: d.definition.assetNames.count)
             }
+            savedEditorJSON = canonicalEditorJSON(editor)
         } catch {
             message = error.localizedDescription
         }
@@ -136,6 +173,10 @@ final class CustomProductsViewModel {
 
     /// One lifecycle transition; every error lands in `message`, never lost.
     func lifecycle(_ op: @escaping () async throws -> CustomProductDetail) async {
+        guard !isEditorDirty else {
+            message = "Есть несохранённые изменения payout. Сначала сохраните и скомпилируйте определение."
+            return
+        }
         isBusy = true
         message = nil
         do {
@@ -149,24 +190,102 @@ final class CustomProductsViewModel {
 
     func price() async {
         guard let id = selectedID else { return }
+        synchronizeMarketInputs()
+        guard !isEditorDirty else {
+            message = "Расчёт заблокирован: payout на экране не сохранён на сервере."
+            return
+        }
+        guard valuationIssues.isEmpty else {
+            message = valuationIssues.joined(separator: " ")
+            return
+        }
+        guard let submittedPaths = Int(exactly: nSims),
+              let submittedSteps = Int(exactly: mcSteps),
+              let submittedSeed = Int(exactly: seed) else {
+            message = "Numerical controls не представимы как целые числа."
+            return
+        }
         isPricing = true
         message = nil
         priceResult = nil
-        var market = CustomMarketPayload(r: marketR, q: marketQ)
+        var market = CustomMarketPayload(r: marketR)
         if assetNames.count > 1 {
             market.sigmas = marketSigmas
-            market.rho = marketRho
+            market.qs = marketQs
+            market.corr = marketCorrelation
         } else {
-            market.sigma = marketSigma
+            market.sigma = marketSigmas.first ?? marketSigma
+            market.q = marketQs.first ?? marketQ
         }
         do {
             priceResult = try await client.customPrice(
                 id, slots: slotValues, market: market,
-                nSims: Int(nSims), seed: Int(seed))
+                nSims: submittedPaths, steps: submittedSteps,
+                seed: submittedSeed)
         } catch {
             message = error.localizedDescription
         }
         isPricing = false
+    }
+
+    /// Keep vector/matrix dimensions equal to the current definition. Existing
+    /// leading values survive resize; newly created pairs use `marketRho`.
+    func synchronizeMarketInputs(assetCount requestedCount: Int? = nil) {
+        let count = max(1, requestedCount ?? assetNames.count)
+        marketSigmas = CustomMarketInputGrid.resizedVector(
+            marketSigmas, count: count, defaultValue: marketSigma)
+        marketQs = CustomMarketInputGrid.resizedVector(
+            marketQs, count: count, defaultValue: marketQ)
+        marketCorrelation = CustomMarketInputGrid.resizedCorrelation(
+            marketCorrelation, count: count, defaultOffDiagonal: marketRho)
+        marketSigma = marketSigmas[0]
+        marketQ = marketQs[0]
+    }
+
+    func sigmaBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: { index < self.marketSigmas.count
+                ? self.marketSigmas[index] : self.marketSigma },
+            set: { value in
+                self.synchronizeMarketInputs()
+                guard index < self.marketSigmas.count else { return }
+                self.marketSigmas[index] = value
+                if index == 0 { self.marketSigma = value }
+            })
+    }
+
+    func qBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: { index < self.marketQs.count ? self.marketQs[index] : self.marketQ },
+            set: { value in
+                self.synchronizeMarketInputs()
+                guard index < self.marketQs.count else { return }
+                self.marketQs[index] = value
+                if index == 0 { self.marketQ = value }
+            })
+    }
+
+    func correlationBinding(row: Int, column: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                guard row < self.marketCorrelation.count,
+                      column < self.marketCorrelation[row].count else { return 0 }
+                return self.marketCorrelation[row][column]
+            },
+            set: { value in
+                self.marketCorrelation = CustomMarketInputGrid.settingCorrelation(
+                    self.marketCorrelation, row: row, column: column, value: value)
+            })
+    }
+
+    func applyEquicorrelation() {
+        marketCorrelation = CustomMarketInputGrid.equicorrelation(
+            count: assetNames.count, rho: marketRho)
+    }
+
+    private func canonicalEditorJSON(_ editor: EDefinition) -> Data? {
+        try? JSONSerialization.data(withJSONObject: editor.toJSON(),
+                                    options: [.sortedKeys])
     }
 }
 
@@ -246,7 +365,7 @@ struct CustomProductsView: View {
                         if product.isTemplate {
                             Image(systemName: "doc.on.doc")
                                 .font(.system(size: 8)).foregroundStyle(.tertiary)
-                                .help("Опубликованный шаблон")
+                                .help("Опубликованное определение-шаблон; это lifecycle, не production eligibility")
                         }
                     }
                     HStack(spacing: 4) {
@@ -303,6 +422,9 @@ private struct DetailHeader: View {
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 // lifecycle pipeline (spec §16.5)
+                Text("DEFINITION LIFECYCLE · НЕ PRODUCTION ELIGIBILITY")
+                    .font(.system(size: 9, weight: .semibold))
+                    .tracking(0.4).foregroundStyle(.tertiary)
                 HStack(spacing: Theme.s1) {
                     ForEach(Self.pipeline, id: \.self) { stage in
                         let reached = reachedIndex >= Self.pipeline.firstIndex(of: stage)!
@@ -347,8 +469,16 @@ private struct DetailHeader: View {
         HStack(spacing: Theme.s2) {
             switch detail.state {
             case "draft":
-                Button("Compile · validate") {
-                    Task { await vm.lifecycle { try await vm.client.customCompile(detail.id) } }
+                if vm.isEditorDirty {
+                    Button("Сохранить и скомпилировать") {
+                        Task { await vm.saveAndCompile() }
+                    }
+                } else {
+                    Button("Compile · validate") {
+                        Task { await vm.lifecycle {
+                            try await vm.client.customCompile(detail.id)
+                        } }
+                    }
                 }
             case "tested":
                 Button("Submit") {
@@ -374,7 +504,7 @@ private struct DetailHeader: View {
             if vm.isBusy { ProgressView().controlSize(.small) }
             Spacer()
         }
-        .disabled(vm.isBusy)
+        .disabled(vm.isBusy || (vm.isEditorDirty && detail.state != "draft"))
     }
 
     private func meta(_ label: String, _ value: String) -> some View {
@@ -431,7 +561,7 @@ private struct PricingCard: View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.s3) {
                 HStack {
-                    BlockTitle("Оценка · custom_mc_gbm", icon: "function")
+                    BlockTitle("Оценка · \(vm.engineLabel)", icon: "function")
                     Spacer()
                     Button {
                         Task { await vm.price() }
@@ -444,39 +574,63 @@ private struct PricingCard: View {
                     }
                     .buttonStyle(.borderedProminent).tint(Theme.accent)
                     .disabled(vm.isPricing || detail.state == "draft"
-                              || detail.state == "deprecated")
+                              || detail.state == "deprecated"
+                              || vm.isEditorDirty
+                              || !vm.valuationIssues.isEmpty)
+                }
+                if vm.isEditorDirty {
+                    Label("Unsaved payout · Price использует только сохранённое server definition",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10)).foregroundStyle(Theme.warning)
                 }
                 if detail.state == "draft" {
                     Label("Fail-closed: расчёт разрешён только после Compile",
                           systemImage: "lock.fill")
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                 }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 120),
+                HStack(alignment: .top, spacing: Theme.s4) {
+                    marketField("Risk-free r", $vm.marketR,
+                                range: -1...2, hint: "−1 … 2")
+                    Spacer()
+                }
+                Divider()
+                Text("MARKET INPUTS · ПО АКТИВАМ")
+                    .font(.system(size: 9, weight: .semibold))
+                    .tracking(0.4).foregroundStyle(.tertiary)
+                assetMarketTable
+                if vm.assetNames.count > 1 {
+                    Divider()
+                    correlationEditor
+                }
+                Divider()
+                Text("NUMERICAL · MONTE CARLO")
+                    .font(.system(size: 9, weight: .semibold))
+                    .tracking(0.4).foregroundStyle(.tertiary)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150),
                                              spacing: Theme.s3)],
                           alignment: .leading, spacing: Theme.s3) {
-                    marketField("Risk-free r", $vm.marketR)
-                    marketField("Dividend q", $vm.marketQ)
-                    if vm.assetNames.count > 1 {
-                        ForEach(Array(vm.assetNames.enumerated()),
-                                id: \.offset) { index, name in
-                            marketField("σ · \(name)", Binding(
-                                get: {
-                                    index < vm.marketSigmas.count
-                                        ? vm.marketSigmas[index] : vm.marketSigma
-                                },
-                                set: { newValue in
-                                    while vm.marketSigmas.count < vm.assetNames.count {
-                                        vm.marketSigmas.append(vm.marketSigma)
-                                    }
-                                    vm.marketSigmas[index] = newValue
-                                }))
+                    marketField("MC paths", $vm.nSims,
+                                range: 1_000...200_000,
+                                integer: true, hint: "1 000 … 200 000")
+                    marketField("Time steps", $vm.mcSteps,
+                                range: 16...1_024,
+                                integer: true, hint: "16 … 1 024")
+                    marketField("Seed", $vm.seed,
+                                range: 0...Double(Int.max),
+                                integer: true, hint: "целое ≥ 0")
+                }
+                if !vm.valuationIssues.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(vm.valuationIssues, id: \.self) { issue in
+                            Label(issue, systemImage: "exclamationmark.circle.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Theme.negative)
                         }
-                        marketField("Корреляция ρ", $vm.marketRho)
-                    } else {
-                        marketField("Volatility σ", $vm.marketSigma)
                     }
-                    marketField("MC paths", $vm.nSims)
-                    marketField("Seed", $vm.seed)
+                    .padding(Theme.s2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.negative.opacity(0.08),
+                                in: RoundedRectangle(cornerRadius: 7))
                 }
                 if let result = vm.priceResult {
                     Divider()
@@ -489,33 +643,150 @@ private struct PricingCard: View {
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                             .monospacedDigit()
                         if let watermark = result.watermark {
-                            Pill(text: watermark, color: Theme.warning)
-                                .help("Определение не опубликовано — результат research-уровня (§20)")
+                            Pill(text: "research result", color: Theme.warning)
+                                .help("Определение не опубликовано; результат research-уровня (\(watermark))")
                         } else {
-                            Pill(text: "production", color: Theme.positive)
+                            Pill(text: "published definition", color: Theme.accent)
+                                .help("Только lifecycle определения. Production eligibility движка этим endpoint не подтверждается.")
                         }
                         Spacer()
                     }
+                    Text("Статус определения не является production-допуском модели/прайсера.")
+                        .font(.system(size: 9)).foregroundStyle(.tertiary)
                     HStack(spacing: Theme.s4) {
                         stat("P(досрочное погашение)",
                              Fmt.signedPercent(result.earlyRedemptionProb * 100))
+                        stat("Engine", result.engine ?? vm.engineLabel)
                         stat("Definition", String(result.definitionHash.prefix(12)))
                         stat("Paths", "\(result.nSims)")
+                        stat("Steps", result.steps.map(String.init) ?? "\(Int(vm.mcSteps))")
                         stat("Seed", "\(result.seed)")
                         stat("Доля номинала", "1.0 = 100%")
                     }
                 }
             }
         }
+        .onAppear { vm.synchronizeMarketInputs() }
+        .onChange(of: vm.assetNames.count) { _, count in
+            vm.synchronizeMarketInputs(assetCount: count)
+        }
     }
 
-    private func marketField(_ label: String, _ value: Binding<Double>) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+    private var assetMarketTable: some View {
+        Grid(alignment: .leading, horizontalSpacing: Theme.s3,
+             verticalSpacing: Theme.s2) {
+            GridRow {
+                Text("Актив").foregroundStyle(.secondary)
+                Text("Volatility σ").foregroundStyle(.secondary)
+                Text("Dividend yield q").foregroundStyle(.secondary)
+            }
+            .font(.system(size: 10, weight: .semibold))
+            ForEach(Array(vm.assetNames.enumerated()), id: \.offset) { index, name in
+                GridRow {
+                    Text(name).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                    boundedInput(vm.sigmaBinding(index), range: 0...5)
+                        .frame(width: 125)
+                    boundedInput(vm.qBinding(index), range: -1...1)
+                        .frame(width: 125)
+                }
+            }
+        }
+    }
+
+    private var correlationEditor: some View {
+        VStack(alignment: .leading, spacing: Theme.s2) {
+            HStack(spacing: Theme.s3) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("CORRELATION MATRIX")
+                        .font(.system(size: 9, weight: .semibold))
+                        .tracking(0.4).foregroundStyle(.tertiary)
+                    Text("Редактируется верхний треугольник; нижний зеркалируется автоматически.")
+                        .font(.system(size: 9)).foregroundStyle(.tertiary)
+                }
+                Spacer()
+                marketField("Default ρ", $vm.marketRho,
+                            range: -0.999...0.999, hint: "−0,999 … 0,999")
+                    .frame(width: 125)
+                Button("Заполнить ρ") { vm.applyEquicorrelation() }
+                    .controlSize(.small)
+            }
+            ScrollView(.horizontal) {
+                Grid(alignment: .center, horizontalSpacing: 5, verticalSpacing: 5) {
+                    GridRow {
+                        Text("").frame(width: 86)
+                        ForEach(Array(vm.assetNames.enumerated()), id: \.offset) { _, name in
+                            Text(name).font(.system(size: 9, weight: .semibold))
+                                .lineLimit(1).frame(width: 72)
+                        }
+                    }
+                    ForEach(Array(vm.assetNames.enumerated()), id: \.offset) { row, name in
+                        GridRow {
+                            Text(name).font(.system(size: 9, weight: .semibold))
+                                .lineLimit(1).frame(width: 86, alignment: .leading)
+                            ForEach(vm.assetNames.indices, id: \.self) { column in
+                                correlationCell(row: row, column: column)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func correlationCell(row: Int, column: Int) -> some View {
+        if row == column {
+            Text("1,000")
+                .font(.system(size: 10, weight: .semibold)).monospacedDigit()
+                .frame(width: 72, height: 22)
+                .background(Color.secondary.opacity(0.08),
+                            in: RoundedRectangle(cornerRadius: 5))
+        } else if column > row {
+            boundedInput(vm.correlationBinding(row: row, column: column),
+                         range: -0.999...0.999)
+                .frame(width: 72)
+        } else {
+            Text(correlationValue(row: row, column: column))
+                .font(.system(size: 10)).monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 72, height: 22)
+        }
+    }
+
+    private func correlationValue(row: Int, column: Int) -> String {
+        guard row < vm.marketCorrelation.count,
+              column < vm.marketCorrelation[row].count else { return "—" }
+        return Fmt.number(vm.marketCorrelation[row][column], digits: 3)
+    }
+
+    private func marketField(_ label: String, _ value: Binding<Double>,
+                             range: ClosedRange<Double>, integer: Bool = false,
+                             hint: String) -> some View {
+        let invalid = !value.wrappedValue.isFinite
+            || !range.contains(value.wrappedValue)
+            || (integer && value.wrappedValue.rounded() != value.wrappedValue)
+        return VStack(alignment: .leading, spacing: 3) {
             Text(label).font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
-            TextField("", value: value, format: .number)
-                .textFieldStyle(.roundedBorder).monospacedDigit()
+            boundedInput(value, range: range, integer: integer)
+            if invalid {
+                Text(hint).font(.system(size: 9)).foregroundStyle(Theme.negative)
+            }
         }
+    }
+
+    private func boundedInput(_ value: Binding<Double>,
+                              range: ClosedRange<Double>,
+                              integer: Bool = false) -> some View {
+        let invalid = !value.wrappedValue.isFinite
+            || !range.contains(value.wrappedValue)
+            || (integer && value.wrappedValue.rounded() != value.wrappedValue)
+        return TextField("", value: value,
+                         format: integer
+                            ? .number.precision(.fractionLength(0)) : .number)
+            .textFieldStyle(.roundedBorder).monospacedDigit()
+            .overlay(RoundedRectangle(cornerRadius: 5)
+                .stroke(Theme.negative.opacity(invalid ? 0.85 : 0), lineWidth: 1))
     }
 
     private func stat(_ label: String, _ value: String) -> some View {
@@ -544,6 +815,9 @@ private struct AdvancedEditorCard: View {
                 HStack {
                     BlockTitle("Конструктор выплат · advanced",
                                icon: "point.3.connected.trianglepath.dotted")
+                    if vm.isEditorDirty {
+                        Pill(text: "Unsaved", color: Theme.warning)
+                    }
                     Spacer()
                     if editable && expanded {
                         Button {
