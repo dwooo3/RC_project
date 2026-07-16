@@ -196,6 +196,7 @@ struct RootView: View {
                  : (model.health?.live == true ? "MOEX" : "Demo"))
                 .font(.system(size: 11, weight: .medium))
             Spacer()
+            ThemeToggleButton()
         }
         .padding(Theme.s3)
     }
@@ -212,6 +213,7 @@ struct RootView: View {
             case .market:     MarketScreen(group: $marketMode, model: model)
             case .dataControls: DataControlsScreen()
             case .pricing:    PricingScreen()
+            case .pricingNew: PricingNewScreen()
             case .governance: GovernanceScreen(model: model)
             case .analytics:  AnalyticsScreen(model: model)
             }
@@ -350,6 +352,52 @@ private struct NavRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+    }
+}
+
+/// Sidebar footer control: click flips light ↔ dark (relative to the current
+/// effective appearance), right-click offers the explicit three-way choice
+/// including "follow the system". The choice persists via AppStorage and is
+/// applied at the window root in RiskCalcApp.
+private struct ThemeToggleButton: View {
+    @AppStorage("appTheme") private var themeRaw = AppTheme.system.rawValue
+    @Environment(\.colorScheme) private var systemScheme
+    @State private var hovering = false
+
+    private var isDark: Bool {
+        switch AppTheme(rawValue: themeRaw) ?? .system {
+        case .system: return systemScheme == .dark
+        case .light:  return false
+        case .dark:   return true
+        }
+    }
+
+    var body: some View {
+        Button {
+            themeRaw = (isDark ? AppTheme.light : AppTheme.dark).rawValue
+        } label: {
+            Image(systemName: isDark ? "sun.max" : "moon")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 24, height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(hovering ? Color.primary.opacity(0.06) : Color.clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(isDark ? "Светлая тема" : "Тёмная тема")
+        .contextMenu {
+            Picker("Тема", selection: $themeRaw) {
+                ForEach(AppTheme.allCases) { t in
+                    Label(t.title, systemImage: t.icon).tag(t.rawValue)
+                }
+            }
+            .pickerStyle(.inline)
+        }
     }
 }
 

@@ -80,6 +80,40 @@ enum Theme {
     }
 }
 
+// MARK: - App appearance
+
+/// User-selectable appearance override. Persisted raw in AppStorage under
+/// "appTheme"; `.system` (nil colour scheme) follows the macOS appearance.
+enum AppTheme: String, CaseIterable, Identifiable {
+    case system, light, dark
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "Как в системе"
+        case .light:  return "Светлая"
+        case .dark:   return "Тёмная"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .system: return "circle.lefthalf.filled"
+        case .light:  return "sun.max"
+        case .dark:   return "moon"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light:  return .light
+        case .dark:   return .dark
+        }
+    }
+}
+
 // MARK: - Formatting helpers
 
 enum Fmt {

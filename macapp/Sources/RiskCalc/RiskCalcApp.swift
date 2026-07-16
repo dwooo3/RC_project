@@ -4,12 +4,14 @@ import AppKit
 @main
 struct RiskCalcApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @AppStorage("appTheme") private var appThemeRaw = AppTheme.system.rawValue
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .frame(minWidth: 1120, minHeight: 740)
                 .tint(Theme.accent)
+                .preferredColorScheme((AppTheme(rawValue: appThemeRaw) ?? .system).colorScheme)
         }
         .windowToolbarStyle(.unified)
     }
