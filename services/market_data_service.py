@@ -1,7 +1,8 @@
 """Market data platform service."""
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from hashlib import sha256
 from typing import Any, Protocol
 
 import numpy as np
@@ -781,6 +782,120 @@ class MarketDataService:
     def get_snapshot(self, snapshot_id: str, version: int | None = None) -> MarketDataSnapshot:
         return self.store.get(snapshot_id, version)
 
+    def resolve_pinned_snapshot(self, snapshot_id: str) -> MarketDataSnapshot:
+        """Resolve one *pinned* snapshot without broad fallback or latest lookup.
+
+        Resolution is intentionally bounded for reproducible pricing-run replay:
+
+        1. return the exact id already owned by the in-memory ``MarketDataStore``;
+        2. reconstruct an exact canonical MOEX id from its authoritative DB manifest;
+        3. deterministically rebuild an exact ``demo-YYYY-MM-DD`` snapshot.
+
+        Manual/CSV/provider snapshots are only replayable while their full object is
+        present in ``MarketDataStore``. Their payload is not persisted by the market DB,
+        so guessing one after restart would silently change valuation inputs and is
+        therefore rejected. This method never calls ``best_available_snapshot`` and
+        never substitutes the latest snapshot or DEMO for a missing MOEX/manual id.
+        """
+        if not isinstance(snapshot_id, str):
+            raise TypeError("snapshot_id must be a string")
+        if not snapshot_id or snapshot_id != snapshot_id.strip():
+            raise ValueError("snapshot_id must be a non-empty exact identifier")
+        # A strict pinned resolve never performs fallback, including on failure.
+        self.last_fallback_used = False
+
+        try:
+            snapshot = self.store.get(snapshot_id)
+        except KeyError:
+            snapshot = None
+        if snapshot is not None:
+            self.last_fallback_used = False
+            return snapshot
+
+        if snapshot_id.startswith("demo-"):
+            raw_date = snapshot_id[len("demo-"):]
+            try:
+                valuation_date = date.fromisoformat(raw_date)
+            except ValueError as exc:
+                raise KeyError(
+                    f"Pinned snapshot is unavailable or malformed: {snapshot_id}"
+                ) from exc
+            if len(raw_date) != 10 or valuation_date.isoformat() != raw_date:
+                raise KeyError(
+                    f"Pinned snapshot is unavailable or malformed: {snapshot_id}"
+                )
+            rebuilt = self.demo_snapshot(valuation_date)
+            if rebuilt.snapshot_id != snapshot_id:  # defensive factory contract
+                raise RuntimeError("demo snapshot factory returned a different id")
+            self.last_fallback_used = False
+            return rebuilt
+
+        if self.market_db is None:
+            raise KeyError(f"Pinned snapshot is unavailable: {snapshot_id}")
+
+        def reconstruct_moex() -> MarketDataSnapshot:
+            manifest = self.market_db.get_snapshot_meta(snapshot_id)
+            if manifest is None:
+                raise KeyError(
+                    f"Pinned snapshot has no authoritative DB manifest: {snapshot_id}"
+                )
+            source = str(manifest.get("source") or "").upper()
+            if source != MarketDataSource.MOEX.value:
+                raise KeyError(
+                    f"Pinned {source or 'UNKNOWN'} snapshot cannot be reconstructed "
+                    f"after restart: {snapshot_id}"
+                )
+            try:
+                valuation_date = self._basket_day(manifest.get("valuation_date"))
+            except ValueError as exc:
+                raise KeyError(
+                    f"Pinned MOEX snapshot has invalid manifest date: {snapshot_id}"
+                ) from exc
+            expected_id = f"moex-{valuation_date.isoformat()}"
+            if snapshot_id != expected_id:
+                raise KeyError(
+                    f"Pinned MOEX snapshot id/date mismatch: {snapshot_id} != {expected_id}"
+                )
+
+            # Use the local authoritative adapter directly. ``require_manifest=False``
+            # deliberately avoids reclassifying a historical snapshot by today's
+            # freshness; the manifest is required and validated above, and the provider
+            # still validates curves, FX, source, manifest date and REJECTED status.
+            rebuilt = MoexProvider(db=self.market_db).load_snapshot(
+                valuation_date,
+                db=self.market_db,
+                persist_manifest=False,
+                require_manifest=False,
+            )
+            if (rebuilt.snapshot_id != snapshot_id
+                    or rebuilt.valuation_date != valuation_date
+                    or rebuilt.source_value != MarketDataSource.MOEX.value):
+                raise RuntimeError(
+                    f"MOEX provider returned a different pinned snapshot for {snapshot_id}"
+                )
+            return rebuilt
+
+        read_snapshot = getattr(self.market_db, "read_snapshot", None)
+        try:
+            if callable(read_snapshot):
+                with read_snapshot():
+                    rebuilt = reconstruct_moex()
+            else:
+                rebuilt = reconstruct_moex()
+        except KeyError:
+            raise
+        except Exception as exc:
+            raise KeyError(
+                f"Pinned MOEX snapshot could not be safely reconstructed: {snapshot_id}"
+            ) from exc
+
+        self.last_fallback_used = False
+        return self.store.save(rebuilt)
+
+    def resolve_snapshot(self, snapshot_id: str) -> MarketDataSnapshot:
+        """Compatibility alias for :meth:`resolve_pinned_snapshot`."""
+        return self.resolve_pinned_snapshot(snapshot_id)
+
     def latest_snapshot(self) -> MarketDataSnapshot:
         return self.store.latest()
 
@@ -903,78 +1018,428 @@ class MarketDataService:
         T: float,
         *,
         default_vol: dict[str, float] | None = None,
-    ) -> tuple[list, "np.ndarray"]:
-        """Resolve chosen basket members to (constituents, correlation matrix).
+        snapshot: MarketDataSnapshot | None = None,
+        include_evidence: bool = False,
+        min_vol_samples: int = 20,
+        min_corr_samples: int = 20,
+        _inside_read_snapshot: bool = False,
+    ) -> tuple[list, "np.ndarray"] | tuple[list, "np.ndarray", dict[str, Any]]:
+        """Resolve a basket against one immutable snapshot/as-of boundary.
 
         ``specs`` is a list of ``{"secid", "kind", "weight"}``. Spot, annualised vol
         and income (dividend yield for equities, carry/YTM for bonds) come from the
-        market store; the correlation matrix is estimated from overlapping log-return
-        history, with sensible defaults where history is missing. Everything degrades
-        gracefully to defaults in demo mode.
+        market store. Historical observations strictly after the selected snapshot's
+        ``valuation_date`` are excluded. Correlations use returns aligned by observation
+        date (never by array tail length), with explicit defaults where aligned history
+        is insufficient.
+
+        The legacy two-value return contract is preserved. Set ``include_evidence`` to
+        receive ``(constituents, correlation, evidence)``. The evidence contains the
+        source/effective date/sample count/fallback reason for every resolved value,
+        the exact canonical numerical inputs, and their deterministic SHA-256 hash.
         """
         from instruments.structured.basket_note import Constituent
 
+        if not np.isfinite(float(T)) or float(T) <= 0:
+            raise ValueError("basket maturity T must be positive and finite")
+        if min_vol_samples < 2 or min_corr_samples < 2:
+            raise ValueError("basket history sample thresholds must be at least 2")
+
+        # A basket resolution spans snapshot tables, histories and dividends. Hold a
+        # repeatable DB view so a concurrent ingest cannot produce a hybrid bundle.
+        read_snapshot = getattr(self.market_db, "read_snapshot", None)
+        if (self.market_db is not None and not _inside_read_snapshot
+                and callable(read_snapshot)):
+            with read_snapshot():
+                return self.basket_market_inputs(
+                    specs,
+                    T,
+                    default_vol=default_vol,
+                    snapshot=snapshot,
+                    include_evidence=include_evidence,
+                    min_vol_samples=min_vol_samples,
+                    min_corr_samples=min_corr_samples,
+                    _inside_read_snapshot=True,
+                )
+
         default_vol = default_vol or {"equity": 0.30, "index": 0.20, "bond": 0.07}
         demo = {u["secid"]: u for u in self._DEMO_UNIVERSE}
-        meta = self.market_db.latest_snapshot_meta() if self.market_db else None
-        sid = meta["snapshot_id"] if meta else None
+        context = self._basket_snapshot_context(snapshot)
+        sid = context["snapshot_id"]
+        as_of = date.fromisoformat(context["valuation_date"])
 
         constituents = []
-        returns: dict[str, np.ndarray] = {}
-        for spec in specs:
-            secid = spec["secid"]
-            kind = spec.get("kind", "equity")
+        price_level_series: list[dict[date, float]] = []
+        constituent_evidence: list[dict[str, Any]] = []
+        for index, spec in enumerate(specs):
+            secid = str(spec["secid"]).strip()
+            if not secid:
+                raise ValueError("basket constituent secid is required")
+            kind = str(spec.get("kind", "equity")).lower()
             weight = float(spec.get("weight", 1.0))
-            spot, vol, income = self._resolve_instrument(secid, kind, sid, default_vol, demo, returns)
+            if not np.isfinite(weight):
+                raise ValueError(f"basket weight for {secid} must be finite")
+            spot, vol, income, levels, item_evidence = self._resolve_instrument_as_of(
+                secid,
+                kind,
+                weight,
+                sid,
+                as_of,
+                default_vol,
+                demo,
+                min_vol_samples,
+            )
             constituents.append(Constituent(name=secid, kind=kind, spot=spot,
                                             weight=weight, vol=vol, income=income))
+            price_level_series.append(levels)
+            item_evidence["index"] = index
+            constituent_evidence.append(item_evidence)
 
-        corr = self._estimate_correlation([c.name for c in constituents],
-                                          [c.kind for c in constituents], returns)
+        corr, correlation_evidence = self._estimate_aligned_correlation(
+            [c.name for c in constituents],
+            [c.kind for c in constituents],
+            price_level_series,
+            as_of,
+            min_corr_samples,
+        )
+        resolved_inputs = {
+            "snapshot_id": context["snapshot_id"],
+            "valuation_date": context["valuation_date"],
+            "T": float(T),
+            "constituents": [
+                {
+                    "name": c.name,
+                    "kind": c.kind,
+                    "spot": float(c.spot),
+                    "weight": float(c.weight),
+                    "vol": float(c.vol),
+                    "income": float(c.income),
+                }
+                for c in constituents
+            ],
+            "correlation": corr.astype(float).tolist(),
+        }
+        canonical = json.dumps(
+            resolved_inputs,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+
+        fallback_flags = []
+        for item in constituent_evidence:
+            label = f"constituents[{item['index']}]:{item['secid']}"
+            for field in ("spot", "vol", "income"):
+                detail = item[field]
+                if detail["fallback"]:
+                    fallback_flags.append(
+                        f"{label}.{field}:{detail['source']}:{detail['reason']}"
+                    )
+        for pair in correlation_evidence["pairs"]:
+            if pair["fallback"]:
+                fallback_flags.append(
+                    f"correlation[{pair['left_index']},{pair['right_index']}]:"
+                    f"{pair['source']}:{pair['reason']}"
+                )
+        if context["fallback"]:
+            fallback_flags.append(
+                f"snapshot:{context['source']}:{context['reason']}"
+            )
+
+        evidence = {
+            "schema_version": 1,
+            "snapshot": context,
+            "history_cutoff": as_of.isoformat(),
+            "history_policy": {
+                "returns": "log",
+                "annualization": 252,
+                "minimum_vol_samples": int(min_vol_samples),
+                "minimum_correlation_samples": int(min_corr_samples),
+                "correlation_alignment": "pairwise_date_intersection",
+                "future_observations": "excluded",
+            },
+            "constituents": constituent_evidence,
+            "correlation": correlation_evidence,
+            "fallback_used": bool(fallback_flags),
+            "fallback_flags": sorted(fallback_flags),
+            "resolved_inputs": resolved_inputs,
+            "resolved_inputs_hash": sha256(canonical.encode("utf-8")).hexdigest(),
+        }
+        if include_evidence:
+            return constituents, corr, evidence
         return constituents, corr
 
-    def _resolve_instrument(self, secid, kind, sid, default_vol, demo, returns):
-        """Spot / vol / income for one instrument, recording its return series."""
-        spot = None
-        income = 0.0
-        vol = default_vol.get(kind, 0.30)
+    @staticmethod
+    def _basket_day(value: Any) -> date:
+        """Normalise an observation timestamp to its calendar day."""
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        raw = str(value or "").strip()
+        if not raw:
+            raise ValueError("empty observation date")
+        try:
+            return date.fromisoformat(raw) if len(raw) == 10 else datetime.fromisoformat(
+                raw.replace("Z", "+00:00")
+            ).date()
+        except ValueError as exc:
+            raise ValueError(f"invalid observation date: {raw}") from exc
 
-        series = None
+    def _basket_snapshot_context(
+        self, snapshot: MarketDataSnapshot | None,
+    ) -> dict[str, Any]:
+        """Resolve one authoritative snapshot identity without reading latest later."""
+        if snapshot is not None:
+            valuation_date = self._basket_day(snapshot.valuation_date)
+            return {
+                "snapshot_id": str(snapshot.snapshot_id),
+                "valuation_date": valuation_date.isoformat(),
+                "source": snapshot.source_value,
+                "quality": str(snapshot.quality),
+                "selection": "explicit",
+                "fallback": False,
+                "reason": "caller supplied governed snapshot",
+            }
+
+        meta = self.market_db.latest_snapshot_meta() if self.market_db is not None else None
+        if meta:
+            return {
+                "snapshot_id": str(meta["snapshot_id"]),
+                "valuation_date": self._basket_day(meta["valuation_date"]).isoformat(),
+                "source": str(meta.get("source") or "UNKNOWN").upper(),
+                "quality": str(meta.get("quality") or ""),
+                "selection": "latest_market_db_snapshot",
+                "fallback": False,
+                "reason": "no explicit snapshot; selected latest stored snapshot once",
+            }
+
+        valuation_date = date.today()
+        return {
+            "snapshot_id": f"demo-{valuation_date.isoformat()}",
+            "valuation_date": valuation_date.isoformat(),
+            "source": MarketDataSource.DEMO.value,
+            "quality": MarketDataSource.DEMO.value,
+            "selection": "demo_fallback",
+            "fallback": True,
+            "reason": "no explicit or stored market-data snapshot",
+        }
+
+    def _price_history_as_of(
+        self, secid: str, as_of: date,
+    ) -> tuple[dict[date, float], dict[date, float], dict[str, int]]:
+        """Positive price levels and dated log returns, strictly cut at ``as_of``."""
+        levels: dict[date, float] = {}
+        invalid = 0
+        future = 0
         if self.market_db is not None:
             try:
                 rows = self.market_db.get_time_series(f"{secid}:price", "price")
-                prices = np.array([r["value"] for r in rows if r.get("value")], dtype=float)
-                if prices.size >= 2 and np.all(prices > 0):
-                    series = np.diff(np.log(prices))
-                    spot = float(prices[-1])
-                    vol = float(series.std(ddof=1) * np.sqrt(252)) or vol
             except Exception:
-                series = None
+                rows = []
+                invalid += 1
+            for row in rows:
+                try:
+                    observed = self._basket_day(row.get("dt"))
+                    value = float(row.get("value"))
+                except (TypeError, ValueError, OverflowError):
+                    invalid += 1
+                    continue
+                if observed > as_of:
+                    future += 1
+                    continue
+                if not np.isfinite(value) or value <= 0:
+                    invalid += 1
+                    continue
+                levels[observed] = value
+
+        ordered = sorted(levels.items())
+        returns = {
+            ordered[index][0]: float(np.log(ordered[index][1] / ordered[index - 1][1]))
+            for index in range(1, len(ordered))
+        }
+        return levels, returns, {
+            "level_count": len(levels),
+            "return_count": len(returns),
+            "future_observations_excluded": future,
+            "invalid_observations_excluded": invalid,
+        }
+
+    @staticmethod
+    def _fallback_detail(source: str, reason: str, *, effective_date=None,
+                         sample_count: int = 0, **extra) -> dict[str, Any]:
+        return {
+            "source": source,
+            "effective_date": effective_date,
+            "sample_count": int(sample_count),
+            "fallback": True,
+            "reason": reason,
+            **extra,
+        }
+
+    def _resolve_instrument_as_of(
+        self,
+        secid: str,
+        kind: str,
+        weight: float,
+        sid: str,
+        as_of: date,
+        default_vol: dict[str, float],
+        demo: dict[str, dict[str, Any]],
+        min_vol_samples: int,
+    ) -> tuple[float, float, float, dict[date, float], dict[str, Any]]:
+        levels, returns, history_counts = self._price_history_as_of(secid, as_of)
+        history_dates = sorted(levels)
+        history_spot = levels[history_dates[-1]] if history_dates else None
+        history_effective = history_dates[-1].isoformat() if history_dates else None
+        demo_row = demo.get(secid)
+
+        quote = None
+        if kind == "bond":
+            quote = self._bond_quote(secid, sid)
+
+        spot = None
+        spot_evidence = None
+        if kind == "equity" and self.market_db is not None and sid:
+            try:
+                candidate = self.market_db.get_equity_spot(sid, secid)
+                if candidate is not None and np.isfinite(float(candidate)) and float(candidate) > 0:
+                    spot = float(candidate)
+                    spot_evidence = {
+                        "source": "equity_quotes",
+                        "effective_date": as_of.isoformat(),
+                        "sample_count": 1,
+                        "fallback": False,
+                        "reason": "quote belongs to selected snapshot",
+                    }
+            except Exception:
+                spot = None
+        elif kind == "bond" and quote:
+            candidate = quote.get("clean_price")
+            try:
+                candidate = float(candidate)
+            except (TypeError, ValueError, OverflowError):
+                candidate = None
+            if candidate is not None and np.isfinite(candidate) and candidate > 0:
+                spot = candidate
+                spot_evidence = {
+                    "source": "bond_quotes",
+                    "effective_date": as_of.isoformat(),
+                    "sample_count": 1,
+                    "fallback": False,
+                    "reason": "quote belongs to selected snapshot",
+                }
+
+        if spot is None and history_spot is not None:
+            spot = float(history_spot)
+            spot_evidence = {
+                "source": "time_series",
+                "effective_date": history_effective,
+                "sample_count": history_counts["level_count"],
+                "fallback": False,
+                "reason": "latest eligible price observation on or before snapshot",
+            }
+        if spot is None and demo_row:
+            spot = float(demo_row["spot"])
+            spot_evidence = self._fallback_detail(
+                "demo_universe",
+                "no eligible snapshot quote or as-of price history",
+                effective_date=as_of.isoformat(),
+            )
+        if spot is None:
+            spot = 100.0
+            spot_evidence = self._fallback_detail(
+                "generic_spot_default",
+                "instrument has no eligible snapshot quote, history or demo value",
+                effective_date=as_of.isoformat(),
+            )
+
+        return_dates = sorted(returns)
+        return_values = np.array([returns[day] for day in return_dates], dtype=float)
+        vol = None
+        if return_values.size >= min_vol_samples:
+            candidate = float(return_values.std(ddof=1) * np.sqrt(252))
+            if np.isfinite(candidate) and candidate > 0:
+                vol = candidate
+        if vol is not None:
+            vol_evidence = {
+                "source": "time_series_log_returns",
+                "effective_date": return_dates[-1].isoformat(),
+                "start_date": return_dates[0].isoformat(),
+                "end_date": return_dates[-1].isoformat(),
+                "sample_count": int(return_values.size),
+                "fallback": False,
+                "reason": "annualised sample volatility from eligible history",
+            }
+        else:
+            configured = float(
+                demo_row.get("vol", default_vol.get(kind, 0.30))
+                if demo_row else default_vol.get(kind, 0.30)
+            )
+            if not np.isfinite(configured) or configured <= 0:
+                raise ValueError(f"default volatility for {secid} must be positive and finite")
+            vol = configured
+            reason = (
+                f"only {return_values.size} eligible returns; minimum is {min_vol_samples}"
+                if return_values.size < min_vol_samples
+                else "eligible returns have zero or non-finite sample volatility"
+            )
+            vol_evidence = self._fallback_detail(
+                "demo_volatility" if demo_row else "configured_default_volatility",
+                reason,
+                effective_date=as_of.isoformat(),
+                sample_count=int(return_values.size),
+                start_date=return_dates[0].isoformat() if return_dates else None,
+                end_date=return_dates[-1].isoformat() if return_dates else None,
+            )
 
         if kind == "equity":
-            if spot is None and sid is not None:
-                try:
-                    spot = self.market_db.get_equity_spot(sid, secid)
-                except Exception:
-                    spot = None
-            income = self._dividend_yield(secid, spot)
-        elif kind == "bond":
-            b = self._bond_quote(secid, sid)
-            if b:
-                spot = spot if spot is not None else b.get("clean_price") or 100.0
-                income = float(b.get("ytm") or 0.0)
+            income, income_evidence = self._dividend_yield_as_of(secid, spot, as_of)
+            if income_evidence["fallback"] and demo_row:
+                income = float(demo_row.get("income", 0.0))
+                income_evidence = self._fallback_detail(
+                    "demo_income",
+                    "no eligible trailing dividend history",
+                    effective_date=as_of.isoformat(),
+                )
+        elif kind == "bond" and quote and quote.get("ytm") is not None:
+            try:
+                candidate = float(quote["ytm"])
+            except (TypeError, ValueError, OverflowError):
+                candidate = None
+            if candidate is not None and np.isfinite(candidate):
+                income = candidate
+                income_evidence = {
+                    "source": "bond_quote_ytm",
+                    "effective_date": as_of.isoformat(),
+                    "sample_count": 1,
+                    "fallback": False,
+                    "reason": "YTM belongs to selected snapshot bond quote",
+                }
             else:
-                spot = spot if spot is not None else 100.0
+                income, income_evidence = self._default_income(kind, demo_row, as_of)
+        else:
+            income, income_evidence = self._default_income(kind, demo_row, as_of)
 
-        if spot is None or spot <= 0:
-            d = demo.get(secid)
-            spot = (d["spot"] if d else 100.0)
-            if d:
-                vol = d.get("vol", vol)
-                income = d.get("income", income)
-        if series is not None:
-            returns[secid] = series
-        return float(spot), float(vol), float(income)
+        spot_evidence["value"] = float(spot)
+        vol_evidence["value"] = float(vol)
+        income_evidence["value"] = float(income)
+        evidence = {
+            "secid": secid,
+            "kind": kind,
+            "weight": float(weight),
+            "spot": spot_evidence,
+            "vol": vol_evidence,
+            "income": income_evidence,
+            "history": {
+                **history_counts,
+                "cutoff": as_of.isoformat(),
+                "first_level_date": history_dates[0].isoformat() if history_dates else None,
+                "last_level_date": history_effective,
+            },
+        }
+        return float(spot), float(vol), float(income), levels, evidence
 
     def _bond_quote(self, secid, sid):
         if self.market_db is None or sid is None:
@@ -986,40 +1451,154 @@ class MarketDataService:
         except Exception:
             return None
 
-    def _dividend_yield(self, secid, spot):
-        """Trailing 12-month dividend yield from the dividend history, else 0."""
+    def _dividend_yield_as_of(
+        self, secid: str, spot: float, as_of: date,
+    ) -> tuple[float, dict[str, Any]]:
+        """Trailing 12-month dividend yield with a strict snapshot cutoff."""
         if self.market_db is None or not spot:
-            return 0.0
+            return 0.0, self._fallback_detail(
+                "zero_income_default", "market database or valid spot is unavailable",
+                effective_date=as_of.isoformat())
         try:
             divs = self.market_db.get_dividends(secid)
         except Exception:
-            return 0.0
-        if not divs:
-            return 0.0
-        amounts = sorted((d for d in divs if d.get("value")), key=lambda d: d.get("dt", ""))
-        recent = sum(float(d["value"]) for d in amounts[-2:])  # ~last year of payouts
-        return min(recent / spot, 0.5) if spot else 0.0
+            divs = []
+        cutoff_start = as_of - timedelta(days=365)
+        eligible: list[tuple[date, float]] = []
+        invalid = 0
+        future = 0
+        stale = 0
+        for row in divs:
+            try:
+                observed = self._basket_day(row.get("registry_date"))
+                value = float(row.get("value"))
+            except (TypeError, ValueError, OverflowError):
+                invalid += 1
+                continue
+            if observed > as_of:
+                future += 1
+            elif observed < cutoff_start:
+                stale += 1
+            elif np.isfinite(value):
+                eligible.append((observed, value))
+            else:
+                invalid += 1
+        eligible.sort()
+        if not eligible:
+            return 0.0, self._fallback_detail(
+                "zero_income_default",
+                "no dividend observations in trailing 365 days at snapshot cutoff",
+                effective_date=as_of.isoformat(),
+                future_observations_excluded=future,
+                stale_observations_excluded=stale,
+                invalid_observations_excluded=invalid,
+            )
+        recent = sum(value for _, value in eligible)
+        result = min(max(recent / spot, 0.0), 0.5)
+        return float(result), {
+            "source": "dividend_history_ttm",
+            "effective_date": eligible[-1][0].isoformat(),
+            "start_date": eligible[0][0].isoformat(),
+            "end_date": eligible[-1][0].isoformat(),
+            "sample_count": len(eligible),
+            "fallback": False,
+            "reason": "sum of trailing 365-day dividends divided by resolved spot",
+            "future_observations_excluded": future,
+            "stale_observations_excluded": stale,
+            "invalid_observations_excluded": invalid,
+        }
 
-    def _estimate_correlation(self, names, kinds, returns) -> "np.ndarray":
-        """Pairwise correlation from overlapping return history; defaults elsewhere."""
+    def _default_income(
+        self, kind: str, demo_row: dict[str, Any] | None, as_of: date,
+    ) -> tuple[float, dict[str, Any]]:
+        if demo_row:
+            return float(demo_row.get("income", 0.0)), self._fallback_detail(
+                "demo_income",
+                f"no eligible snapshot {kind} income/carry input",
+                effective_date=as_of.isoformat(),
+            )
+        return 0.0, self._fallback_detail(
+            "zero_income_default",
+            f"no eligible snapshot {kind} income/carry input",
+            effective_date=as_of.isoformat(),
+        )
+
+    def _estimate_aligned_correlation(
+        self,
+        names: list[str],
+        kinds: list[str],
+        price_level_series: list[dict[date, float]],
+        as_of: date,
+        min_samples: int,
+    ) -> tuple["np.ndarray", dict[str, Any]]:
+        """Pairwise empirical correlation on exact return-date intersections."""
         n = len(names)
         corr = np.eye(n)
+        pairs = []
         for i in range(n):
             for j in range(i + 1, n):
-                ri, rj = returns.get(names[i]), returns.get(names[j])
+                # Intersect *price-level* dates first, then calculate both return
+                # legs over the exact same intervals. Intersecting independently
+                # calculated return end-dates can accidentally compare a one-day
+                # return with a multi-day return when one factor has a missing day.
+                shared_level_dates = sorted(
+                    set(price_level_series[i]).intersection(price_level_series[j])
+                )
+                left_levels = np.array(
+                    [price_level_series[i][day] for day in shared_level_dates], dtype=float
+                )
+                right_levels = np.array(
+                    [price_level_series[j][day] for day in shared_level_dates], dtype=float
+                )
+                left = np.diff(np.log(left_levels))
+                right = np.diff(np.log(right_levels))
+                return_dates = shared_level_dates[1:]
                 rho = None
-                if ri is not None and rj is not None:
-                    m = min(ri.size, rj.size)
-                    if m >= 20:
-                        c = np.corrcoef(ri[-m:], rj[-m:])[0, 1]
-                        if np.isfinite(c):
-                            rho = float(np.clip(c, -0.95, 0.95))
+                reason = ""
+                if left.size >= min_samples:
+                    c = np.corrcoef(left, right)[0, 1]
+                    if np.isfinite(c):
+                        rho = float(np.clip(c, -0.95, 0.95))
+                    else:
+                        reason = "aligned returns have zero or non-finite variance"
+                else:
+                    reason = (
+                        f"only {left.size} aligned returns; minimum is {min_samples}"
+                    )
                 if rho is None:
                     same = kinds[i] == kinds[j]
                     rho = (0.5 if same and kinds[i] != "bond"
                            else 0.6 if same else 0.2)
+                    source = "configured_asset_class_default"
+                    fallback = True
+                else:
+                    source = "aligned_time_series_log_returns"
+                    fallback = False
+                    reason = "Pearson correlation on exact return-date intersection"
                 corr[i, j] = corr[j, i] = rho
-        return corr
+                pairs.append({
+                    "left_index": i,
+                    "right_index": j,
+                    "left": names[i],
+                    "right": names[j],
+                    "value": float(rho),
+                    "source": source,
+                    "effective_date": return_dates[-1].isoformat() if return_dates else None,
+                    "start_date": return_dates[0].isoformat() if return_dates else None,
+                    "end_date": return_dates[-1].isoformat() if return_dates else None,
+                    "sample_count": int(left.size),
+                    "aligned_level_count": len(shared_level_dates),
+                    "fallback": fallback,
+                    "reason": reason,
+                    "cutoff": as_of.isoformat(),
+                })
+        return corr, {
+            "method": "pearson_log_returns_from_pairwise_aligned_price_levels",
+            "matrix": corr.astype(float).tolist(),
+            "sample_count": min((pair["sample_count"] for pair in pairs), default=0),
+            "fallback": any(pair["fallback"] for pair in pairs),
+            "pairs": pairs,
+        }
 
     def get_fx_rate(self, pair: str, snapshot: MarketDataSnapshot | None = None) -> float:
         snapshot = snapshot or self.demo_snapshot()

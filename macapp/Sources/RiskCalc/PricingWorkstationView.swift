@@ -698,7 +698,7 @@ struct PricingWorkstationView: View {
                 .frame(minWidth: 130)
             }
             .controlSize(.large)
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.borderedProminent).tint(Theme.accent)
             .keyboardShortcut(.return, modifiers: .command)
             .disabled(vm.isPricing || !vm.canRunSelectedEngine)
             .help(vm.eligibilityBlockReason

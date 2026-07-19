@@ -101,6 +101,85 @@ def test_successful_hyppl_keeps_compatible_empty_error_list():
     assert result["reprice_errors"] == []
 
 
+def test_custom_hyppl_enforces_and_reports_paired_crn_profile():
+    class CustomPortfolio:
+        positions = [SimpleNamespace(instrument="custom_product")]
+
+        def __init__(self):
+            self.calls = 0
+
+        def full_reprice_pnl(self, **kwargs):
+            self.calls += 1
+            assert kwargs["custom_repricing_profile"] == "custom_hist_crn_v1"
+            return {
+                "pnl": float(self.calls),
+                "base_value": 100.0,
+                "shocked_value": 100.0 + self.calls,
+                "errors": [],
+                "valid": True,
+                "warnings": ["profile warning"],
+                "custom_repricing_profile": "custom_hist_crn_v1",
+                "base_value_source": (
+                    "custom_profile_computed" if self.calls == 1
+                    else "custom_profile_cache"
+                ),
+            }
+
+    result = marketrisk._hyppl_from_scenarios(
+        CustomPortfolio(), _shifts(2),
+        custom_repricing_profile="custom_hist_crn_v1",
+    )
+
+    assert result["pnl"].tolist() == pytest.approx([1.0, 2.0])
+    assert result["reprice_errors"] == []
+    assert result["reprice_warnings"] == ["profile warning"]
+    assert len(result["scenario_matrix_hash"]) == 64
+    changed = _shifts(2)
+    changed["eq"][1] = 0.01
+    assert marketrisk._scenario_matrix_hash(changed) != result[
+        "scenario_matrix_hash"]
+    evidence = result["repricing_evidence"]
+    assert evidence["profile"] == "custom_hist_crn_v1"
+    assert evidence["inner_paths"] == 1_000
+    assert evidence["common_random_numbers"] is True
+    assert evidence["paired_profile_base"] is True
+    assert evidence["base_value_sources"] == [
+        "custom_profile_cache", "custom_profile_computed",
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"custom_repricing_profile": None},
+        {"base_value_source": "scenario_reprice"},
+    ],
+)
+def test_custom_hyppl_rejects_missing_profile_or_paired_base_evidence(mutation):
+    class BrokenCustomPortfolio:
+        positions = [SimpleNamespace(instrument="custom_product")]
+
+        @staticmethod
+        def full_reprice_pnl(**_kwargs):
+            result = {
+                "pnl": 1.0,
+                "base_value": 100.0,
+                "shocked_value": 101.0,
+                "errors": [],
+                "valid": True,
+                "custom_repricing_profile": "custom_hist_crn_v1",
+                "base_value_source": "custom_profile_computed",
+            }
+            result.update(mutation)
+            return result
+
+    with pytest.raises(ValueError, match="profile evidence|paired base"):
+        marketrisk._reprice_series(
+            BrokenCustomPortfolio(), _shifts(),
+            custom_repricing_profile="custom_hist_crn_v1",
+        )
+
+
 def test_failed_hyppl_is_not_cached(monkeypatch):
     shifts = _shifts()
     portfolio = _ResultPortfolio({"pnl": 999.0, "errors": ["broken leg"]})

@@ -175,7 +175,7 @@ struct ServerDownView: View {
                 if let message, !message.isEmpty {
                     Text(message).font(.caption).foregroundStyle(.tertiary).multilineTextAlignment(.center)
                 }
-                Button("Retry", action: retry).buttonStyle(.borderedProminent).padding(.top, Theme.s2)
+                Button("Retry", action: retry).buttonStyle(.borderedProminent).tint(Theme.accent).padding(.top, Theme.s2)
             }
             .padding(Theme.s6).frame(maxWidth: 380)
         }

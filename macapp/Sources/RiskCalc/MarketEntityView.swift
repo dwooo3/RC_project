@@ -499,6 +499,8 @@ struct MarketEntityView: View {
                 }
                 .padding(Theme.s4)
             }
+            // Shadows fade past the pane bounds — no cut line at the splitter.
+            .scrollClipDisabled()
         } else if vm.loadingDetail {
             skeletonDetail
         } else {

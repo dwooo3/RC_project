@@ -140,6 +140,35 @@ def test_portfolio_service_returns_valuation_result():
     assert result.positions[0].model_id == "equity_spot"
 
 
+def test_full_reprice_can_reuse_a_validated_base_value(monkeypatch):
+    service = PortfolioService("Historical scenario")
+    service.add(Position(
+        id="eq1", instrument="equity", description="Equity spot",
+        quantity=4, params={"S": 25.0},
+    ))
+    base_value = service.value(calculate_risk=False).total_market_value
+    original = service._price_position
+    calls = []
+
+    def tracked(position, *, calculate_risk=True):
+        calls.append((position.id, calculate_risk))
+        return original(position, calculate_risk=calculate_risk)
+
+    monkeypatch.setattr(service, "_price_position", tracked)
+    optimized = service.full_reprice_pnl(
+        dS=0.10, base_value_override=base_value)
+
+    assert optimized["base_value"] == pytest.approx(100.0)
+    assert optimized["shocked_value"] == pytest.approx(110.0)
+    assert optimized["pnl"] == pytest.approx(10.0)
+    assert calls == [("eq1", False)]
+
+    calls.clear()
+    default = service.full_reprice_pnl(dS=0.10)
+    assert default["pnl"] == pytest.approx(optimized["pnl"])
+    assert calls == [("eq1", False), ("eq1", False)]
+
+
 def test_portfolio_service_returns_risk_result():
     service = PortfolioService("Risk")
     service.add(

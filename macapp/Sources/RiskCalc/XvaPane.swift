@@ -161,7 +161,7 @@ struct XvaPane: View {
                             .font(.caption).foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                         Button("Рассчитать XVA") { Task { await vm.run() } }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(.borderedProminent).tint(Theme.accent)
                     }
                     .frame(maxWidth: .infinity, minHeight: 180)
                 }
@@ -193,7 +193,7 @@ struct XvaPane: View {
                             Label("Run", systemImage: "play.fill")
                         }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.borderedProminent).tint(Theme.accent)
                     .disabled(vm.isRunning)
                 }
                 HStack(spacing: Theme.s3) {

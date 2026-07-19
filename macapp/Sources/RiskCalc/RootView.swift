@@ -4,8 +4,13 @@ import SwiftUI
 /// bridge-down overlay.
 struct RootView: View {
     @State private var model = AppModel()
+    // Design tokens (theme / accent / translucency / tone / density) — the
+    // reads below register observation dependencies, so panel changes apply live.
+    private let design = DesignSettings.shared
     // Market Data mode expands as sub-rows under the Market Data sidebar item.
     @SceneStorage("mdMode") private var marketMode = "overview"
+    // Custom shell (no NavigationSplitView) — the column collapse is ours.
+    @SceneStorage("sidebarVisible") private var sidebarVisible = true
     // Global search (toolbar command palette)
     @State private var searchOpen = false
     @FocusState private var searchFocused: Bool
@@ -20,13 +25,23 @@ struct RootView: View {
     ]
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 224, ideal: 244, max: 300)
-        } detail: {
+        // Hand-rolled split shell: NavigationSplitView always paints its own
+        // sidebar material + divider, which can never fuse with the content
+        // backdrop. Here BOTH columns sit on one continuous WindowBackground
+        // sheet — no column materials, no divider, no seam.
+        HStack(spacing: 0) {
+            if sidebarVisible {
+                sidebar
+                    .frame(width: 244)
+                    .transition(.move(edge: .leading))
+            }
             detail
-                .frame(minWidth: 640)
+                .frame(minWidth: 640, maxWidth: .infinity)
         }
+        .animation(.snappy(duration: 0.22), value: sidebarVisible)
+        .background(WindowBackground())
+        .preferredColorScheme(design.theme.colorScheme)
+        .environment(\.interfaceDensity, design.density)
         .background(TitlebarSeparatorRemover())
         // No toolbar band: the title/toolbar area stays fully transparent —
         // only the floating pills remain, no strip or hairline under them.
@@ -163,9 +178,9 @@ struct RootView: View {
             Divider().opacity(0.5)
             footer
         }
-        // No custom background: the system sidebar material shows through
-        // (behind-window vibrancy — the desktop wallpaper reads through the
-        // column, like Finder/Notes sidebars).
+        // No background of its own: the sidebar sits on the same continuous
+        // WindowBackground sheet as the content — that's what removes any
+        // visible boundary between the columns.
     }
 
     private var brand: some View {
@@ -200,6 +215,7 @@ struct RootView: View {
                  : (model.health?.live == true ? "MOEX" : "Demo"))
                 .font(.system(size: 11, weight: .medium))
             Spacer()
+            DesignSettingsButton()
             ThemeToggleButton()
         }
         .padding(Theme.s3)
@@ -224,6 +240,14 @@ struct RootView: View {
         }
         .navigationTitle("")               // suppress the default "RiskCalc" window title
         .toolbar {
+            // Custom shell has no system sidebar toggle — provide our own.
+            ToolbarItem(placement: .navigation) {
+                Button { sidebarVisible.toggle() } label: {
+                    Image(systemName: "sidebar.left")
+                }
+                .help("Показать/скрыть боковую панель (⌃⌘S)")
+                .keyboardShortcut("s", modifiers: [.control, .command])
+            }
             // Section-name pill as a NATIVE toolbar item: the system gives it
             // the same glass capsule and metrics as the right-side controls,
             // lays it out after the traffic lights / sidebar toggle when the
@@ -361,15 +385,15 @@ private struct NavRow: View {
 
 /// Sidebar footer control: click flips light ↔ dark (relative to the current
 /// effective appearance), right-click offers the explicit three-way choice
-/// including "follow the system". The choice persists via AppStorage and is
-/// applied at the window root in RiskCalcApp.
+/// including "follow the system". The choice lives in DesignSettings (shared
+/// with the design panel) and is applied at the window root.
 private struct ThemeToggleButton: View {
-    @AppStorage("appTheme") private var themeRaw = AppTheme.system.rawValue
+    @Bindable private var design = DesignSettings.shared
     @Environment(\.colorScheme) private var systemScheme
     @State private var hovering = false
 
     private var isDark: Bool {
-        switch AppTheme(rawValue: themeRaw) ?? .system {
+        switch design.theme {
         case .system: return systemScheme == .dark
         case .light:  return false
         case .dark:   return true
@@ -378,7 +402,7 @@ private struct ThemeToggleButton: View {
 
     var body: some View {
         Button {
-            themeRaw = (isDark ? AppTheme.light : AppTheme.dark).rawValue
+            design.theme = isDark ? .light : .dark
         } label: {
             Image(systemName: isDark ? "sun.max" : "moon")
                 .font(.system(size: 12))
@@ -395,9 +419,9 @@ private struct ThemeToggleButton: View {
         .onHover { hovering = $0 }
         .help(isDark ? "Светлая тема" : "Тёмная тема")
         .contextMenu {
-            Picker("Тема", selection: $themeRaw) {
+            Picker("Тема", selection: $design.theme) {
                 ForEach(AppTheme.allCases) { t in
-                    Label(t.title, systemImage: t.icon).tag(t.rawValue)
+                    Label(t.title, systemImage: t.icon).tag(t)
                 }
             }
             .pickerStyle(.inline)
@@ -456,6 +480,10 @@ struct ScreenScaffold<Content: View>: View {
             .frame(maxWidth: Theme.contentMaxWidth)   // cap reading width; cards fill it
             .frame(maxWidth: .infinity)               // centre the column on wide displays
         }
-        .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
+        // Card shadows may run past the scroll bounds: clipped shadows leave a
+        // hard cut at the content's leading edge that reads as a sidebar
+        // border on the seamless sheet.
+        .scrollClipDisabled()
+        // No fill here: the window surface (RootView.detail) shows through.
     }
 }

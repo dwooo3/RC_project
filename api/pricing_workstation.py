@@ -21,6 +21,7 @@ exotics, multi-asset and structured products.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 import math
 from numbers import Real
@@ -53,12 +54,30 @@ ASSET_CLASSES = [
 _OPT = ["call", "put"]
 
 
+class PortfolioRepricingContractError(ValueError):
+    """Stable fail-closed reason emitted by a workstation capture adapter."""
+
+    def __init__(self, code: str, message: str):
+        self.code = str(code)
+        self.message = str(message)
+        super().__init__(self.message)
+
+
 # ── parsing helpers (schedule / list / matrix text inputs) ───────────
 def _floats(text) -> list[float]:
     """'1, 2, 3' -> [1.0, 2.0, 3.0]."""
     if isinstance(text, (list, tuple)):
         return [float(x) for x in text]
     return [float(x) for x in str(text).replace(";", ",").split(",") if x.strip()]
+
+
+def _strings(text) -> list[str]:
+    """Parse a compact comma/semicolon schedule without losing ISO dates."""
+    if text in (None, "", []):
+        return []
+    values = text if isinstance(text, (list, tuple)) \
+        else str(text).replace(";", ",").split(",")
+    return [str(value).strip() for value in values if str(value).strip()]
 
 
 def _component_secids(text) -> list[str]:
@@ -683,6 +702,8 @@ def _multi_asset_autocall(svc, v, snapshot):
         )),
         _num(v, "r", 0.16),
         T,
+        reference_spots=_floats(v.get("reference_spots", "")) or None,
+        reference_fixing_dates=_strings(v.get("reference_fixing_dates", "")),
         observation_dates=observations,
         autocall_barrier=_num(v, "autocall_barrier", 1.20),
         autocall_aggregation=v.get("autocall_aggregation", "best_of"),
@@ -699,6 +720,342 @@ def _multi_asset_autocall(svc, v, snapshot):
         steps=int(_num(v, "steps", 100)),
         seed=int(_num(v, "seed", 42)),
         snapshot=snapshot,
+    )
+
+
+def _custom_product(svc, v, snapshot):
+    """Price one version-pinned Custom Product Engine attachment."""
+    import hashlib
+    import json
+
+    from api import custom_products
+
+    raw_attachment = v.get("attachment_json")
+    if not isinstance(raw_attachment, str) or not raw_attachment.strip():
+        raise ValueError("custom product attachment_json is required")
+    try:
+        attachment = json.loads(raw_attachment)
+    except json.JSONDecodeError as exc:
+        raise ValueError("custom product attachment_json is invalid JSON") from exc
+    if not isinstance(attachment, dict) or attachment.get("schema_version") != 1:
+        raise ValueError("unsupported custom product attachment schema")
+
+    payoff_basis = str(
+        attachment.get("payoff_basis") or "legacy_unspecified"
+    ).strip()
+    state_mode = str(
+        attachment.get("state_mode") or "legacy_unspecified"
+    ).strip()
+    state_source = str(
+        attachment.get("state_source") or "legacy_unspecified"
+    ).strip()
+    if payoff_basis not in {"normalized_notional", "legacy_unspecified"}:
+        raise ValueError("custom product payoff_basis is unsupported")
+    if state_mode not in {"inception", "legacy_unspecified"}:
+        raise ValueError(
+            "custom product seasoned state is unsupported; state_mode must be inception")
+    if state_source not in {"explicit_assumption", "legacy_unspecified"}:
+        raise ValueError("custom product state_source is unsupported")
+
+    product_id = str(attachment.get("product_id") or "").strip()
+    definition_hash = str(attachment.get("definition_hash") or "").strip()
+    definition_version = attachment.get("definition_version")
+    if not product_id or not definition_hash:
+        raise ValueError("custom product id and definition hash are required")
+    if (isinstance(definition_version, bool)
+            or not isinstance(definition_version, int)
+            or definition_version < 1):
+        raise ValueError("custom product definition version must be a positive integer")
+
+    store = custom_products.get_store()
+    detail = store.get_version(product_id, definition_version)
+    definition = detail.get("definition") or {}
+    if detail.get("definition_hash") != definition_hash:
+        raise ValueError(
+            "custom product definition hash mismatch for requested version")
+    if str(attachment.get("product_name") or "") != str(
+            definition.get("name") or ""):
+        raise ValueError(
+            "custom product name does not match the pinned definition")
+
+    expected_slots = definition.get("slots") or {}
+    slots = attachment.get("slots")
+    if not isinstance(slots, dict):
+        raise ValueError("custom product slots are required")
+    if set(slots) != set(expected_slots):
+        missing = sorted(set(expected_slots).difference(slots))
+        unknown = sorted(set(slots).difference(expected_slots))
+        raise ValueError(
+            "custom product slot grid does not match the pinned definition "
+            f"(missing={missing}, unknown={unknown})")
+    for name, value in slots.items():
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError(f"custom product slot '{name}' must be finite")
+        spec = expected_slots[name]
+        minimum = spec.get("min") if isinstance(spec, dict) else None
+        maximum = spec.get("max") if isinstance(spec, dict) else None
+        if minimum is not None and number < float(minimum):
+            raise ValueError(f"custom product slot '{name}' is below its minimum")
+        if maximum is not None and number > float(maximum):
+            raise ValueError(f"custom product slot '{name}' is above its maximum")
+
+    market_contract = attachment.get("market")
+    numerical = attachment.get("numerical")
+    if not isinstance(slots, dict) or not isinstance(market_contract, dict) \
+            or not isinstance(numerical, dict):
+        raise ValueError("custom product slots, market and numerical inputs are required")
+    rate_contract = market_contract.get("rate")
+    assets = market_contract.get("assets")
+    correlation = market_contract.get("correlation")
+    if not isinstance(rate_contract, dict) or not isinstance(assets, list) or not assets:
+        raise ValueError("custom product market rate and assets are required")
+
+    active_snapshot_id = str(getattr(snapshot, "snapshot_id", "") or "")
+
+    def _validate_market_evidence(item: dict, path: str, *, asset=False):
+        source = str(item.get("source") or "")
+        reason = str(item.get("override_reason") or "").strip()
+        if source == "market_snapshot":
+            claimed = str(item.get("snapshot_id") or "").strip()
+            if not claimed:
+                raise ValueError(f"{path} requires snapshot_id")
+            if not active_snapshot_id or claimed != active_snapshot_id:
+                raise ValueError(
+                    f"{path} belongs to snapshot '{claimed}', not active "
+                    f"snapshot '{active_snapshot_id or 'none'}'")
+            if asset and (not str(item.get("secid") or "").strip()
+                          or not str(item.get("category") or "").strip()):
+                raise ValueError(f"{path} requires SECID and market category")
+        elif source == "manual_override":
+            if not reason:
+                raise ValueError(f"{path} manual input requires override_reason")
+        else:
+            raise ValueError(f"{path} has unsupported market input source")
+        overridden = bool(item.get("overridden")) or any(bool(item.get(key)) for key in (
+            "spot_overridden", "volatility_overridden", "carry_overridden"
+        ))
+        if overridden and not reason:
+            raise ValueError(f"{path} override requires override_reason")
+
+    _validate_market_evidence(rate_contract, "custom market rate")
+    for index, item in enumerate(assets):
+        if not isinstance(item, dict):
+            raise ValueError("custom product asset inputs must be objects")
+        _validate_market_evidence(
+            item, f"custom market asset[{index}]", asset=True)
+
+        for value_key, market_key, flag_key in (
+            ("spot", "market_spot", "spot_overridden"),
+            ("volatility", "market_volatility", "volatility_overridden"),
+            ("carry_yield", "market_carry_yield", "carry_overridden"),
+        ):
+            baseline = item.get(market_key)
+            if (item.get("source") == "market_snapshot"
+                    and baseline is not None
+                    and not bool(item.get(flag_key))
+                    and not math.isclose(
+                        float(item[value_key]), float(baseline),
+                        rel_tol=1e-10, abs_tol=1e-12)):
+                raise ValueError(
+                    f"custom market asset[{index}].{value_key} differs from "
+                    f"its snapshot baseline without an override flag")
+
+    ordered_assets = sorted(assets, key=lambda item: item.get("index", -1)
+                            if isinstance(item, dict) else -1)
+    if any(not isinstance(item, dict) for item in ordered_assets):
+        raise ValueError("custom product asset inputs must be objects")
+    expected_indices = list(range(len(ordered_assets)))
+    if [item.get("index") for item in ordered_assets] != expected_indices:
+        raise ValueError("custom product asset indices must be contiguous from zero")
+    definition_assets = definition.get("assets")
+    expected_asset_names = (
+        [str(value) for value in definition_assets]
+        if isinstance(definition_assets, list) and definition_assets
+        else ["S"]
+    )
+    supplied_asset_names = [str(item.get("asset_name") or "")
+                            for item in ordered_assets]
+    if supplied_asset_names != expected_asset_names:
+        raise ValueError(
+            "custom product market asset names do not match the pinned definition")
+    expected_engine = (
+        "custom_mc_gbm" if len(expected_asset_names) == 1
+        else "custom_mc_multi_gbm"
+    )
+    if str(attachment.get("engine_id") or "") != expected_engine:
+        raise ValueError(
+            "custom product engine does not match the pinned asset dimension")
+    compile_report = detail.get("compile_report") or {}
+    if (not compile_report.get("ok")
+            or compile_report.get("definition_hash") != definition_hash
+            or expected_engine not in (
+                compile_report.get("compatible_engines") or [])):
+        raise ValueError(
+            "custom product compile evidence does not authorize the pinned engine")
+    sigmas = [float(item["volatility"]) for item in ordered_assets]
+    carries = [float(item["carry_yield"]) for item in ordered_assets]
+    current_spots = [float(item["spot"]) for item in ordered_assets]
+    market = {"r": float(rate_contract["value"])}
+    if len(ordered_assets) == 1:
+        market.update({"sigma": sigmas[0], "q": carries[0]})
+    else:
+        if not isinstance(correlation, list):
+            raise ValueError("multi-asset custom product requires a correlation matrix")
+        market.update({"sigmas": sigmas, "qs": carries, "corr": correlation})
+
+    valuation_state = custom_products.inception_valuation_state(
+        definition,
+        dict(zip(expected_asset_names, current_spots)),
+        dict(zip(expected_asset_names, current_spots)),
+    )
+    result = store.reprice(
+        product_id,
+        slots,
+        market,
+        valuation_state=valuation_state,
+        scenario=None,
+        n_sims=numerical.get("paths"),
+        steps=numerical.get("steps"),
+        seed=numerical.get("seed"),
+        version=definition_version,
+        expected_definition_hash=definition_hash,
+        include_greeks=True,
+    )
+    if isinstance(result.get("component_greeks"), list):
+        keyed_components = {}
+        for block in result["component_greeks"]:
+            name = (str(block.get("asset_name") or "")
+                    if isinstance(block, dict) else "")
+            if not name or name in keyed_components:
+                raise ValueError(
+                    "custom product component Greeks contain a missing or "
+                    "duplicate logical asset name")
+            keyed_components[name] = block
+        result["component_greeks"] = keyed_components
+    expected_state = str(attachment.get("definition_state") or "")
+    actual_state = str(result.get("state") or "")
+    lifecycle_order = {
+        "tested": 0, "submitted": 1, "approved": 2, "published": 3,
+    }
+    if (expected_state not in lifecycle_order
+            or actual_state not in lifecycle_order
+            or lifecycle_order[actual_state] < lifecycle_order[expected_state]):
+        raise ValueError(
+            "custom product lifecycle state is incompatible with the pinned "
+            "attachment")
+    expected_engine = str(attachment.get("engine_id") or "")
+    if expected_engine and result.get("engine") != expected_engine:
+        raise ValueError("custom product engine does not match the pinned attachment")
+    canonical_attachment = json.dumps(
+        attachment, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False)
+    result["attachment_hash"] = hashlib.sha256(
+        canonical_attachment.encode("utf-8")).hexdigest()
+    kind_aliases = {
+        "equity": "equity", "equities": "equity",
+        "index": "index", "indices": "index",
+        "bond": "bond", "bonds": "bond",
+        "future": "future", "futures": "future",
+        "commodity": "commodity", "commodities": "commodity",
+    }
+    component_secids = [str(item.get("secid") or "").strip()
+                        for item in ordered_assets]
+    component_kinds = [
+        kind_aliases.get(str(item.get("category") or "").strip().lower(),
+                         str(item.get("category") or "").strip().lower())
+        for item in ordered_assets
+    ]
+    correlation_evidence = {
+        "source": "explicit_attachment",
+        "method": "user_supplied_static_correlation",
+        "matrix_hash": hashlib.sha256(json.dumps(
+            correlation, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")).hexdigest(),
+        "asset_names": expected_asset_names,
+        "snapshot_id": active_snapshot_id or None,
+        "historical_estimation_bound": False,
+    }
+    raw_component_greeks = result.get("component_greeks")
+    if isinstance(raw_component_greeks, dict):
+        market_components = {}
+        for asset_name, secid, kind in zip(
+                expected_asset_names, component_secids, component_kinds):
+            block = raw_component_greeks.get(asset_name)
+            if not isinstance(block, dict):
+                raise ValueError(
+                    f"custom product component Greeks missing asset '{asset_name}'")
+            row = dict(block)
+            row.update({
+                "asset_name": asset_name,
+                "secid": secid,
+                "kind": kind,
+            })
+            market_components[secid] = row
+        result["component_greeks"] = market_components
+    resolved_inputs = {
+        "schema": "custom-product-portfolio-repricing-v1",
+        "custom_product_id": product_id,
+        "definition_version": definition_version,
+        "definition_hash": definition_hash,
+        "attachment_hash": result["attachment_hash"],
+        "definition_state_at_attachment": expected_state,
+        "definition_state_at_pricing": actual_state,
+        "engine_id": result.get("engine"),
+        "resolved_snapshot_id": active_snapshot_id,
+        "asset_names": expected_asset_names,
+        "component_secids": component_secids,
+        "component_kinds": component_kinds,
+        "assets": current_spots,
+        "reference_spots": current_spots,
+        "sigmas": sigmas,
+        "incomes": carries,
+        "correlation": correlation,
+        "correlation_evidence": correlation_evidence,
+        "slots": slots,
+        "market": market,
+        "market_evidence": market_contract,
+        "numerical": numerical,
+        "payoff_basis": payoff_basis,
+        "quantity_unit": (
+            "currency_notional"
+            if payoff_basis == "normalized_notional" else "legacy_unspecified"
+        ),
+        "state_mode": state_mode,
+        "state_source": state_source,
+        "valuation_state": valuation_state,
+        "attachment": attachment,
+    }
+    resolved_inputs["repricing_contract_hash"] = hashlib.sha256(
+        json.dumps(
+            resolved_inputs, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    result["resolved_inputs"] = resolved_inputs
+    warnings = [str(item) for item in attachment.get("limitations") or []]
+    if payoff_basis == "legacy_unspecified":
+        warnings.append(
+            "Legacy custom attachment has no payoff_basis; price is shown, "
+            "but portfolio risk requires normalized_notional")
+    if state_mode == "legacy_unspecified" or state_source == "legacy_unspecified":
+        warnings.append(
+            "Legacy custom attachment has no explicit inception state source; "
+            "portfolio risk is unavailable")
+    if len(expected_asset_names) > 1:
+        warnings.append(
+            "Correlation matrix is an explicit static attachment input; no "
+            "historical estimation window/source is bound yet")
+    return svc._result(
+        value=result["value"],
+        model_id="custom_product_ast",
+        raw=result,
+        snapshot=snapshot,
+        warnings=warnings,
+        calculation_type="custom_product_pricing",
+        inputs={"attachment": attachment},
+        user_action="Price version-pinned custom product",
     )
 
 
@@ -1447,6 +1804,14 @@ PRODUCTS: list[WsProduct] = [
            "market", dtype="schedule",
            help="1–5 real equities, indices or bonds; weights drive average triggers"),
          _rate("r", "Discount rate r", 0.16), _mat(3.0),
+         P("reference_spots", "Contract reference spots",
+           "", "contract", dtype="schedule",
+           help=("One immutable initial fixing per underlying. Required for "
+                 "seasoned trades; blank explicitly uses current snapshot spots "
+                 "and is reported as an inception assumption.")),
+         P("reference_fixing_dates", "Reference fixing dates (YYYY-MM-DD)",
+           "", "contract", dtype="schedule",
+           help="Optional one contractual fixing date per underlying."),
          P("observation_dates", "Observation dates (y)",
            "0.5,1,1.5,2,2.5,3", "contract", dtype="schedule",
            help="strictly increasing dates in (0,T]; T is appended when omitted"),
@@ -1485,6 +1850,20 @@ PRODUCTS: list[WsProduct] = [
         note=("Real market spots, historical vols, income/carry and full empirical "
               "correlation. Constant-parameter GBM; bonds are price-index proxies, "
               "not full cash-flow/default models.")),
+    WsProduct(
+        "custom_product", "Custom Product · AST payoff", "hybrid",
+        "Structured notes",
+        [P("attachment_json", "Version-pinned custom definition", "", "contract",
+           dtype="text", advanced=True,
+           help="Создаётся встроенным AST/Payoff Builder; содержит version/hash, "
+                "slots, market evidence и numerical controls.")],
+        [E("custom_mc", "Custom AST · correlated GBM MC",
+           model_id="multi_asset", params=[])],
+        _custom_product,
+        note=("Generic typed payoff AST with version-pinned definition and explicit "
+              "market-data evidence. Component Greeks and historical full-reprice "
+              "risk are supported for canonical inception state; seasoned products "
+              "remain fail-closed until their observation/path state is supplied.")),
     WsProduct(
         "basket_note", "Basket Note (real underlyings)", "hybrid", "Structured notes",
         [P("basket", "Basket SECID:weight", "SBER:0.4, GAZP:0.3, LKOH:0.3", "contract",
@@ -1757,7 +2136,8 @@ _MEASURE_LABELS = {
 }
 
 _SKIP_KEYS = {"model", "model_id", "engine", "errors", "warnings", "vol_surface_id",
-              "style", "n_sims", "seed", "inputs"}
+              "style", "n_sims", "seed", "inputs", "component_greeks",
+              "resolved_inputs", "market_data_evidence"}
 
 
 def _prettify(key: str) -> str:
@@ -1778,6 +2158,33 @@ def normalize_ws_result(result: dict, input_keys: set[str] | None = None) -> dic
     value = result.get("value")
     skip = _SKIP_KEYS | (input_keys or set())
 
+    component_greeks = raw.get("component_greeks")
+    if isinstance(component_greeks, Mapping):
+        for component in sorted(component_greeks, key=str):
+            block = component_greeks[component]
+            if not isinstance(block, Mapping):
+                continue
+            for greek_name in ("delta", "gamma", "vega"):
+                greek_value = block.get(greek_name)
+                if (isinstance(greek_value, bool)
+                        or not isinstance(greek_value, Real)
+                        or not math.isfinite(float(greek_value))):
+                    continue
+                greeks.append({
+                    "key": f"{greek_name}.{component}",
+                    "label": (
+                        f"Gamma · {component} (diagonal)"
+                        if greek_name == "gamma"
+                        else f"{greek_name.capitalize()} · {component}"
+                    ),
+                    "value": float(greek_value),
+                    "component": str(component),
+                    "kind": str(block.get("kind") or ""),
+                    "convention": str(
+                        block.get(f"{greek_name}_convention") or ""
+                    ),
+                })
+
     for key, val in raw.items():
         if key in skip:
             continue
@@ -1786,6 +2193,10 @@ def normalize_ws_result(result: dict, input_keys: set[str] | None = None) -> dic
                              "value": 1.0 if val else 0.0, "kind": "flag"})
         elif isinstance(val, (int, float)):
             entry = {"key": key, "label": _prettify(key), "value": float(val)}
+            if (key == "gamma"
+                    and str(raw.get("gamma_convention") or "").startswith(
+                        "d2PV/dx2")):
+                entry["label"] = "Parallel Gamma · relative basket shock"
             if key in ("price", "npv", "value") and value is not None:
                 continue                          # already the headline
             if key.lower() in _GREEK_KEYS:
@@ -1833,6 +2244,17 @@ def normalize_ws_result(result: dict, input_keys: set[str] | None = None) -> dic
         "greeks": greeks,
         "measures": measures,
         "series": series,
+        # Canonical resolved market state is deliberately retained in the
+        # persisted Pricing_new result.  Transient risk converts the exact
+        # priced state, not a newly resolved "latest" basket.
+        "resolved_inputs": (raw.get("resolved_inputs")
+                            if isinstance(raw.get("resolved_inputs"), dict)
+                            else None),
+        "market_data_evidence": (
+            raw.get("market_data_evidence")
+            if isinstance(raw.get("market_data_evidence"), dict)
+            else None
+        ),
         "warnings": list(result.get("warnings") or []),
         "errors": list(result.get("errors") or []),
         "limitations": list(result.get("model_limitations") or []),
@@ -2284,6 +2706,16 @@ def price_ws(svc, snapshot, product_id: str, engine_id: str | None,
                                      input_keys=set(params.keys()))
     normalized["product"] = product_id
     normalized["engine"] = values["engine"]
+    # Persist the complete schema/environment materialisation used by this
+    # unit valuation.  Saved-run risk and replay consume this object instead
+    # of reapplying defaults that may change in a later release.  The custom
+    # attachment adapter remains internal; its typed nested contract and
+    # resolved_inputs carry the authoritative custom-product state.
+    normalized["resolved_params"] = {
+        key: values[key]
+        for key in sorted(values)
+        if key not in {"engine", "attachment_json"}
+    }
     if env is not None:
         normalized["environment"] = env.env_id
     return normalized
@@ -2335,7 +2767,7 @@ _BOOK_CURRENCY_PV_PRODUCTS = frozenset({
     "fx_asian", "fx_lookback", "xccy_swap", "cds_index_option", "cds",
     "risky_bond", "structural_credit", "commodity_option", "spread_option",
     "two_asset_option", "basket_option", "rainbow_option",
-    "multi_asset_autocall", "basket_note", "convertible",
+    "multi_asset_autocall", "basket_note", "custom_product", "convertible",
 })
 
 
@@ -2664,6 +3096,198 @@ def _fx_pair(v: dict) -> str:
     }.get(root, "USD/RUB")
 
 
+def _custom_product_position(v: dict) -> tuple[str, dict, str]:
+    """Materialise the immutable custom-AST portfolio repricing contract.
+
+    The nested ``custom_repricing`` object is produced only by a successful
+    version-pinned workstation calculation.  A raw builder attachment is not
+    enough: accepting it here would let VaR resolve a newer definition or
+    mutable market state than the headline PV used by the saved run.
+    """
+    contract = v.get("custom_repricing")
+    if not isinstance(contract, Mapping):
+        raise PortfolioRepricingContractError(
+            "custom_pricing_evidence_required",
+            "custom_product requires resolved inputs from a successful "
+            "version-pinned pricing result",
+        )
+    contract = copy.deepcopy(dict(contract))
+    if contract.get("schema") != "custom-product-portfolio-repricing-v1":
+        raise PortfolioRepricingContractError(
+            "custom_repricing_schema_unsupported",
+            "custom_product resolved repricing schema is missing or unsupported",
+        )
+
+    product_id = str(contract.get("custom_product_id") or "").strip()
+    definition_hash = str(contract.get("definition_hash") or "").strip()
+    attachment_hash = str(contract.get("attachment_hash") or "").strip()
+    version = contract.get("definition_version")
+    if (not product_id or len(definition_hash) != 64
+            or len(attachment_hash) != 64
+            or isinstance(version, bool) or not isinstance(version, int)
+            or version < 1):
+        raise PortfolioRepricingContractError(
+            "custom_definition_evidence_missing",
+            "custom_product requires product id, positive version and exact "
+            "definition/attachment hashes",
+        )
+
+    resolved_snapshot_id = str(
+        contract.get("resolved_snapshot_id") or ""
+    ).strip()
+    if not resolved_snapshot_id:
+        raise PortfolioRepricingContractError(
+            "custom_snapshot_evidence_missing",
+            "custom_product requires the immutable pricing snapshot id",
+        )
+
+    asset_names = _strings(contract.get("asset_names"))
+    component_secids = _component_secids(contract.get("component_secids"))
+    component_kinds = [
+        str(value).strip().lower()
+        for value in (contract.get("component_kinds") or [])
+    ]
+    assets = list(contract.get("assets") or [])
+    reference_spots = list(contract.get("reference_spots") or [])
+    sigmas = list(contract.get("sigmas") or [])
+    incomes = list(contract.get("incomes") or [])
+    expected = len(asset_names)
+    aligned = {
+        "asset_names": expected,
+        "component_secids": len(component_secids),
+        "component_kinds": len(component_kinds),
+        "assets": len(assets),
+        "reference_spots": len(reference_spots),
+        "sigmas": len(sigmas),
+        "incomes": len(incomes),
+    }
+    if len(set(aligned.values())) != 1 or not 1 <= expected <= 5:
+        raise PortfolioRepricingContractError(
+            "custom_component_contract_invalid",
+            "custom_product asset names, SECIDs, kinds and market arrays must "
+            f"align for 1 to 5 components: {aligned}",
+        )
+    if len(set(asset_names)) != expected:
+        raise PortfolioRepricingContractError(
+            "custom_component_contract_invalid",
+            "custom_product definition asset names must be unique",
+        )
+    canonical_secids = [secid.casefold() for secid in component_secids]
+    if len(set(canonical_secids)) != expected:
+        raise PortfolioRepricingContractError(
+            "custom_component_contract_invalid",
+            "custom_product component SECIDs must be unique for factor attribution",
+        )
+    supported_kinds = {"equity", "index", "bond", "future", "commodity"}
+    invalid_kinds = sorted(set(component_kinds) - supported_kinds)
+    if invalid_kinds:
+        raise PortfolioRepricingContractError(
+            "custom_component_kind_unsupported",
+            "custom_product unsupported component kinds: "
+            + ", ".join(invalid_kinds),
+        )
+
+    market = contract.get("market")
+    market_evidence = contract.get("market_evidence")
+    numerical = contract.get("numerical")
+    valuation_state = contract.get("valuation_state")
+    slots = contract.get("slots")
+    correlation = contract.get("correlation")
+    correlation_evidence = contract.get("correlation_evidence")
+    if (not isinstance(market, Mapping)
+            or not isinstance(market_evidence, Mapping)
+            or not isinstance(numerical, Mapping)
+            or not isinstance(valuation_state, Mapping)
+            or not isinstance(slots, Mapping)
+            or not isinstance(correlation, (list, tuple))
+            or not isinstance(correlation_evidence, Mapping)):
+        raise PortfolioRepricingContractError(
+            "custom_repricing_inputs_incomplete",
+            "custom_product requires canonical market, evidence, numerical, "
+            "valuation-state, slot and correlation inputs/evidence",
+        )
+    if valuation_state.get("mode") != "inception":
+        raise PortfolioRepricingContractError(
+            "custom_seasoned_state_unsupported",
+            "custom_product portfolio risk currently supports only canonical "
+            "mode='inception'; seasoned observation/path state is required otherwise",
+        )
+    if list(valuation_state.get("asset_names") or []) != asset_names:
+        raise PortfolioRepricingContractError(
+            "custom_component_contract_invalid",
+            "custom_product valuation-state assets do not match the pinned definition",
+        )
+    if str(contract.get("definition_state_at_pricing") or "") != "published":
+        raise PortfolioRepricingContractError(
+            "custom_definition_not_published",
+            "custom_product portfolio risk requires an immutable published "
+            "definition; research/test lifecycle states remain pricing-only",
+        )
+    payoff_basis = str(contract.get("payoff_basis") or "")
+    quantity_unit = str(contract.get("quantity_unit") or "")
+    state_mode = str(contract.get("state_mode") or "")
+    state_source = str(contract.get("state_source") or "")
+    if (payoff_basis != "normalized_notional"
+            or quantity_unit != "currency_notional"):
+        raise PortfolioRepricingContractError(
+            "custom_payoff_unit_contract_required",
+            "custom_product portfolio risk requires payoff_basis="
+            "'normalized_notional' and quantity_unit='currency_notional'",
+        )
+    if state_mode != "inception" or state_source != "explicit_assumption":
+        raise PortfolioRepricingContractError(
+            "custom_state_source_required",
+            "custom_product portfolio risk requires explicit inception state "
+            "confirmation; legacy inferred state is pricing-only",
+        )
+
+    engine_id = str(contract.get("engine_id") or "").strip()
+    expected_engine = (
+        "custom_mc_gbm" if expected == 1 else "custom_mc_multi_gbm"
+    )
+    if engine_id != expected_engine:
+        raise PortfolioRepricingContractError(
+            "custom_engine_evidence_mismatch",
+            "custom_product engine does not match the pinned asset dimension",
+        )
+
+    params = {
+        "custom_product_id": product_id,
+        "definition_version": version,
+        "definition_hash": definition_hash,
+        "attachment_hash": attachment_hash,
+        "definition_state_at_attachment": str(
+            contract.get("definition_state_at_attachment") or ""),
+        "definition_state_at_pricing": str(
+            contract.get("definition_state_at_pricing") or ""),
+        "engine_id": engine_id,
+        "resolved_snapshot_id": resolved_snapshot_id,
+        "asset_names": asset_names,
+        "component_secids": component_secids,
+        "component_kinds": component_kinds,
+        "assets": assets,
+        "reference_spots": reference_spots,
+        "sigmas": sigmas,
+        "incomes": incomes,
+        "correlation": [list(row) for row in correlation],
+        "correlation_evidence": dict(correlation_evidence),
+        "slots": dict(slots),
+        "market": dict(market),
+        "market_evidence": dict(market_evidence),
+        "numerical": dict(numerical),
+        "payoff_basis": payoff_basis,
+        "quantity_unit": quantity_unit,
+        "state_mode": state_mode,
+        "state_source": state_source,
+        "valuation_state": dict(valuation_state),
+        "attachment": dict(contract.get("attachment") or {}),
+        "repricing_contract_hash": str(
+            contract.get("repricing_contract_hash") or ""),
+        "resolved_contract": contract,
+    }
+    return "custom_product", params, "Custom Product · version-pinned AST"
+
+
 TO_POSITION: dict[str, Callable[[dict], tuple[str, dict, str]]] = {
     "european_option": lambda v: ("option", {
         "S": _n(v, "S", 100), "K": _n(v, "K", 100), "T": _n(v, "T", 1),
@@ -2715,6 +3339,40 @@ TO_POSITION: dict[str, Callable[[dict], tuple[str, dict, str]]] = {
         "ki_barrier": _n(v, "ki_barrier", .65),
         "coupon_rate": _n(v, "coupon_rate", .1),
         "n_sims": int(_n(v, "n_sims", 20000))}, "Autocall / Phoenix"),
+    "multi_asset_autocall": lambda v: ("multi_asset_autocall", {
+        "resolved_snapshot_id": str(v.get("resolved_snapshot_id") or ""),
+        "component_secids": _component_secids(v.get("component_secids")),
+        "component_kinds": list(v.get("component_kinds") or []),
+        "assets": list(v.get("assets") or []),
+        "reference_spots": _floats(v.get("reference_spots", "")),
+        "reference_fixing_dates": _strings(
+            v.get("reference_fixing_dates", "")),
+        "sigmas": list(v.get("sigmas") or []),
+        "incomes": list(v.get("incomes") or []),
+        "weights": list(v.get("weights") or []),
+        "correlation": [list(row) for row in (v.get("correlation") or [])],
+        "r": _n(v, "r", .16), "T": _n(v, "T", 3.0),
+        "observation_dates": _floats(v.get("observation_dates", "")),
+        "autocall_barrier": _n(v, "autocall_barrier", 1.20),
+        "autocall_aggregation": v.get("autocall_aggregation", "best_of"),
+        "protection_barrier": _n(v, "protection_barrier", .65),
+        "protection_aggregation": v.get("protection_aggregation", "worst_of"),
+        "protection_monitoring": v.get("protection_monitoring", "maturity"),
+        "coupon_barrier": _n(v, "coupon_barrier", .65),
+        "coupon_aggregation": v.get("coupon_aggregation", "worst_of"),
+        "coupon_rate": _n(v, "coupon_rate", 0.0),
+        "guaranteed_coupon": _n(v, "guaranteed_coupon", .05),
+        "memory_coupon": (
+            v.get("memory_coupon", "yes")
+            if isinstance(v.get("memory_coupon", "yes"), bool)
+            else v.get("memory_coupon", "yes") == "yes"
+        ),
+        "notional": _n(v, "notional", 1_000.0),
+        "n_sims": int(_n(v, "n_sims", 20_000)),
+        "steps": int(_n(v, "steps", 100)),
+        "seed": int(_n(v, "seed", 42)),
+    }, "Multi-Asset Autocall / Phoenix"),
+    "custom_product": _custom_product_position,
     "fra": lambda v: ("fra", {
         "notional": _n(v, "notional", 1e6), "K": _n(v, "K", .1),
         "T1": _n(v, "T1", 1), "T2": _n(v, "T2", 1.5), "r": _n(v, "r", .1)}, "FRA"),
@@ -2814,9 +3472,12 @@ def to_position(product_id: str, values: dict,
         return None
     portfolio_repricing_engine(product_id, engine_id)
     inst, params, desc = fn(values)
-    if inst in ("spread", "basket"):
+    if inst in ("spread", "basket", "multi_asset_autocall"):
         expected = 2 if inst == "spread" else len(params.get("assets") or [])
         component_secids = params.get("component_secids") or []
+        if inst == "multi_asset_autocall" and not component_secids:
+            raise ValueError(
+                "multi_asset_autocall requires snapshot-resolved component inputs")
         if component_secids and len(component_secids) != expected:
             raise ValueError(
                 f"{product_id} requires {expected} component SECIDs; "
@@ -2831,6 +3492,27 @@ def to_position(product_id: str, values: dict,
                 raise ValueError("basket assets and weights must have equal length")
             if len(params.get("sigmas") or []) != n_assets:
                 raise ValueError("basket assets and sigmas must have equal length")
+        elif inst == "multi_asset_autocall":
+            if not params.get("resolved_snapshot_id"):
+                raise ValueError(
+                    "multi_asset_autocall requires resolved_snapshot_id")
+            aligned = {
+                key: len(params.get(key) or [])
+                for key in (
+                    "component_secids", "component_kinds", "assets",
+                    "reference_spots", "sigmas", "incomes", "weights",
+                )
+            }
+            if len(set(aligned.values())) != 1 or not 1 <= expected <= 5:
+                raise ValueError(
+                    "multi_asset_autocall resolved arrays must align for 1 to "
+                    f"5 components: {aligned}")
+            correlation = params.get("correlation") or []
+            if (len(correlation) != expected
+                    or any(not isinstance(row, (list, tuple))
+                           or len(row) != expected for row in correlation)):
+                raise ValueError(
+                    "multi_asset_autocall correlation must match component count")
     # Retain factor identity supplied by underlying selection / what-if input.
     # Without it incremental VaR silently falls back to IMOEX or USD/RUB.
     if values.get("secid") not in (None, ""):

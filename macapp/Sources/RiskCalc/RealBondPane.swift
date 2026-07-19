@@ -197,7 +197,7 @@ struct RealBondPane: View {
                     labeled("Discount curve") {
                         Picker("", selection: $vm.curveID) {
                             ForEach(vm.curveOptions, id: \.id) { Text($0.label).tag($0.id) }
-                        }.labelsHidden().fixedSize()
+                        }.labelsHidden().neutralControlTint().fixedSize()
                     }
                     labeled("Curve shift (bp)") {
                         TextField("", value: $vm.shiftBps, format: .number)
@@ -214,7 +214,7 @@ struct RealBondPane: View {
                         }
                         .frame(minWidth: 120)
                     }
-                    .controlSize(.large).buttonStyle(.borderedProminent).disabled(vm.isPricing)
+                    .controlSize(.large).buttonStyle(.borderedProminent).tint(Theme.accent).disabled(vm.isPricing)
                 }
                 Divider()
                 HStack(alignment: .bottom, spacing: Theme.s4) {
@@ -222,7 +222,7 @@ struct RealBondPane: View {
                     labeled("Forecast curve (floaters)") {
                         Picker("", selection: $vm.forecastCurveID) {
                             ForEach(vm.curveOptions, id: \.id) { Text($0.label).tag($0.id) }
-                        }.labelsHidden().fixedSize()
+                        }.labelsHidden().neutralControlTint().fixedSize()
                     }
                     labeled("Float spread (bp)") {
                         TextField("", value: $vm.floatSpreadBps, format: .number)

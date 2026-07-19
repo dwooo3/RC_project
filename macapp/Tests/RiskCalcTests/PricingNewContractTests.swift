@@ -57,6 +57,64 @@ final class PricingNewContractTests: XCTestCase {
         XCTAssertTrue(risk.capability.supported)
         XCTAssertFalse(risk.provenance.globalPortfolioUsed)
         XCTAssertEqual(risk.provenance.portfolioSource, "request_legs_only")
+        XCTAssertNil(risk.horizonMethod)
+        XCTAssertNil(risk.modelDiagnostics)
+        XCTAssertNil(risk.provenance.customRepricing)
+    }
+
+    func testTransientRiskDecodesOperationalAndCustomRepricingEvidence() throws {
+        let json = #"""
+        {
+          "scope":"pricing_new_transient_book","partial":false,
+          "confidence":0.99,"window":500,"horizon":1,
+          "horizon_method":"none",
+          "model":"historical_full_reprice","model_label":"Historical (full reprice)",
+          "model_diagnostics":{"method":"historical_full_reprice"},
+          "currency":"RUB","portfolio_value":1000,"positions":1,
+          "var":42,"es":55,"n_scenarios":240,
+          "histogram":[],"hyppl":[],"factors":["EQ:SBER"],"data_quality":[],
+          "capability":{"supported":true,"requested_count":1,"convertible_count":1,
+            "supported_count":1,"unsupported":[],"currencies":["RUB"],"base_currency":"RUB"},
+          "provenance":{"history_source":"stored_market_factor_history",
+            "history_first_date":"2025-07-15","history_last_date":"2026-07-15",
+            "history_observations":240,"snapshot_id":"snap-1",
+            "valuation_date":"2026-07-16","calculation_id":"risk-1",
+            "calculation_timestamp":"2026-07-18T10:00:00Z","inputs_hash":"hash",
+            "portfolio_source":"request_legs_only","global_portfolio_used":false,
+            "factor_diagnostics":{"equity":{"ready":true,"source":"SBER:price"}},
+            "scenario_matrix_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "custom_repricing":{"active":true,"profile":"custom_hist_crn_v1",
+              "inner_paths":1000,"common_random_numbers":true,
+              "requested_scenarios":500,"actual_scenarios":240,"scenario_limit":500,
+              "requested_work_path_points":253000000,
+              "actual_work_path_points":121440000,"work_limit_path_points":1500000000,
+              "deadline_seconds":60,
+              "execution":{"profile":"custom_hist_crn_v1","inner_paths":1000,
+                "base_value_sources":["custom_profile_computed","custom_profile_cache"],
+                "base_value_repriced_once":true,"elapsed_seconds":2.125,
+                "deadline_seconds":60,"common_random_numbers":true}}},
+          "pricing_run_id":"run-1","pricing_run_name":"Custom validation"
+        }
+        """#
+
+        let risk = try JSONDecoder().decode(
+            PricingNewRiskResult.self, from: Data(json.utf8))
+        let custom = try XCTUnwrap(risk.provenance.customRepricing?.objectValue)
+        let execution = try XCTUnwrap(custom["execution"]?.objectValue)
+
+        XCTAssertEqual(risk.horizonMethod, "none")
+        XCTAssertEqual(risk.modelDiagnostics?.objectValue?["method"]?.stringValue,
+                       "historical_full_reprice")
+        XCTAssertEqual(risk.provenance.valuationDate, "2026-07-16")
+        XCTAssertEqual(risk.provenance.calculationTimestamp,
+                       "2026-07-18T10:00:00Z")
+        XCTAssertEqual(risk.provenance.scenarioMatrixHash,
+                       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        XCTAssertEqual(custom["profile"]?.stringValue, "custom_hist_crn_v1")
+        XCTAssertEqual(custom["inner_paths"]?.doubleValue, 1_000)
+        XCTAssertEqual(custom["actual_work_path_points"]?.doubleValue, 121_440_000)
+        XCTAssertEqual(execution["elapsed_seconds"]?.doubleValue, 2.125)
+        XCTAssertEqual(execution["base_value_repriced_once"]?.boolValue, true)
     }
 
     @MainActor

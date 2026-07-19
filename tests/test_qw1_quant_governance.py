@@ -105,12 +105,12 @@ def test_model_and_solver_roles_are_physically_separate():
 
 def test_workstation_pairs_have_unique_versioned_eligibility():
     bindings = _bindings()
-    assert len(bindings) == 104
-    assert len({(product, selector) for product, selector, _, _ in bindings}) == 104
+    assert len(bindings) == 105
+    assert len({(product, selector) for product, selector, _, _ in bindings}) == 105
     assert eligibility_consistency_errors(bindings) == []
 
     eligibilities = GovernanceService().list_engine_eligibilities()
-    assert len(eligibilities) == 105  # Carr-Madan BSM and Heston variants
+    assert len(eligibilities) == 106  # Carr-Madan variants + custom AST binding
     assert len({item.engine_id for item in eligibilities}) == len(eligibilities)
     assert all(isinstance(item, EngineEligibility) for item in eligibilities)
 
@@ -185,13 +185,13 @@ def test_transition_approval_expiry_is_inclusive_and_fail_closed_afterwards():
     governance = GovernanceService()
     active = governance.quant_coverage_summary(as_of=date(2027, 1, 31))
     expired = governance.quant_coverage_summary(as_of=date(2027, 2, 1))
-    assert active["production_engine_count"] == 85
-    assert active["declared_production_engine_count"] == 85
+    assert active["production_engine_count"] == 86
+    assert active["declared_production_engine_count"] == 86
     assert active["expired_transition_engine_count"] == 0
     assert expired["production_engine_count"] == 0
-    assert expired["declared_production_engine_count"] == 85
+    assert expired["declared_production_engine_count"] == 86
     assert expired["legacy_transition_engine_count"] == 0
-    assert expired["expired_transition_engine_count"] == 85
+    assert expired["expired_transition_engine_count"] == 86
 
 
 def test_validate_and_price_share_research_policy_gate():
@@ -379,11 +379,11 @@ def test_quant_governance_api_exposes_all_separated_ledgers():
         "research-only": 20,
         "routed": 18,
     }
-    assert payload["summary"]["production_engine_count"] == 85
-    assert payload["summary"]["declared_production_engine_count"] == 85
+    assert payload["summary"]["production_engine_count"] == 86
+    assert payload["summary"]["declared_production_engine_count"] == 86
     assert len(payload["model_definitions"]) == 39
     assert len(payload["solver_definitions"]) == 107
-    assert len(payload["engine_eligibilities"]) == 105
+    assert len(payload["engine_eligibilities"]) == 106
     assert len(payload["component_publications"]) == 124
 
 

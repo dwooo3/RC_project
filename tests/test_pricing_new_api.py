@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from api.pricing_new_runs import PricingNewRunService
+from domain.market_data import MarketDataSnapshot, MarketDataSource
 from services.pricing_service import PricingService
 
 
@@ -158,6 +159,66 @@ def test_risk_route_uses_exact_saved_legs_and_pinned_environment(
     assert observed["controls"]["horizon"] == 10
     assert response["pricing_run_id"] == priced["run_id"]
     assert response["pricing_run_name"] == "Risk source"
+
+
+def test_risk_reopens_saved_snapshot_after_environment_advances(
+    monkeypatch, tmp_path,
+):
+    from datetime import date
+    from api import server
+
+    service = PricingService()
+    old = MarketDataSnapshot(
+        snapshot_id="SNAP-OLD",
+        valuation_date=date(2026, 7, 16),
+        source=MarketDataSource.MANUAL,
+        quality="MANUAL",
+    )
+    current = MarketDataSnapshot(
+        snapshot_id="SNAP-CURRENT",
+        valuation_date=date(2026, 7, 18),
+        source=MarketDataSource.MANUAL,
+        quality="MANUAL",
+    )
+    runtime_snapshot = {"value": old}
+
+    def runtime(_env_id):
+        snapshot = runtime_snapshot["value"]
+        return None, snapshot, service, [], []
+
+    monkeypatch.setattr(
+        service.market_data, "resolve_pinned_snapshot",
+        lambda snapshot_id: old if snapshot_id == old.snapshot_id
+        else pytest.fail("unexpected snapshot id"),
+        raising=False,
+    )
+    monkeypatch.setattr(server, "_workstation_runtime", runtime)
+    monkeypatch.setattr(
+        server, "_pricing_new_runs",
+        PricingNewRunService(tmp_path / "pinned-runs.json"),
+    )
+    priced = server.pricing_new_price(server.PricingNewPriceRequest(
+        name="Pinned snapshot",
+        env_id="FO",
+        legs=[server.PricingNewLegRequest(**_leg())],
+    ))
+    runtime_snapshot["value"] = current
+    observed = {}
+
+    def calculate(ctx, legs, **_controls):
+        observed["snapshot_id"] = ctx.snapshot.snapshot_id
+        return {"scope": "pricing_new_transient_book", "var": 1.0, "es": 2.0}
+
+    monkeypatch.setattr(
+        server.pricing_new_risk, "calculate_transient_book_risk", calculate)
+
+    capability = server.pricing_new_risk_capabilities(priced["run_id"])
+    result = server.pricing_new_run_risk(
+        priced["run_id"], server.PricingNewRiskRequest())
+
+    assert capability["supported"] is True
+    assert observed["snapshot_id"] == "SNAP-OLD"
+    assert result["pricing_run_id"] == priced["run_id"]
 
 
 def test_openapi_exposes_pricing_new_without_replacing_current_pricing():

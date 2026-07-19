@@ -1,10 +1,13 @@
 import Charts
+import CryptoKit
+import Foundation
 import SwiftUI
 
 /// A single dense pricing worksheet. Instruments are configured side by side;
 /// valuation, risk and immutable run history stay on the same vertical surface.
 struct PricingNewScreen: View {
     @State private var vm = PricingNewWorkspaceViewModel()
+    @State private var showCustomBuilder = false
 
     var body: some View {
         ScrollView {
@@ -12,7 +15,9 @@ struct PricingNewScreen: View {
                 .padding(Theme.s4)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
+        // Let card shadows fade past the scroll bounds instead of being cut
+        // into a phantom border at the sidebar edge.
+        .scrollClipDisabled()
         .environment(\.interfaceDensity, .dense)
         .task { await vm.load() }
     }
@@ -30,6 +35,18 @@ struct PricingNewScreen: View {
                 SkeletonScreen()
             } else {
                 worksheet
+                if showCustomBuilder {
+                    PricingNewCustomProductEmbeddedEditor(
+                        environmentID: vm.envID
+                    ) { attachment in
+                        do {
+                            try vm.attachCustomProduct(attachment)
+                            showCustomBuilder = false
+                        } catch {
+                            vm.errorMessage = error.localizedDescription
+                        }
+                    }
+                }
                 resultsBlock
                 riskBlock
                 historyBlock
@@ -41,56 +58,82 @@ struct PricingNewScreen: View {
 
     private var workspaceHeader: some View {
         GlassCard {
-            HStack(spacing: Theme.s3) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Pricing_new")
-                        .font(.system(size: 19, weight: .bold, design: .rounded))
-                    Text("Единый расчёт · 1–5 инструментов · real market data")
-                        .font(Typography.micro).foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: Theme.s2) {
+                HStack(alignment: .bottom, spacing: Theme.s3) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Pricing_new")
+                            .font(.system(size: 19, weight: .bold,
+                                         design: .rounded))
+                            .lineLimit(1)
+                        Text("Единый расчёт · 1–5 инструментов · real market data")
+                            .font(Typography.micro).foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                    Divider().frame(height: 34)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("ИМЯ РАСЧЁТА")
+                            .font(Typography.label).foregroundStyle(.secondary)
+                        TextField("Например: Autocall validation · 16 Jul",
+                                  text: $vm.runName)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minWidth: 210, maxWidth: 380)
+                    }
+                    .layoutPriority(1)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("КОНТУР")
+                            .font(Typography.label).foregroundStyle(.secondary)
+                        Picker("Environment", selection: $vm.envID) {
+                            ForEach(vm.environments) { env in
+                                Text("\(env.envID) · \(env.name)").tag(env.envID)
+                            }
+                        }
+                        .labelsHidden().pickerStyle(.menu)
+                        .neutralControlTint().fixedSize()
+                    }
+                    Spacer(minLength: 0)
                 }
-                Divider().frame(height: 34)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("ИМЯ РАСЧЁТА").font(Typography.label).foregroundStyle(.secondary)
-                    TextField("Например: Autocall validation · 16 Jul", text: $vm.runName)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(minWidth: 230, idealWidth: 310, maxWidth: 380)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("КОНТУР").font(Typography.label).foregroundStyle(.secondary)
-                    Picker("Environment", selection: $vm.envID) {
-                        ForEach(vm.environments) { env in
-                            Text("\(env.envID) · \(env.name)").tag(env.envID)
+                HStack(spacing: Theme.s2) {
+                    if vm.isStale {
+                        Pill(text: "inputs changed", color: Theme.warning)
+                            .fixedSize()
+                    } else if let result = vm.result {
+                        Pill(text: result.snapshotID ?? "priced",
+                             color: Theme.positive)
+                            .fixedSize()
+                    }
+                    Spacer(minLength: Theme.s2)
+                    Button {
+                        showCustomBuilder.toggle()
+                    } label: {
+                        Label(showCustomBuilder ? "Скрыть конструктор" : "Custom payout",
+                              systemImage: "point.3.connected.trianglepath.dotted")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    Button {
+                        vm.addInstrument()
+                    } label: {
+                        Label("Инструмент", systemImage: "plus")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(vm.legs.count >= vm.maxLegs)
+                    Button {
+                        Task { await vm.price() }
+                    } label: {
+                        if vm.isPricing {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("Рассчитать и сохранить",
+                                  systemImage: "play.fill")
                         }
                     }
-                    .labelsHidden().pickerStyle(.menu).neutralControlTint().fixedSize()
+                    .buttonStyle(.borderedProminent).tint(Theme.accent)
+                    .controlSize(.small)
+                    .disabled(!vm.canPrice)
+                    .keyboardShortcut(.return, modifiers: [.command])
                 }
-                Spacer(minLength: Theme.s2)
-                if vm.isStale {
-                    Pill(text: "inputs changed", color: Theme.warning)
-                } else if let result = vm.result {
-                    Pill(text: result.snapshotID ?? "priced", color: Theme.positive)
-                }
-                Button {
-                    vm.addInstrument()
-                } label: {
-                    Label("Инструмент", systemImage: "plus")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(vm.legs.count >= vm.maxLegs)
-                Button {
-                    Task { await vm.price() }
-                } label: {
-                    if vm.isPricing {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Label("Рассчитать и сохранить", systemImage: "play.fill")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(!vm.canPrice)
-                .keyboardShortcut(.return, modifiers: [.command])
             }
         }
     }
@@ -165,6 +208,7 @@ struct PricingNewScreen: View {
                     resultTable(result)
                     greekChart(result)
                     allMetrics(result)
+                    evidencePanel(result)
                 } else {
                     HStack(spacing: Theme.s3) {
                         Image(systemName: "function")
@@ -320,6 +364,138 @@ struct PricingNewScreen: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func evidencePanel(_ result: WsBookResult) -> some View {
+        let evidenceLegs = result.legs.filter { leg in
+            guard let priced = leg.result else { return false }
+            return priced.provenance != nil
+                || priced.resolvedInputs != nil
+                || priced.marketDataEvidence != nil
+                || !(priced.warnings + priced.limitations).isEmpty
+        }
+        if !evidenceLegs.isEmpty {
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: Theme.s2) {
+                    ForEach(evidenceLegs) { leg in
+                        if let priced = leg.result {
+                            evidenceRow(leg: leg, priced: priced)
+                            Divider().opacity(0.25)
+                        }
+                    }
+                }
+                .padding(.top, Theme.s2)
+            } label: {
+                HStack(spacing: Theme.s2) {
+                    Text("MARKET DATA · MODEL EVIDENCE")
+                        .font(Typography.label).tracking(0.5)
+                    Pill(text: "\(evidenceLegs.count) priced legs",
+                         color: Theme.positive)
+                }
+                .foregroundStyle(.secondary)
+            }
+            .padding(Theme.s2)
+            .background(Color.primary.opacity(0.025),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+
+    private func evidenceRow(leg: WsBookLegResult, priced: WsResult) -> some View {
+        let evidence = priced.marketDataEvidence?.objectValue
+        let snapshot = evidence?["snapshot"]?.objectValue
+        let fallbackFlags = evidence?["fallback_flags"]?.arrayValue ?? []
+        let constituents = evidence?["constituents"]?.arrayValue ?? []
+        let resolved = priced.resolvedInputs?.objectValue
+        let customState = resolved?["valuation_state"]?.objectValue
+        let isCustomRepricing = resolved?["schema"]?.stringValue
+            == "custom-product-portfolio-repricing-v1"
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: Theme.s2) {
+                Text(leg.label).font(Typography.captionStrong)
+                    .frame(width: 150, alignment: .leading)
+                if let provenance = priced.provenance {
+                    Text("snapshot \(provenance.snapshotID)")
+                    Text("hash \(provenance.inputsHash.prefix(12))")
+                    Text("\(provenance.source) · \(provenance.quality)")
+                }
+                if let resolverHash = evidence?["resolved_inputs_hash"]?.stringValue {
+                    Text("resolver \(resolverHash.prefix(12))")
+                }
+                Spacer()
+            }
+            .font(.system(size: 9, design: .monospaced))
+            .foregroundStyle(.secondary)
+            if let cutoff = evidence?["history_cutoff"]?.stringValue {
+                Text("As-of \(cutoff) · \(snapshot?["selection"]?.stringValue ?? "pinned")")
+                    .font(Typography.micro).foregroundStyle(.tertiary)
+            }
+            if isCustomRepricing {
+                HStack(spacing: Theme.s2) {
+                    Pill(text: "AST reprice contract", color: Theme.positive)
+                    Text("state \(customState?["mode"]?.stringValue ?? "—")")
+                    if let version = resolved?["definition_version"]?.doubleValue {
+                        Text("definition v\(Int(version))")
+                    }
+                    if let hash = resolved?["definition_hash"]?.stringValue {
+                        Text("hash \(hash.prefix(12))")
+                    }
+                    if let contractHash = resolved?["repricing_contract_hash"]?.stringValue {
+                        Text("contract \(contractHash.prefix(12))")
+                    }
+                    if let basis = resolved?["payoff_basis"]?.stringValue {
+                        Text("basis \(basis)")
+                    }
+                    if let source = resolved?["state_source"]?.stringValue {
+                        Text("state source \(source)")
+                    }
+                    Text("CRN component Δ / Γ / Vega")
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundStyle(.secondary)
+            }
+            if !constituents.isEmpty {
+                PricingNewFlowLayout(spacing: 5) {
+                    ForEach(Array(constituents.enumerated()), id: \.offset) { _, raw in
+                        if let item = raw.objectValue {
+                            let secid = item["secid"]?.stringValue ?? "asset"
+                            let spot = evidenceField(item["spot"], name: "S")
+                            let vol = evidenceField(item["vol"], name: "σ")
+                            let income = evidenceField(item["income"], name: "q")
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(secid).font(Typography.captionStrong)
+                                Text([spot, vol, income].joined(separator: " · "))
+                                    .font(.system(size: 8, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 6).padding(.vertical, 4)
+                            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 5))
+                        }
+                    }
+                }
+            }
+            ForEach(Array(fallbackFlags.enumerated()), id: \.offset) { _, flag in
+                if let message = flag.stringValue {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(Typography.micro).foregroundStyle(Theme.warning)
+                }
+            }
+            ForEach(priced.warnings + priced.limitations, id: \.self) { warning in
+                Label(warning, systemImage: "info.circle")
+                    .font(Typography.micro).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func evidenceField(_ value: JSONValue?, name: String) -> String {
+        guard let block = value?.objectValue else { return "\(name) —" }
+        let number = block["value"]?.doubleValue
+            .map { Fmt.number($0, digits: 4) } ?? "—"
+        let source = block["source"]?.stringValue ?? "unknown"
+        let date = block["effective_date"]?.stringValue ?? "—"
+        let fallback = block["fallback"]?.boolValue == true ? " fallback" : ""
+        return "\(name) \(number) [\(source)@\(date)\(fallback)]"
     }
 
     // MARK: - Risk and history stay on the same surface
@@ -529,9 +705,13 @@ private struct PricingNewInstrumentColumn: View {
 
     private var parameterRows: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let attachment = vm.customAttachment(for: leg) {
+                customAttachmentSummary(attachment)
+            }
             ForEach(groups, id: \.self) { group in
                 let specs = (engine?.params ?? []).filter {
-                    $0.group == group && (leg.showAdvanced || !$0.advanced)
+                    $0.group == group && $0.key != "attachment_json"
+                        && (leg.showAdvanced || !$0.advanced)
                 }
                 if !specs.isEmpty {
                     HStack {
@@ -563,6 +743,73 @@ private struct PricingNewInstrumentColumn: View {
                     .padding(Theme.s2)
             }
         }
+    }
+
+    private func customAttachmentSummary(
+        _ attachment: PricingNewCustomProductAttachment
+    ) -> some View {
+        let payoffBasis = attachment.payoffBasis ?? "legacy_unspecified"
+        let stateMode = attachment.stateMode ?? "legacy_unspecified"
+        let stateSource = attachment.stateSource ?? "legacy_unspecified"
+        let resource = PricingNewCustomProductContract.resourceEstimate(
+            assetCount: attachment.market.assets.count,
+            paths: Double(attachment.numerical.paths),
+            steps: Double(attachment.numerical.steps))
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("VERSION-PINNED PAYOUT")
+                    .font(Typography.label).tracking(0.45)
+                    .foregroundStyle(Theme.accent)
+                Spacer()
+                Pill(text: attachment.definitionState,
+                     color: attachment.isResearch ? Theme.warning : Theme.positive)
+            }
+            Text(attachment.productName)
+                .font(Typography.captionStrong).lineLimit(1)
+            HStack(spacing: 5) {
+                Text("v\(attachment.definitionVersion)")
+                Text(attachment.definitionHash.prefix(12))
+                Text(attachment.engineID)
+            }
+            .font(.system(size: 8, design: .monospaced))
+            .foregroundStyle(.secondary)
+            PricingNewFlowLayout(spacing: 4) {
+                ForEach(attachment.market.assets) { asset in
+                    HStack(spacing: 3) {
+                        Circle().fill(asset.source == .marketSnapshot
+                                      ? Theme.positive : Theme.warning)
+                            .frame(width: 5, height: 5)
+                        Text(asset.secid ?? asset.assetName)
+                            .font(Typography.micro)
+                    }
+                    .padding(.horizontal, 5).padding(.vertical, 3)
+                    .background(Color.primary.opacity(0.045), in: Capsule())
+                }
+            }
+            Text("PV = normalized payoff × QTY currency notional (\(leg.currency)) · basis \(payoffBasis)")
+                .font(Typography.micro)
+                .foregroundStyle(attachment.payoffBasis == nil
+                                 ? Theme.warning : .secondary)
+            Text("State \(stateMode) · source \(stateSource) · current spots = reference spots")
+                .font(Typography.micro)
+                .foregroundStyle(attachment.stateMode == nil
+                                 ? Theme.warning : .secondary)
+            Text("Seasoned/path-dependent state is fail-closed; no hidden time roll")
+                .font(Typography.micro).foregroundStyle(Theme.warning)
+            if let resource {
+                Text("MC \(formatMillions(resource.unitPathPoints)) path-points "
+                     + "(≈\(Int(resource.estimatedPeakMiB.rounded())) MiB) · Greeks "
+                     + "\(formatMillions(resource.greekWorkPathPoints)) work units")
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(Theme.s2)
+        .overlay(alignment: .bottom) { Divider().opacity(0.4) }
+    }
+
+    private func formatMillions(_ value: Double) -> String {
+        String(format: "%.2fM", value / 1_000_000.0)
     }
 
     private func groupColor(_ group: String) -> Color {
@@ -658,6 +905,22 @@ struct PricingNewRiskBlock: View {
         ("monte_carlo_fitted_normal", "Monte Carlo · fitted Normal"),
     ]
 
+    private var hasCustomAST: Bool {
+        vm.legs.contains { vm.customAttachment(for: $0) != nil }
+    }
+
+    private var customHorizonUnsupported: Bool {
+        hasCustomAST && vm.riskHorizon != 1
+    }
+
+    private var customWindowUnsupported: Bool {
+        hasCustomAST && vm.riskWindow > 500
+    }
+
+    private var customPolicyUnsupported: Bool {
+        customHorizonUnsupported || customWindowUnsupported
+    }
+
     var body: some View {
         GlassCard {
             VStack(alignment: .leading, spacing: Theme.s3) {
@@ -673,6 +936,22 @@ struct PricingNewRiskBlock: View {
                     }
                 }
                 controls
+                if hasCustomAST {
+                    Label("Custom AST risk · custom_hist_crn_v1 · 1 000 inner paths · paired CRN base · max 500 scenarios",
+                          systemImage: "checkmark.shield.fill")
+                        .font(Typography.micro)
+                        .foregroundStyle(.secondary)
+                    if customHorizonUnsupported {
+                        Label("Horizon > 1d заблокирован: нет canonical seasoned/time-roll state. Установи 1 день.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(Typography.micro).foregroundStyle(Theme.warning)
+                    }
+                    if customWindowUnsupported {
+                        Label("History window \(vm.riskWindow) превышает custom AST limit 500 scenarios. Уменьши HISTORY до 500.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(Typography.micro).foregroundStyle(Theme.warning)
+                    }
+                }
                 if vm.isStale {
                     Label("Сначала пересчитай изменённые inputs: риск всегда привязан к immutable run.",
                           systemImage: "lock.trianglebadge.exclamationmark")
@@ -737,8 +1016,8 @@ struct PricingNewRiskBlock: View {
                 if vm.isRisking { ProgressView().controlSize(.small) }
                 else { Label("Рассчитать VaR / ES", systemImage: "waveform.path.ecg") }
             }
-            .buttonStyle(.borderedProminent).controlSize(.small)
-            .disabled(!vm.canRunRisk)
+            .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.small)
+            .disabled(!vm.canRunRisk || customPolicyUnsupported)
         }
         .padding(Theme.s2)
         .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -786,6 +1065,7 @@ struct PricingNewRiskBlock: View {
                                    color: Theme.positive)
                 Spacer()
             }
+            operationalEvidence(result)
             HStack(alignment: .top, spacing: Theme.s3) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("HYPOTHETICAL P&L DISTRIBUTION")
@@ -816,8 +1096,18 @@ struct PricingNewRiskBlock: View {
             }
             HStack(spacing: Theme.s3) {
                 Label(result.modelLabel, systemImage: "function")
+                Label("horizon \(result.horizon)d · \(result.horizonMethod ?? "legacy_unspecified")",
+                      systemImage: "clock.arrow.circlepath")
                 Label("\(result.provenance.historyFirstDate ?? "—") → \(result.provenance.historyLastDate ?? "—")",
                       systemImage: "calendar")
+                if let valuationDate = result.provenance.valuationDate,
+                   !valuationDate.isEmpty {
+                    Label("as-of \(valuationDate)", systemImage: "calendar.badge.clock")
+                }
+                if let timestamp = result.provenance.calculationTimestamp,
+                   !timestamp.isEmpty {
+                    Label("calculated \(timestamp)", systemImage: "checkmark.seal")
+                }
                 Label("global portfolio: \(result.provenance.globalPortfolioUsed ? "YES" : "NO")",
                       systemImage: "lock.shield")
                 Spacer()
@@ -826,6 +1116,97 @@ struct PricingNewRiskBlock: View {
             }
             .font(Typography.micro).foregroundStyle(.tertiary)
         }
+    }
+
+    @ViewBuilder
+    private func operationalEvidence(_ result: PricingNewRiskResult) -> some View {
+        let model = result.modelDiagnostics?.objectValue ?? [:]
+        let factors = result.provenance.factorDiagnostics?.objectValue ?? [:]
+        let custom = result.provenance.customRepricing?.objectValue
+        let execution = custom?["execution"]?.objectValue
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: Theme.s2) {
+                Pill(text: "horizon \(result.horizonMethod ?? "legacy")",
+                     color: result.horizonMethod == nil ? Theme.warning : Theme.positive)
+                if !model.isEmpty {
+                    Text("model \(diagnosticsSummary(model))")
+                }
+                if !factors.isEmpty {
+                    Text("factor routes \(factors.count) · \(factors.keys.sorted().joined(separator: ", "))")
+                        .lineLimit(1)
+                    Text("factor hash \(jsonFingerprint(.object(factors)).prefix(12))")
+                }
+                if let scenarioHash = result.provenance.scenarioMatrixHash,
+                   !scenarioHash.isEmpty {
+                    Text("scenario matrix \(scenarioHash.prefix(12))")
+                }
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 8, design: .monospaced))
+            .foregroundStyle(.secondary)
+
+            if let custom {
+                HStack(spacing: Theme.s2) {
+                    Pill(text: custom["profile"]?.stringValue ?? "custom profile missing",
+                         color: custom["profile"]?.stringValue == "custom_hist_crn_v1"
+                            ? Theme.positive : Theme.warning)
+                    evidenceToken("inner", custom["inner_paths"], suffix: " paths")
+                    evidenceToken("scenarios", custom["actual_scenarios"],
+                                  denominator: custom["requested_scenarios"])
+                    evidenceToken("limit", custom["scenario_limit"], suffix: " scenarios")
+                    Text("state horizon \(custom["horizon_method"]?.stringValue ?? "—")")
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundStyle(.secondary)
+                HStack(spacing: Theme.s2) {
+                    evidenceToken("work", custom["actual_work_path_points"],
+                                  denominator: custom["requested_work_path_points"])
+                    evidenceToken("work limit", custom["work_limit_path_points"])
+                    evidenceToken("deadline", custom["deadline_seconds"], suffix: "s")
+                    Text("CRN \(custom["common_random_numbers"]?.boolValue == true ? "YES" : "NO")")
+                    if let execution {
+                        evidenceToken("elapsed", execution["elapsed_seconds"], suffix: "s", digits: 3)
+                        let sources = execution["base_value_sources"]?.arrayValue?
+                            .compactMap(\.stringValue).joined(separator: "+") ?? "—"
+                        Text("base \(sources)")
+                        Text("cache/reprice-once \(execution["base_value_repriced_once"]?.boolValue == true ? "YES" : "NO")")
+                    }
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(Theme.s2)
+        .background(Color.primary.opacity(0.025),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func evidenceToken(_ label: String, _ value: JSONValue?,
+                               denominator: JSONValue? = nil,
+                               suffix: String = "", digits: Int = 0) -> some View {
+        let current = value?.doubleValue.map {
+            Fmt.number($0, digits: digits)
+        } ?? "—"
+        if let total = denominator?.doubleValue {
+            Text("\(label) \(current)/\(Fmt.number(total, digits: digits))\(suffix)")
+        } else {
+            Text("\(label) \(current)\(suffix)")
+        }
+    }
+
+    private func diagnosticsSummary(_ values: [String: JSONValue]) -> String {
+        values.keys.sorted().prefix(4).map { key in
+            guard let value = values[key] else { return key }
+            if let text = value.stringValue { return "\(key)=\(text)" }
+            if let number = value.doubleValue {
+                return "\(key)=\(Fmt.number(number, digits: 3))"
+            }
+            if let flag = value.boolValue { return "\(key)=\(flag ? "true" : "false")" }
+            return key
+        }.joined(separator: " · ")
     }
 
     private func riskField<Content: View>(_ label: String,
@@ -911,5 +1292,53 @@ struct PricingNewFlowLayout: Layout {
         }
         return (CGSize(width: width.isFinite ? width : x,
                        height: y + lineHeight), points)
+    }
+}
+
+extension JSONValue {
+    var objectValue: [String: JSONValue]? {
+        if case .object(let value) = self { return value }
+        return nil
+    }
+
+    var arrayValue: [JSONValue]? {
+        if case .array(let value) = self { return value }
+        return nil
+    }
+
+    var stringValue: String? {
+        if case .string(let value) = self { return value }
+        return nil
+    }
+
+    var boolValue: Bool? {
+        if case .bool(let value) = self { return value }
+        return nil
+    }
+}
+
+private func jsonFingerprint(_ value: JSONValue) -> String {
+    let digest = SHA256.hash(data: Data(canonicalJSON(value).utf8))
+    return digest.map { String(format: "%02x", $0) }.joined()
+}
+
+private func canonicalJSON(_ value: JSONValue) -> String {
+    switch value {
+    case .null:
+        return "null"
+    case .bool(let flag):
+        return flag ? "true" : "false"
+    case .number(let number):
+        return String(format: "%.17g", number)
+    case .string(let text):
+        let encoded = try? JSONSerialization.data(withJSONObject: [text])
+        let array = encoded.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+        return String(array.dropFirst().dropLast())
+    case .array(let values):
+        return "[" + values.map(canonicalJSON).joined(separator: ",") + "]"
+    case .object(let values):
+        return "{" + values.keys.sorted().map { key in
+            canonicalJSON(.string(key)) + ":" + canonicalJSON(values[key] ?? .null)
+        }.joined(separator: ",") + "}"
     }
 }

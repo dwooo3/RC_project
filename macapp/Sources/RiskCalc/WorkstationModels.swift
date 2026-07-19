@@ -228,6 +228,9 @@ struct WsMeasure: Decodable, Sendable, Identifiable, Hashable {
     let key: String
     let label: String
     let value: Double
+    let component: String?
+    let kind: String?
+    let convention: String?
     var id: String { key }
 }
 
@@ -316,10 +319,16 @@ struct WsResult: Decodable, Sendable {
     let engine: String
     let environment: String?              // контур оценки, если задан env_id
     let provenance: WsProvenance?         // immutable evidence (nil на старом мосте)
+    let resolvedParams: [String: JSONValue]?
+    let resolvedInputs: JSONValue?
+    let marketDataEvidence: JSONValue?
 
     enum CodingKeys: String, CodingKey {
         case value, greeks, measures, series, warnings, errors, limitations, product, engine
         case environment, provenance
+        case resolvedParams = "resolved_params"
+        case resolvedInputs = "resolved_inputs"
+        case marketDataEvidence = "market_data_evidence"
         case eligibilityID = "eligibility_id"
         case eligibilityVersion = "eligibility_version"
         case modelDefinitionID = "model_definition_id"

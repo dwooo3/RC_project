@@ -44,7 +44,7 @@ struct RawDataView: View {
                     Picker("Таблица", selection: Binding(get: { vm.selected }, set: { vm.select($0) })) {
                         ForEach(vm.tables) { Text("\($0.name) (\($0.rows))").tag($0.name) }
                     }
-                    .labelsHidden().fixedSize()
+                    .labelsHidden().neutralControlTint().fixedSize()
                     if vm.loading { ProgressView().controlSize(.small) }
                     Spacer()
                     if let d = vm.data {

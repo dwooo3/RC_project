@@ -173,7 +173,7 @@ struct BondSheetView: View {
                 }
                 .frame(minWidth: 120)
             }
-            .controlSize(.large).buttonStyle(.borderedProminent)
+            .controlSize(.large).buttonStyle(.borderedProminent).tint(Theme.accent)
             .disabled(vm.isPricing || vm.rows.isEmpty)
         }
     }
@@ -218,7 +218,7 @@ struct BondSheetView: View {
                             }
                         }
                     }
-                    .labelsHidden().fixedSize()
+                    .labelsHidden().neutralControlTint().fixedSize()
 
                     HStack(spacing: 4) {
                         Text("Qty").font(.system(size: 11)).foregroundStyle(.secondary)

@@ -11,17 +11,61 @@ extension View {
     /// whatever sits behind each card, so panels drift apart in tone and go
     /// nearly invisible when the window resigns key (worst in dark mode).
     /// Tinting pins every surface to the same base while keeping the glass
-    /// edge lensing and highlights.
+    /// edge lensing and highlights; the tint strength follows the design
+    /// panel's translucency setting.
     @ViewBuilder
     func cardSurface(cornerRadius: CGFloat = Theme.cardRadius) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        if #available(macOS 26.0, *) {
-            self.glassEffect(.regular.tint(Theme.cardFill.opacity(0.6)), in: shape)
+        let design = DesignSettings.shared
+        if #available(macOS 26.0, *), design.isVibrant {
+            self.glassEffect(.regular.tint(Theme.cardFill.opacity(design.cardTintOpacity)), in: shape)
         } else {
             self.background(Theme.cardFill, in: shape)
-                .shadow(color: Theme.cardShadow, radius: 16, x: 0, y: 6)
+                .shadow(color: Theme.cardShadow,
+                        radius: design.cardShadowRadius, x: 0, y: design.cardShadowY)
                 .shadow(color: Theme.cardContactShadow, radius: 1.5, x: 0, y: 1)
         }
+    }
+}
+
+// MARK: - Window surface
+
+/// The app's base surface — ONE continuous matte frosted sheet (the classic
+/// sidebar material, behind-window blending) under the sidebar, the content
+/// area and the titlebar alike. The shell deliberately avoids
+/// NavigationSplitView so nothing draws its own column material or divider on
+/// top of this sheet; content cards float above it with their Liquid Glass
+/// surface. Dragging translucency to the far left swaps in an opaque fill.
+struct WindowBackground: View {
+    var body: some View {
+        // Continuously tunable: a neutral windowBackground wash over the
+        // frosted sheet. 0 = raw frost, 1 = fully opaque (vibrancy dropped
+        // entirely so an inactive window doesn't flicker the effect).
+        let wash = DesignSettings.shared.backgroundOpacity
+        if wash >= 0.98 {
+            Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
+        } else {
+            VibrancyBackground(material: .sidebar)
+                .overlay(Color(nsColor: .windowBackgroundColor).opacity(wash))
+                .ignoresSafeArea()
+        }
+    }
+}
+
+/// NSVisualEffectView bridge — SwiftUI has no behind-window vibrancy API.
+private struct VibrancyBackground: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = .behindWindow
+        view.state = .followsWindowActiveState
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
     }
 }
 
@@ -280,7 +324,7 @@ struct LoadableView<T, Content: View>: View {
             } description: {
                 Text(message).font(Typography.caption)
             } actions: {
-                Button("Повторить", action: retry).buttonStyle(.borderedProminent)
+                Button("Повторить", action: retry).buttonStyle(.borderedProminent).tint(Theme.accent)
             }
             .frame(maxWidth: .infinity, minHeight: 280)
         case .loaded(let value):

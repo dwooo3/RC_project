@@ -16,7 +16,10 @@ requested rolling/stress calendar and supplies enough actual shocks/windows.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+import time
 
 import numpy as np
 
@@ -24,6 +27,61 @@ from risk.factor_history import curve_node_factor_id, supported_curve_history_te
 
 # HypPL series cache: (snapshot_id, window, stress period, horizon) -> series.
 _CACHE: dict = {}
+
+
+CUSTOM_HISTORICAL_REPRICING_PROFILE = "custom_hist_crn_v1"
+CUSTOM_HISTORICAL_INNER_PATHS = 1_000
+
+
+def _portfolio_positions(portfolio) -> list:
+    """Return a defensive view of the positions accepted by risk adapters."""
+    positions = getattr(portfolio, "positions", None)
+    if positions is None:
+        positions = getattr(getattr(portfolio, "portfolio", None), "positions", None)
+    return list(positions or [])
+
+
+def _portfolio_has_custom_product(portfolio) -> bool:
+    return any(
+        getattr(position, "instrument", None) == "custom_product"
+        for position in _portfolio_positions(portfolio)
+    )
+
+
+def _scenario_matrix_hash(shifts: dict) -> str:
+    """Hash the exact aligned factor matrix consumed by full repricing."""
+    matrix_keys = (
+        "dates", "eq", "dr", "dvol", "fx", "dr_tenors", "dr_curves",
+        "eq_names", "vol_names", "dvol_positions", "fx_pairs",
+    )
+
+    def canonical(value):
+        if isinstance(value, dict):
+            return {
+                str(key): canonical(item)
+                for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            }
+        if isinstance(value, np.ndarray):
+            return canonical(value.tolist())
+        if isinstance(value, (list, tuple)):
+            return [canonical(item) for item in value]
+        if isinstance(value, np.generic):
+            return value.item()
+        return value
+
+    payload = {
+        "schema": "historical-factor-scenario-matrix-v1",
+        **{
+            key: canonical(shifts.get(key, {} if key not in {
+                "dates", "eq", "dr", "dvol", "fx"} else []))
+            for key in matrix_keys
+        },
+    }
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def invalidate_cache() -> None:
@@ -107,13 +165,23 @@ def _component_secids(params: dict) -> list[str]:
     return out
 
 
+def _component_kinds(params: dict) -> list[str]:
+    raw = (params or {}).get("component_kinds")
+    if raw in (None, "", []):
+        return []
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("component_kinds must be an aligned array")
+    return [str(value).strip().lower() for value in raw]
+
+
 def _book_secids(portfolio) -> list[str]:
     """Typed equity spot identities held in the book."""
     out = []
     for pos in portfolio.positions:
         params = pos.params or {}
         components = _component_secids(params)
-        if components and pos.instrument in ("spread", "basket"):
+        if components and pos.instrument in (
+                "spread", "basket", "multi_asset_autocall", "custom_product"):
             out.extend(components)
             continue
         secid = params.get("secid")
@@ -123,9 +191,42 @@ def _book_secids(portfolio) -> list[str]:
     return sorted(set(out))
 
 
+def _book_component_kinds(portfolio) -> dict[str, str]:
+    """Declared kinds for multi-asset components, rejecting ambiguity."""
+    out: dict[str, str] = {}
+    for pos in portfolio.positions:
+        if pos.instrument not in ("multi_asset_autocall", "custom_product"):
+            continue
+        params = pos.params or {}
+        components = _component_secids(params)
+        kinds = _component_kinds(params)
+        if len(kinds) != len(components):
+            raise ValueError(
+                f"{pos.id}: component_kinds has {len(kinds)} entries; "
+                f"expected {len(components)}")
+        supported = (
+            {"equity", "index", "bond"}
+            if pos.instrument == "multi_asset_autocall"
+            else {"equity", "index", "bond", "future", "commodity"}
+        )
+        invalid = sorted(set(kinds) - supported)
+        if invalid:
+            raise ValueError(
+                f"{pos.id}: unsupported component kinds: "
+                + ", ".join(invalid))
+        for secid, kind in zip(components, kinds):
+            previous = out.get(secid)
+            if previous is not None and previous != kind:
+                raise ValueError(
+                    f"component '{secid}' has conflicting kinds "
+                    f"'{previous}' and '{kind}'")
+            out[secid] = kind
+    return out
+
+
 _EQUITY_VOL_INSTRUMENTS = {
     "call", "put", "option", "digital", "barrier", "asian", "lookback",
-    "spread", "basket", "autocall",
+    "spread", "basket", "autocall", "multi_asset_autocall", "custom_product",
 }
 
 
@@ -264,8 +365,24 @@ def _book_vol_names(portfolio) -> list[str]:
             continue
         params = pos.params or {}
         components = _component_secids(params)
-        if components and pos.instrument in ("spread", "basket"):
-            out.extend(components)
+        if components and pos.instrument in (
+                "spread", "basket", "multi_asset_autocall", "custom_product"):
+            if pos.instrument in ("multi_asset_autocall", "custom_product"):
+                kinds = _component_kinds(params)
+                if len(kinds) != len(components):
+                    raise ValueError(
+                        f"{pos.id}: component_kinds has {len(kinds)} entries; "
+                        f"expected {len(components)}")
+                # Only equity/index components may consume the governed
+                # IV30/RVI equity-vol route. Bond, generic future and commodity
+                # model volatilities are calibrated inputs and stay fixed
+                # unless an explicit named policy shock is supplied.
+                out.extend(
+                    secid for secid, kind in zip(components, kinds)
+                    if kind in {"equity", "index"}
+                )
+            else:
+                out.extend(components)
         elif params.get("secid"):
             out.append(str(params["secid"]))
     return sorted(set(out))
@@ -491,6 +608,35 @@ def factor_shifts(ctx, window: int = 500, frm: str | None = None,
             factor_warnings.append(
                 f"{position.id}: multi-asset component identity missing; "
                 "global equity/vol proxies used")
+        elif position.instrument in ("multi_asset_autocall", "custom_product"):
+            params = position.params or {}
+            components = _component_secids(params)
+            kinds = _component_kinds(params)
+            product_label = (
+                "multi-asset autocall"
+                if position.instrument == "multi_asset_autocall"
+                else "custom product"
+            )
+            if not components:
+                raise ValueError(
+                    f"{position.id}: {product_label} requires explicit "
+                    "component_secids for historical factor routing")
+            if len(kinds) != len(components):
+                raise ValueError(
+                    f"{position.id}: component_kinds has {len(kinds)} entries; "
+                    f"expected {len(components)}")
+            for secid, kind in zip(components, kinds):
+                if kind == "bond":
+                    factor_warnings.append(
+                        f"Bond {secid}: spot-like own price history is used; "
+                        "model volatility is held fixed because equity-IV/RVI "
+                        "proxy is forbidden")
+                elif (position.instrument == "custom_product"
+                      and kind in {"future", "commodity"}):
+                    factor_warnings.append(
+                        f"{kind.title()} {secid}: own spot-like history is used; "
+                        "model volatility is held fixed because no governed "
+                        "named volatility history is bound")
 
     vol_scale = 1.0 / 100.0 if selected_vol_id == "RVI:price" else 1.0
     if selected_vol_id == "RVI:price":
@@ -511,13 +657,20 @@ def factor_shifts(ctx, window: int = 500, frm: str | None = None,
     # M3: per-name equity series for book holdings (fallback: IMOEX move);
     # per-pair FX for book currencies beyond USD/RUB.
     name_levels = {}
+    component_kinds = _book_component_kinds(factor_portfolio)
     for secid in _book_secids(factor_portfolio):
         s = dict(_series(db, f"{secid}:price"))
         if all(d in s and _valid(s[d]) for d in dates):
             name_levels[secid] = s
+        elif component_kinds.get(secid) not in {None, "equity", "index"}:
+            kind = component_kinds[secid]
+            raise ValueError(
+                f"{kind.title()} {secid}: own price history is incomplete for "
+                "the requested calendar; IMOEX proxy is forbidden")
         else:
             factor_warnings.append(
-                f"Equity {secid}: own price history incomplete; IMOEX proxy used")
+                f"Underlying {secid}: own price history incomplete; "
+                "IMOEX proxy used")
     pair_levels = {}
     for pair in _book_fx_pairs(factor_portfolio):
         s = dict(_series(db, f"{pair.replace('/', '')}:fix"))
@@ -1001,10 +1154,45 @@ def _validated_hyppl(hp, *, context: str) -> np.ndarray:
     return pnl
 
 
-def _reprice_series(ps, shifts: dict) -> tuple[np.ndarray, set[str]]:
+def _reprice_series(
+    ps,
+    shifts: dict,
+    *,
+    custom_repricing_profile: str | None = None,
+    evidence: dict | None = None,
+    deadline_seconds: float | None = None,
+) -> tuple[np.ndarray, set[str]]:
     dates = list(shifts.get("dates") or [])
     if not dates:
         raise ValueError("historical full reprice: scenario set is empty")
+    has_custom = _portfolio_has_custom_product(ps)
+    if custom_repricing_profile is not None:
+        if custom_repricing_profile != CUSTOM_HISTORICAL_REPRICING_PROFILE:
+            raise ValueError(
+                "historical full reprice: unsupported custom repricing profile "
+                f"'{custom_repricing_profile}'")
+        if not has_custom:
+            raise ValueError(
+                "historical full reprice: custom repricing profile was supplied "
+                "for a book without custom_product positions")
+    elif has_custom:
+        # All direct Market Risk entry points inherit the same production-safe
+        # inner profile.  Pricing_new passes it explicitly and verifies the
+        # evidence, while legacy callers still cannot accidentally launch the
+        # high-fidelity attachment grid once per historical observation.
+        custom_repricing_profile = CUSTOM_HISTORICAL_REPRICING_PROFILE
+
+    started = time.monotonic()
+    if deadline_seconds is not None:
+        try:
+            deadline_seconds = float(deadline_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                "historical full reprice: deadline_seconds must be positive") from exc
+        if not math.isfinite(deadline_seconds) or deadline_seconds <= 0.0:
+            raise ValueError(
+                "historical full reprice: deadline_seconds must be positive")
+
     pnl = np.empty(len(dates))
     dr_tenors = shifts.get("dr_tenors") or {}
     dr_curves = shifts.get("dr_curves") or {}
@@ -1012,11 +1200,20 @@ def _reprice_series(ps, shifts: dict) -> tuple[np.ndarray, set[str]]:
     vol_names = shifts.get("vol_names") or {}
     dvol_positions = shifts.get("dvol_positions") or {}
     fx_pairs = shifts.get("fx_pairs") or {}
+    warnings: set[str] = set()
+    base_value_sources: set[str] = set()
+    profile_base_value: float | None = None
+    ordinary_base_value: float | None = None
     for i in range(len(pnl)):
+        elapsed = time.monotonic() - started
+        if deadline_seconds is not None and elapsed > deadline_seconds:
+            raise TimeoutError(
+                "historical full reprice deadline exceeded before scenario "
+                f"{i} ({elapsed:.3f}s > {deadline_seconds:.3f}s)")
         scenario_context = (
             f"historical full reprice scenario {i} ({dates[i]})")
         try:
-            res = ps.full_reprice_pnl(
+            kwargs = dict(
                 dS=float(shifts["eq"][i]), dr=float(shifts["dr"][i]),
                 dvol=float(shifts["dvol"][i]), dfx=float(shifts["fx"][i]),
                 dr_curve=[(t, float(v[i])) for t, v in dr_tenors.items()] or None,
@@ -1030,13 +1227,96 @@ def _reprice_series(ps, shifts: dict) -> tuple[np.ndarray, set[str]]:
                 dvol_by_position={position_id: float(values[i])
                                   for position_id, values in dvol_positions.items()} or None,
                 dfx_by_pair={p: float(v[i]) for p, v in fx_pairs.items()} or None,
-                spot_shock_convention="log")
+                spot_shock_convention="log",
+            )
+            if custom_repricing_profile is not None:
+                kwargs["custom_repricing_profile"] = custom_repricing_profile
+            elif ordinary_base_value is not None:
+                # For ordinary books the first scenario establishes the exact
+                # static-book base PV.  Reuse it on later observations; every
+                # shocked book is still fully repriced.
+                kwargs["base_value_override"] = ordinary_base_value
+            res = ps.full_reprice_pnl(**kwargs)
         except Exception as exc:
             raise ValueError(f"{scenario_context}: {exc}") from exc
         pnl[i] = _validated_reprice_pnl(res, context=scenario_context)
-    # Preserve the successful HypPL payload shape.  Invalid observations raise
-    # above, so a completed series can only have an empty error set.
-    return pnl, set()
+        if not isinstance(res, dict):
+            raise ValueError(f"{scenario_context}: invalid repricing evidence")
+        raw_warnings = res.get("warnings") or []
+        if isinstance(raw_warnings, str):
+            raw_warnings = [raw_warnings]
+        warnings.update(str(item) for item in raw_warnings if item not in (None, ""))
+
+        if custom_repricing_profile is not None:
+            try:
+                current_base = float(res["base_value"])
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    f"{scenario_context}: base value evidence is missing or invalid") from exc
+            if not math.isfinite(current_base):
+                raise ValueError(
+                    f"{scenario_context}: base value evidence is non-finite")
+            if res.get("custom_repricing_profile") != custom_repricing_profile:
+                raise ValueError(
+                    f"{scenario_context}: custom repricing profile evidence mismatch")
+            source = str(res.get("base_value_source") or "").strip()
+            if source not in {"custom_profile_computed", "custom_profile_cache"}:
+                raise ValueError(
+                    f"{scenario_context}: custom paired base evidence is missing")
+            base_value_sources.add(source)
+            if profile_base_value is None:
+                profile_base_value = current_base
+            elif not math.isclose(
+                    current_base, profile_base_value, rel_tol=1e-12, abs_tol=1e-9):
+                raise ValueError(
+                    f"{scenario_context}: custom paired base value changed across scenarios")
+        elif "base_value" in res:
+            try:
+                current_base = float(res["base_value"])
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    f"{scenario_context}: base value evidence is invalid") from exc
+            if not math.isfinite(current_base):
+                raise ValueError(
+                    f"{scenario_context}: base value evidence is non-finite")
+            if ordinary_base_value is None:
+                ordinary_base_value = current_base
+            elif not math.isclose(
+                    current_base, ordinary_base_value, rel_tol=1e-12, abs_tol=1e-9):
+                raise ValueError(
+                    f"{scenario_context}: static-book base value changed across scenarios")
+
+    elapsed = time.monotonic() - started
+    if deadline_seconds is not None and elapsed > deadline_seconds:
+        raise TimeoutError(
+            "historical full reprice deadline exceeded after the final scenario "
+            f"({elapsed:.3f}s > {deadline_seconds:.3f}s)")
+    if evidence is not None:
+        evidence.clear()
+        evidence.update({
+            "profile": custom_repricing_profile,
+            "inner_paths": (
+                CUSTOM_HISTORICAL_INNER_PATHS
+                if custom_repricing_profile is not None else None
+            ),
+            "common_random_numbers": custom_repricing_profile is not None,
+            "paired_profile_base": custom_repricing_profile is not None,
+            "base_value": (
+                profile_base_value
+                if custom_repricing_profile is not None else ordinary_base_value
+            ),
+            "base_value_sources": sorted(base_value_sources),
+            "base_value_repriced_once": True,
+            "scenario_count": len(dates),
+            "elapsed_seconds": elapsed,
+            "deadline_seconds": deadline_seconds,
+            "spot_shock_convention": "log",
+            "pnl_convention": "shocked_market_value_minus_base_market_value",
+            "loss_convention": "negative_pnl",
+        })
+    # Preserve the successful HypPL return arity. Invalid observations raise
+    # above; this set carries non-fatal repricing warnings for the payload.
+    return pnl, warnings
 
 
 def aggregate_factor_shifts(shifts: dict, horizon: int,
@@ -1085,28 +1365,63 @@ def aggregate_factor_shifts(shifts: dict, horizon: int,
     return aggregated, "factor_aggregation_full_reprice"
 
 
-def _hyppl_from_scenarios(ps, shifts: dict, *, horizon_method: str = "none",
-                          horizon: int = 1) -> dict:
+def _hyppl_from_scenarios(
+    ps,
+    shifts: dict,
+    *,
+    horizon_method: str = "none",
+    horizon: int = 1,
+    custom_repricing_profile: str | None = None,
+    deadline_seconds: float | None = None,
+) -> dict:
     """Reprice a portfolio on an already prepared, shared scenario set."""
-    pnl, errors = _reprice_series(ps, shifts)
+    repricing_evidence: dict = {}
+    scenario_matrix_hash = _scenario_matrix_hash(shifts)
+    if (custom_repricing_profile is None and deadline_seconds is None
+            and not _portfolio_has_custom_product(ps)):
+        # Preserve the historical two-positional-argument seam used by
+        # incremental/what-if adapters and external test doubles.
+        pnl, reprice_warnings = _reprice_series(ps, shifts)
+    else:
+        pnl, reprice_warnings = _reprice_series(
+            ps,
+            shifts,
+            custom_repricing_profile=custom_repricing_profile,
+            evidence=repricing_evidence,
+            deadline_seconds=deadline_seconds,
+        )
     if horizon_method == "sqrt_time":
         pnl = pnl * math.sqrt(int(horizon))
     out = {"dates": shifts["dates"], "pnl": pnl, "factors": shifts["factors"],
-           "reprice_errors": sorted(errors), "horizon_method": horizon_method,
+           "reprice_errors": [], "reprice_warnings": sorted(reprice_warnings),
+           "repricing_evidence": repricing_evidence,
+           "scenario_matrix_hash": scenario_matrix_hash,
+           "horizon_method": horizon_method,
            "factor_warnings": list(shifts.get("factor_warnings") or []),
            "factor_diagnostics": dict(shifts.get("factor_diagnostics") or {})}
     _validated_hyppl(out, context="Historical HypPL")
     return out
 
 
-def hyppl(ctx, window: int = 500, frm: str | None = None,
-          till: str | None = None, portfolio=None, horizon: int = 1) -> dict:
+def hyppl(
+    ctx,
+    window: int = 500,
+    frm: str | None = None,
+    till: str | None = None,
+    portfolio=None,
+    horizon: int = 1,
+    *,
+    custom_repricing_profile: str | None = None,
+    deadline_seconds: float | None = None,
+) -> dict:
     """Step 2 — Hypothetical P&L: full revaluation of the book on every
     historical joint scenario. For h>1 the factor changes are accumulated
     first and the book is repriced once per overlapping window. Cached for the
     MAIN book; ad-hoc books (what-if) are never cached."""
-    key = (getattr(ctx.snapshot, "snapshot_id", "?"), int(window), frm, till,
-           int(horizon))
+    key = (
+        getattr(ctx.snapshot, "snapshot_id", "?"), int(window), frm, till,
+        int(horizon), custom_repricing_profile, deadline_seconds,
+    )
     if portfolio is None and key in _CACHE:
         return _CACHE[key]
     ps = portfolio if portfolio is not None else ctx.portfolio
@@ -1114,7 +1429,13 @@ def hyppl(ctx, window: int = 500, frm: str | None = None,
         ctx, window, frm, till, portfolio=ps, horizon=horizon)
     shifts, horizon_method = aggregate_factor_shifts(daily_shifts, horizon)
     out = _hyppl_from_scenarios(
-        ps, shifts, horizon_method=horizon_method, horizon=horizon)
+        ps,
+        shifts,
+        horizon_method=horizon_method,
+        horizon=horizon,
+        custom_repricing_profile=custom_repricing_profile,
+        deadline_seconds=deadline_seconds,
+    )
     if portfolio is None:
         _CACHE[key] = out
     return out
@@ -1267,6 +1588,7 @@ def overview(ctx, confidence: float = 0.99, window: int = 500,
 
     quality = []
     quality.extend(hp.get("factor_warnings") or [])
+    quality.extend(hp.get("reprice_warnings") or [])
     if any("no history" in f for f in hp["factors"]):
         quality.append("FX-фактор без истории — валютный риск в HypPL не учтён")
     if hp["reprice_errors"]:

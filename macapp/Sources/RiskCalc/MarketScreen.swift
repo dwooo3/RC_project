@@ -316,7 +316,7 @@ struct MarketScreen: View {
             Picker("Curve", selection: $vm.selectedCurveID) {
                 ForEach(curvesOfType(curveType)) { Text($0.label).tag($0.id) }
             }
-            .labelsHidden().fixedSize()
+            .labelsHidden().neutralControlTint().fixedSize()
             Spacer()
             if let c = vm.selectedCurve {
                 Text("\(c.points.count) узлов").font(.caption).foregroundStyle(.tertiary)
@@ -430,7 +430,7 @@ struct MarketScreen: View {
                 Picker("Series", selection: Binding(get: { vm.tsSeriesID }, set: { vm.changeTSSeries($0) })) {
                     ForEach(vm.tsGroupSeries) { Text($0.label).tag($0.id) }
                 }
-                .labelsHidden().fixedSize()
+                .labelsHidden().neutralControlTint().fixedSize()
                 Spacer()
                 SegmentedBar(items: [(1, "1Y"), (3, "3Y"), (5, "5Y"), (0, "Все")],
                              selection: $vm.tsYears, compact: true)

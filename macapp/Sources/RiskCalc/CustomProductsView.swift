@@ -572,7 +572,7 @@ private struct PricingCard: View {
                             Label("Price", systemImage: "bolt.fill")
                         }
                     }
-                    .buttonStyle(.borderedProminent).tint(Theme.accent)
+                    .buttonStyle(.borderedProminent).tint(Theme.accent).tint(Theme.accent)
                     .disabled(vm.isPricing || detail.state == "draft"
                               || detail.state == "deprecated"
                               || vm.isEditorDirty

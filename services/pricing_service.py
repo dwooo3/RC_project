@@ -6,6 +6,7 @@ market-data metadata, warnings, and structured errors.
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+from datetime import date
 from typing import Any, Iterator
 
 from domain.market_data import MarketDataSnapshot
@@ -110,6 +111,55 @@ class PricingService:
         source = getattr(snapshot, "source", "")
         return source.value if hasattr(source, "value") else str(source)
 
+    @staticmethod
+    def _canonical_basket_inputs(
+        constituents, correlation, *, resolved_snapshot_id: str = "",
+        reference_spots=None, reference_fixing_dates=None,
+    ) -> dict:
+        """JSON-safe market state used by replay, Greeks and transient risk."""
+        supplied_references = reference_spots is not None
+        references = (
+            list(reference_spots) if supplied_references
+            else [float(item.spot) for item in constituents]
+        )
+        return {
+            "resolved_snapshot_id": str(resolved_snapshot_id),
+            "component_secids": [str(item.name) for item in constituents],
+            "component_kinds": [str(item.kind) for item in constituents],
+            "assets": [float(item.spot) for item in constituents],
+            # Initial reference levels are contractual state for relative
+            # barriers.  Scenario spots may move; these levels must not.
+            "reference_spots": [float(value) for value in references],
+            "reference_spot_source": (
+                "contract_fixing" if supplied_references
+                else "current_snapshot_spot_inception_assumption"
+            ),
+            "reference_fixing_dates": [
+                str(value) for value in (reference_fixing_dates or [])
+            ],
+            "sigmas": [float(item.vol) for item in constituents],
+            "incomes": [float(item.income) for item in constituents],
+            "weights": [float(item.weight) for item in constituents],
+            "correlation": [
+                [float(value) for value in row]
+                for row in correlation
+            ],
+        }
+
+    @staticmethod
+    def _basket_fallback_warnings(evidence: dict) -> list[str]:
+        """Compact, user-visible warning while retaining full resolver evidence."""
+        flags = list(evidence.get("fallback_flags") or [])
+        if not flags:
+            return []
+        visible = "; ".join(str(flag) for flag in flags[:5])
+        suffix = f"; +{len(flags) - 5} more" if len(flags) > 5 else ""
+        return [
+            f"Basket market-data fallback(s) used ({len(flags)}): "
+            f"{visible}{suffix}. Inspect market_data_evidence before relying "
+            "on the result."
+        ]
+
     def _result(
         self,
         *,
@@ -135,13 +185,28 @@ class PricingService:
         # is private execution context (not response metadata) and replaces
         # wrapper-specific partial inputs for audit/hash purposes.
         resolved_request = engine_context.pop("_resolved_pricing_request", None)
+        audit_inputs = resolved_request if resolved_request is not None else inputs
+        # Products whose tradable inputs are resolved from the market store
+        # (basket spots, realised vols, carry and correlation) must bind that
+        # resolution into the authoritative calculation hash.  The workstation
+        # request alone only contains SECIDs and would otherwise replay against
+        # whatever happens to be latest in the database.  Wrappers add the
+        # deterministic resolver evidence to their mutable ``inputs`` mapping
+        # after the engine has resolved it; merge the reserved field into the
+        # complete workstation request instead of replacing that request.
+        if (resolved_request is not None and isinstance(inputs, dict)
+                and inputs.get("market_data_resolution") is not None):
+            audit_inputs = {
+                **resolved_request,
+                "market_data_resolution": inputs["market_data_resolution"],
+            }
         audit_record = self.audit.record_calculation(
             user_action=user_action,
             calculation_type=calculation_type,
             model_id=canonical_model_id,
             model_version=model.version,
             market_data_snapshot_id=snapshot_id,
-            inputs=resolved_request if resolved_request is not None else inputs,
+            inputs=audit_inputs,
             result_id=f"{calculation_type}:{canonical_model_id}",
             details={
                 "model_status": model.status,
@@ -1066,24 +1131,39 @@ class PricingService:
         from instruments.structured.basket_note import basket_note
         specs = [dict(s) for s in specs]
 
+        inputs = {"specs": specs, "r": r, "T": T,
+                  "principal_protection": principal_protection,
+                  "guaranteed_coupon": guaranteed_coupon,
+                  "coupon_freq": int(coupon_freq),
+                  "participation": participation, "cap": cap,
+                  "basket_type": basket_type, "face": face,
+                  "n_sims": int(n_sims), "steps": int(steps)}
+        resolution_warnings = []
+
         def _engine():
-            constituents, corr = self.market_data.basket_market_inputs(specs, T)
-            return basket_note(
+            constituents, corr, evidence = self.market_data.basket_market_inputs(
+                specs, T, snapshot=snapshot, include_evidence=True)
+            inputs["market_data_resolution"] = evidence
+            resolution_warnings.extend(self._basket_fallback_warnings(evidence))
+            raw = basket_note(
                 constituents, r, T, corr,
                 principal_protection=principal_protection,
                 guaranteed_coupon=guaranteed_coupon, coupon_freq=int(coupon_freq),
                 participation=participation, cap=cap, basket_type=basket_type,
                 face=face, n_sims=int(n_sims), steps=int(steps))
+            raw["resolved_inputs"] = self._canonical_basket_inputs(
+                constituents, corr,
+                resolved_snapshot_id=evidence["snapshot"]["snapshot_id"])
+            raw["market_data_evidence"] = evidence
+            return raw
 
         return self._priced(
             model_id="structured_basket_note", calculation_type="basket_note_pricing",
             engine=_engine,
-            inputs={"specs": specs, "r": r, "T": T,
-                    "principal_protection": principal_protection,
-                    "guaranteed_coupon": guaranteed_coupon, "coupon_freq": int(coupon_freq),
-                    "participation": participation, "cap": cap,
-                    "basket_type": basket_type, "face": face, "n_sims": int(n_sims)},
-            snapshot=snapshot, user_action="Price basket structured note")
+            inputs=inputs,
+            snapshot=snapshot,
+            warnings=resolution_warnings,
+            user_action="Price basket structured note")
 
     def price_multi_asset_autocall(
         self,
@@ -1091,6 +1171,8 @@ class PricingService:
         r,
         T,
         *,
+        reference_spots=None,
+        reference_fixing_dates=None,
         observation_dates=None,
         autocall_barrier=1.20,
         autocall_aggregation="best_of",
@@ -1116,18 +1198,87 @@ class PricingService:
         Trigger aggregations are independent, allowing e.g. best-of autocall
         with worst-of coupon/protection tests.
         """
-        from instruments.structured.multi_asset_autocall import multi_asset_autocall
+        from instruments.structured.multi_asset_autocall import (
+            multi_asset_autocall_component_greeks,
+        )
 
         specs = [dict(spec) for spec in specs]
         resolved_observations = list(observation_dates or [])
+        contractual_references = (
+            None if reference_spots is None else list(reference_spots)
+        )
+        contractual_fixing_dates = list(reference_fixing_dates or [])
+
+        inputs = {
+            "specs": specs,
+            "r": r,
+            "T": T,
+            "reference_spots": contractual_references,
+            "reference_fixing_dates": contractual_fixing_dates,
+            "observation_dates": resolved_observations,
+            "autocall_barrier": autocall_barrier,
+            "autocall_aggregation": autocall_aggregation,
+            "protection_barrier": protection_barrier,
+            "protection_aggregation": protection_aggregation,
+            "protection_monitoring": protection_monitoring,
+            "coupon_barrier": coupon_barrier,
+            "coupon_aggregation": coupon_aggregation,
+            "coupon_rate": coupon_rate,
+            "guaranteed_coupon": guaranteed_coupon,
+            "memory_coupon": memory_coupon,
+            "notional": notional,
+            "n_sims": int(n_sims),
+            "steps": int(steps),
+            "seed": int(seed),
+        }
 
         def _engine():
-            constituents, correlation = self.market_data.basket_market_inputs(specs, T)
-            return multi_asset_autocall(
+            constituents, correlation, evidence = self.market_data.basket_market_inputs(
+                specs, T, snapshot=snapshot, include_evidence=True)
+            count = len(constituents)
+            if (contractual_references is not None
+                    and len(contractual_references) != count):
+                raise ValueError(
+                    "reference_spots must contain one contractual fixing per "
+                    f"underlying ({count} required)"
+                )
+            if contractual_fixing_dates and len(contractual_fixing_dates) != count:
+                raise ValueError(
+                    "reference_fixing_dates must contain one date per "
+                    f"underlying ({count} required)"
+                )
+            for index, raw_date in enumerate(contractual_fixing_dates):
+                try:
+                    fixing_date = date.fromisoformat(str(raw_date))
+                except ValueError as exc:
+                    raise ValueError(
+                        "reference_fixing_dates must use YYYY-MM-DD"
+                    ) from exc
+                valuation_date = getattr(snapshot, "valuation_date", None)
+                if valuation_date is not None and fixing_date > valuation_date:
+                    raise ValueError(
+                        "reference fixing date cannot be after the snapshot "
+                        f"valuation date (index {index})"
+                    )
+            effective_references = (
+                contractual_references
+                if contractual_references is not None
+                else [item.spot for item in constituents]
+            )
+            inputs["market_data_resolution"] = evidence
+            limitations.extend(self._basket_fallback_warnings(evidence))
+            if contractual_references is None:
+                limitations.append(
+                    "Contract reference spots were not supplied; current snapshot "
+                    "spots are used as an inception-only fixing assumption. "
+                    "Seasoned trades require explicit immutable reference_spots."
+                )
+            raw = multi_asset_autocall_component_greeks(
                 constituents,
                 r,
                 T,
                 correlation,
+                reference_spots=effective_references,
                 observation_dates=resolved_observations,
                 autocall_barrier=autocall_barrier,
                 autocall_aggregation=autocall_aggregation,
@@ -1144,6 +1295,18 @@ class PricingService:
                 steps=int(steps),
                 seed=int(seed),
             )
+            raw["resolved_inputs"] = self._canonical_basket_inputs(
+                constituents, correlation,
+                resolved_snapshot_id=evidence["snapshot"]["snapshot_id"],
+                reference_spots=contractual_references,
+                reference_fixing_dates=contractual_fixing_dates)
+            evidence["contract_reference"] = {
+                "source": raw["resolved_inputs"]["reference_spot_source"],
+                "reference_spots": list(effective_references),
+                "reference_fixing_dates": contractual_fixing_dates,
+            }
+            raw["market_data_evidence"] = evidence
+            return raw
 
         limitations = [
             "Multi-asset autocall uses correlated GBM with constant volatility, "
@@ -1159,26 +1322,7 @@ class PricingService:
             model_id="structured_autocall",
             calculation_type="multi_asset_autocall_pricing",
             engine=_engine,
-            inputs={
-                "specs": specs,
-                "r": r,
-                "T": T,
-                "observation_dates": resolved_observations,
-                "autocall_barrier": autocall_barrier,
-                "autocall_aggregation": autocall_aggregation,
-                "protection_barrier": protection_barrier,
-                "protection_aggregation": protection_aggregation,
-                "protection_monitoring": protection_monitoring,
-                "coupon_barrier": coupon_barrier,
-                "coupon_aggregation": coupon_aggregation,
-                "coupon_rate": coupon_rate,
-                "guaranteed_coupon": guaranteed_coupon,
-                "memory_coupon": memory_coupon,
-                "notional": notional,
-                "n_sims": int(n_sims),
-                "steps": int(steps),
-                "seed": int(seed),
-            },
+            inputs=inputs,
             snapshot=snapshot,
             user_action="Price multi-asset autocall / Phoenix",
             warnings=limitations,

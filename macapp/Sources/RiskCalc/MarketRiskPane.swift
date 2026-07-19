@@ -351,7 +351,7 @@ struct MarketRiskPane: View {
                             .font(.caption).foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                         Button("Рассчитать") { Task { await vm.run() } }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(.borderedProminent).tint(Theme.accent)
                     }
                     .frame(maxWidth: .infinity, minHeight: 180)
                 }
@@ -405,7 +405,7 @@ struct MarketRiskPane: View {
                     Label("Run", systemImage: "play.fill")
                 }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.borderedProminent).tint(Theme.accent)
             .disabled(vm.isLoading)
             Spacer()
         }

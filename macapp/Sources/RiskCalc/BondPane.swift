@@ -225,7 +225,7 @@ struct BondPane: View {
                 }
                 .frame(minWidth: 140)
             }
-            .controlSize(.large).buttonStyle(.borderedProminent)
+            .controlSize(.large).buttonStyle(.borderedProminent).tint(Theme.accent)
             .keyboardShortcut(.return, modifiers: .command).disabled(vm.isPricing)
         }
     }

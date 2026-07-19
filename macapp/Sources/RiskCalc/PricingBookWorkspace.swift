@@ -299,7 +299,7 @@ struct PricingBookView: View {
                         Label("Price all", systemImage: "bolt.fill")
                     }
                 }
-                .buttonStyle(.borderedProminent).controlSize(.large)
+                .buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.large)
                 .disabled(vm.isPricing || vm.legs.isEmpty)
             }
         }

@@ -4,14 +4,16 @@ import AppKit
 @main
 struct RiskCalcApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @AppStorage("appTheme") private var appThemeRaw = AppTheme.system.rawValue
 
     var body: some Scene {
         WindowGroup {
+            // Appearance (theme / accent / translucency / tone / density) is
+            // owned by DesignSettings and applied inside RootView, whose body
+            // observes it. No window-level tint: macOS 27 paints menu-picker
+            // labels with it (ignoring per-view tint), turning every dropdown
+            // brand-orange — prominent buttons carry .tint(Theme.accent).
             RootView()
                 .frame(minWidth: 1120, minHeight: 740)
-                .tint(Theme.accent)
-                .preferredColorScheme((AppTheme(rawValue: appThemeRaw) ?? .system).colorScheme)
         }
         .windowToolbarStyle(.unified)
     }

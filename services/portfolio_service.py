@@ -18,6 +18,7 @@ EXPOSURE_BUCKETS: tuple[RiskFactorBucket, ...] = (
     "FX",
     "Equity",
     "Credit",
+    "Commodity",
     "Volatility",
 )
 
@@ -119,6 +120,7 @@ class PortfolioService:
         self.audit = audit or getattr(pricing, "audit", None) or AuditService()
         self.pricing = pricing or PricingService(market_data=self.market_data, audit=self.audit)
         self.snapshot: MarketDataSnapshot | None = None
+        self._scenario_base_cache: dict[str, float] = {}
         self.bind_snapshot(snapshot)
 
     @property
@@ -129,9 +131,16 @@ class PortfolioService:
         if self.snapshot is not None:
             pos.market_data_snapshot_id = self.snapshot.snapshot_id
         self.portfolio.add(pos)
+        self._scenario_base_cache.clear()
 
     def remove(self, position_id: str):
         self.portfolio.remove(position_id)
+        self._scenario_base_cache.clear()
+
+    def clear(self) -> None:
+        """Clear the book and any derived scenario-base valuations."""
+        self.portfolio.positions.clear()
+        self._scenario_base_cache.clear()
 
     # ── Persistence (Phase 4) ─────────────────────────────
 
@@ -159,6 +168,7 @@ class PortfolioService:
         positions retain the immutable snapshot identity for audit/reporting.
         """
         self.snapshot = snapshot
+        self._scenario_base_cache.clear()
         if snapshot is None:
             return
         self.portfolio.market_data_snapshot_id = snapshot.snapshot_id
@@ -440,7 +450,9 @@ class PortfolioService:
                          spot_shock_convention: str = "simple",
                          strict: bool = True,
                          dr_curves: dict | None = None,
-                         dvol_by_position: dict | None = None) -> dict:
+                         dvol_by_position: dict | None = None,
+                         base_value_override: float | None = None,
+                         custom_repricing_profile: str | None = None) -> dict:
         """
         FULL-REPRICE portfolio P&L under a joint factor shock — every position
         is repriced through its actual pricer with shocked params, no
@@ -460,7 +472,10 @@ class PortfolioService:
           шокируется собственным рядом, прочие — общим dS;
         * ``dvol_by_name`` — {secid: dvol}: implied-vol shock выбранного
           underlying. Для spread/basket component SECIDs маршрутизируют
-          отдельные ``sigma1/sigma2`` или элементы ``sigmas``;
+          отдельные ``sigma1/sigma2`` или элементы ``sigmas``. Для
+          ``multi_asset_autocall`` equity/index components получают свой
+          named shock; bond price-index volatility stays fixed unless its
+          SECID is explicitly present in this typed map;
         * ``dvol_by_position`` — {position_id: dvol}: governed historical
           surface-node move for the position's exact ``vol_surface_id``/K/T.
           A named surface missing from this typed map is an error;
@@ -470,6 +485,13 @@ class PortfolioService:
           shocks (default) или ``"log"`` для исторических equity/FX returns.
           Log-returns преобразуются в simple shocks через ``expm1``
           на границе full repricing; rates/vol не затрагиваются.
+        * ``base_value_override`` — уже проверенный base PV текущего портфеля.
+          Historical engines may supply it to avoid repricing every base leg
+          for every scenario; the shocked book is still fully repriced.
+        * ``custom_repricing_profile="custom_hist_crn_v1"`` — deterministic
+          historical inner profile for custom AST legs: 1,000 paths, captured
+          steps and seed. Its paired low-fidelity base PV is cached separately
+          and never replaced by the high-fidelity headline valuation.
         """
         import copy
 
@@ -477,6 +499,9 @@ class PortfolioService:
 
         if spot_shock_convention not in {"simple", "log"}:
             raise ValueError("spot_shock_convention must be 'simple' or 'log'")
+        if custom_repricing_profile not in {None, "custom_hist_crn_v1"}:
+            raise ValueError(
+                "custom_repricing_profile must be None or 'custom_hist_crn_v1'")
 
         def _finite_scalar(value, label: str) -> float:
             try:
@@ -494,6 +519,9 @@ class PortfolioService:
         dr = _finite_scalar(dr, "dr shock")
         dvol = _finite_scalar(dvol, "dvol shock")
         dfx = _finite_scalar(dfx, "dfx shock")
+        if base_value_override is not None:
+            base_value_override = _finite_scalar(
+                base_value_override, "base_value_override")
 
         def _finite_map(values, label: str):
             if values is None:
@@ -577,13 +605,101 @@ class PortfolioService:
             curve_tenors = _np.array([t for t, _ in pairs])
             curve_moves = _np.array([v for _, v in pairs])
 
-        base_total = 0.0
-        shocked_total = 0.0
         errors: list[str] = []
         warnings: set[str] = set()
+        profile_base_active = bool(
+            custom_repricing_profile == "custom_hist_crn_v1"
+            and any(pos.instrument == "custom_product" for pos in self.positions)
+        )
+        base_value_source = (
+            "provided_override" if base_value_override is not None
+            else "scenario_reprice"
+        )
+        if profile_base_active:
+            import hashlib
+            import json
+
+            cache_payload = {
+                "schema": "portfolio-scenario-base-cache-v1",
+                "profile": custom_repricing_profile,
+                "snapshot_id": str(
+                    getattr(self.snapshot, "snapshot_id", "") or ""),
+                "positions": [
+                    {
+                        "id": pos.id,
+                        "instrument": pos.instrument,
+                        "quantity": pos.quantity,
+                        "currency": pos.currency,
+                        "params": pos.params,
+                    }
+                    for pos in self.positions
+                ],
+            }
+            try:
+                cache_key = hashlib.sha256(json.dumps(
+                    cache_payload, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=False, allow_nan=False, default=str,
+                ).encode("utf-8")).hexdigest()
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "custom historical base profile is not hashable") from exc
+            cached = self._scenario_base_cache.get(cache_key)
+            if cached is None:
+                profile_total = 0.0
+                try:
+                    for position in self.positions:
+                        base_position = copy.deepcopy(position)
+                        if base_position.instrument == "custom_product":
+                            base_position.params["custom_repricing_profile"] = (
+                                custom_repricing_profile)
+                        self._price_position(
+                            base_position, calculate_risk=False)
+                        if not math.isfinite(float(base_position.market_value)):
+                            raise ValueError(
+                                f"{position.id}: profile base value is non-finite")
+                        profile_total += float(base_position.market_value)
+                    if not math.isfinite(profile_total):
+                        raise ValueError("profile base total is non-finite")
+                except Exception as exc:
+                    message = (
+                        "full portfolio repricing failed: custom historical "
+                        f"profile base valuation: {exc}")
+                    if strict:
+                        raise ValueError(message) from exc
+                    invalid = float("nan")
+                    return dict(
+                        pnl=invalid, base_value=invalid,
+                        shocked_value=invalid, errors=[str(exc)], valid=False,
+                        warnings=[],
+                        shocks=dict(dS=applied_dS, dr=dr, dvol=dvol,
+                                    dfx=applied_dfx),
+                        custom_repricing_profile=custom_repricing_profile,
+                        base_value_source="profile_base_failed",
+                    )
+                self._scenario_base_cache[cache_key] = profile_total
+                base_total = profile_total
+                base_value_source = "custom_profile_computed"
+            else:
+                base_total = float(cached)
+                base_value_source = "custom_profile_cache"
+            if base_value_override is not None:
+                warnings.add(
+                    "base_value_override ignored for custom_hist_crn_v1; "
+                    "paired low-fidelity profile base is required")
+        else:
+            base_total = (
+                float(base_value_override)
+                if base_value_override is not None else 0.0
+            )
+        skip_base_reprice = profile_base_active or base_value_override is not None
+        shocked_total = 0.0
         for pos in self.positions:
             base = copy.deepcopy(pos)
             shocked = copy.deepcopy(pos)
+            if (custom_repricing_profile is not None
+                    and pos.instrument == "custom_product"):
+                base.params["custom_repricing_profile"] = custom_repricing_profile
+                shocked.params["custom_repricing_profile"] = custom_repricing_profile
             secid = (pos.params or {}).get("secid")
             is_fx = pos.instrument.startswith(("fx", "ndf", "xccy"))
             if is_fx:
@@ -607,7 +723,10 @@ class PortfolioService:
 
             component_ids = self._component_factor_ids(pos.params)
             expected_components = (
-                len(pos.params.get("assets") or []) if pos.instrument == "basket"
+                len(pos.params.get("assets") or [])
+                if pos.instrument in ("basket", "multi_asset_autocall")
+                else len(pos.params.get("asset_names") or [])
+                if pos.instrument == "custom_product"
                 else 2 if pos.instrument == "spread" else 0
             )
             if component_ids and len(component_ids) != expected_components:
@@ -622,28 +741,141 @@ class PortfolioService:
                     f"{pos.id}: component_secids must be unique for factor attribution")
                 continue
 
+            # Custom AST positions retain logical definition asset names while
+            # historical storage is keyed by market SECID.  Build the exact
+            # aligned scenario mapping instead of collapsing the basket into a
+            # global spot/vol proxy.
+            if pos.instrument == "custom_product":
+                asset_names = list(shocked.params.get("asset_names") or [])
+                sigmas = list(shocked.params.get("sigmas") or [])
+                kinds = [str(value).strip().lower() for value in
+                         (shocked.params.get("component_kinds") or [])]
+                lengths = {
+                    "asset_names": len(asset_names),
+                    "component_secids": len(component_ids),
+                    "component_kinds": len(kinds),
+                    "sigmas": len(sigmas),
+                }
+                if (len(set(lengths.values())) != 1 or not asset_names
+                        or len(set(asset_names)) != len(asset_names)):
+                    errors.append(
+                        f"{pos.id}: custom product factor arrays are not aligned "
+                        f"or asset names are not unique: {lengths}")
+                    continue
+                multipliers = {}
+                sigma_shifts = {}
+                route_failed = False
+                for asset_name, factor_id, kind, base_sigma in zip(
+                        asset_names, component_ids, kinds, sigmas):
+                    raw = (dS_by_name or {}).get(factor_id, dS)
+                    multiplier = 1.0 + _simple_spot_shock(raw)
+                    if not math.isfinite(multiplier) or multiplier <= 0.0:
+                        errors.append(
+                            f"{pos.id}: spot shock produces invalid multiplier "
+                            f"for custom component '{factor_id}'")
+                        route_failed = True
+                        break
+                    multipliers[asset_name] = multiplier
+                    if (kind not in {"equity", "index"}
+                            and factor_id not in (dvol_by_name or {})):
+                        vol_move = 0.0
+                        warnings.add(
+                            f"{pos.id}: {kind} component '{factor_id}' volatility "
+                            "held fixed; no governed named volatility shock is "
+                            "bound and equity-IV/RVI proxy is forbidden")
+                    else:
+                        vol_move = (dvol_by_name or {}).get(factor_id, dvol)
+                    shocked_sigma = float(base_sigma) + float(vol_move)
+                    if (not math.isfinite(shocked_sigma)
+                            or not 0.0 <= shocked_sigma <= 5.0):
+                        errors.append(
+                            f"{pos.id}: volatility shock produces invalid sigma "
+                            f"for custom component '{factor_id}'")
+                        route_failed = True
+                        break
+                    sigma_shifts[asset_name] = float(vol_move)
+                if route_failed:
+                    continue
+                shocked.params["scenario"] = {
+                    "schema_version": 1,
+                    "spot_multipliers": multipliers,
+                    "sigma_shifts": sigma_shifts,
+                }
+                custom_market = dict(shocked.params.get("market") or {})
+                custom_rate = float(custom_market.get("r", 0.0)) + dr_pos
+                if not math.isfinite(custom_rate) or not -1.0 <= custom_rate <= 2.0:
+                    errors.append(
+                        f"{pos.id}: rate shock produces invalid custom market rate")
+                    continue
+                # Preserve the immutable captured market bundle.  The helper
+                # applies this private scenario shift only after validating the
+                # bundle against its contract hash.
+                shocked.params["scenario_rate_shift"] = dr_pos
+
             # Multi-asset list fields need typed, component-by-component
             # routing. Previously basket assets/sigmas received no shock at
             # all, while a spread's one scalar secid moved both legs.
-            if pos.instrument == "basket":
+            elif pos.instrument in ("basket", "multi_asset_autocall"):
                 assets = list(shocked.params.get("assets") or [])
                 sigmas = list(shocked.params.get("sigmas") or [])
                 if len(sigmas) != len(assets):
                     errors.append(
-                        f"{pos.id}: basket assets/sigmas length mismatch "
+                        f"{pos.id}: multi-asset assets/sigmas length mismatch "
                         f"({len(assets)} != {len(sigmas)})")
                     continue
                 if not component_ids:
+                    if pos.instrument == "multi_asset_autocall":
+                        errors.append(
+                            f"{pos.id}: multi-asset autocall requires explicit "
+                            "component_secids for scenario attribution")
+                        continue
                     component_ids = [""] * len(assets)
                     warnings.add(
                         f"{pos.id}: basket component identity missing; "
                         "global equity/vol proxy applied")
+                kinds = list(shocked.params.get("component_kinds") or [])
+                if pos.instrument == "multi_asset_autocall":
+                    if len(kinds) != len(assets):
+                        errors.append(
+                            f"{pos.id}: component_kinds has {len(kinds)} entries; "
+                            f"expected {len(assets)}")
+                        continue
+                    kinds = [str(kind).strip().lower() for kind in kinds]
+                route_failed = False
                 for idx, factor_id in enumerate(component_ids):
                     raw = (dS_by_name or {}).get(factor_id, dS) if factor_id else dS
                     assets[idx] *= 1.0 + _simple_spot_shock(raw)
-                    vol_move = ((dvol_by_name or {}).get(factor_id, dvol)
-                                if factor_id else dvol)
-                    sigmas[idx] = max(sigmas[idx] + float(vol_move), 1e-4)
+                    if not math.isfinite(float(assets[idx])) or assets[idx] <= 0.0:
+                        errors.append(
+                            f"{pos.id}: spot shock produces invalid level for "
+                            f"component '{factor_id or idx}'")
+                        route_failed = True
+                        break
+                    # A bond price-index proxy has no equity implied-vol
+                    # observable. Hold its calibrated volatility fixed unless
+                    # the scenario explicitly supplies a policy-owned named
+                    # move; never inherit the global RVI proxy silently.
+                    if (pos.instrument == "multi_asset_autocall"
+                            and kinds[idx] == "bond"
+                            and factor_id not in (dvol_by_name or {})):
+                        vol_move = 0.0
+                        warnings.add(
+                            f"{pos.id}: bond component '{factor_id}' volatility "
+                            "held fixed; equity-IV/RVI proxy is forbidden")
+                    else:
+                        vol_move = ((dvol_by_name or {}).get(factor_id, dvol)
+                                    if factor_id else dvol)
+                    shocked_sigma = float(sigmas[idx]) + float(vol_move)
+                    if (not math.isfinite(shocked_sigma)
+                            or not 0.0 <= shocked_sigma <= 5.0):
+                        errors.append(
+                            f"{pos.id}: volatility shock produces invalid sigma "
+                            f"for component '{factor_id or idx}'")
+                        route_failed = True
+                        break
+                    sigmas[idx] = shocked_sigma
+                if route_failed:
+                    continue
                 shocked.params["assets"] = assets
                 shocked.params["sigmas"] = sigmas
             elif pos.instrument == "spread" and component_ids:
@@ -672,7 +904,7 @@ class PortfolioService:
                     continue
                 if key in shocked.params and isinstance(shocked.params[key], (int, float)):
                     shocked.params[key] = shocked.params[key] + dr_pos
-            if pos.instrument not in ("basket",) and not (
+            if pos.instrument not in ("basket", "multi_asset_autocall") and not (
                     pos.instrument == "spread" and component_ids):
                 named_surface = (
                     pos.instrument in ("call", "put", "option")
@@ -714,15 +946,16 @@ class PortfolioService:
                     if surface_warning:
                         warnings.add(f"{pos.id}: {surface_warning}")
             try:
-                self._price_position(base, calculate_risk=False)
+                if not skip_base_reprice:
+                    self._price_position(base, calculate_risk=False)
                 self._price_position(shocked, calculate_risk=False)
-                values = (
-                    base.price, base.market_value,
-                    shocked.price, shocked.market_value,
-                )
+                values = (shocked.price, shocked.market_value)
+                if not skip_base_reprice:
+                    values = (base.price, base.market_value, *values)
                 if not all(math.isfinite(float(value)) for value in values):
                     raise ValueError("repricing returned a non-finite price or market value")
-                base_total += base.market_value
+                if not skip_base_reprice:
+                    base_total += base.market_value
                 shocked_total += shocked.market_value
             except Exception as exc:
                 errors.append(f"{pos.id}: {exc}")
@@ -738,20 +971,24 @@ class PortfolioService:
                         shocked_value=invalid, errors=errors, valid=False,
                         warnings=sorted(warnings),
                         shocks=dict(dS=applied_dS, dr=dr, dvol=dvol,
-                                    dfx=applied_dfx))
+                                    dfx=applied_dfx),
+                        custom_repricing_profile=custom_repricing_profile,
+                        base_value_source=base_value_source)
         return dict(pnl=shocked_total - base_total, base_value=base_total,
                     shocked_value=shocked_total, errors=[], valid=True,
                     warnings=sorted(warnings),
                     shocks=dict(dS=applied_dS, dr=dr, dvol=dvol,
-                                dfx=applied_dfx))
+                                dfx=applied_dfx),
+                    custom_repricing_profile=custom_repricing_profile,
+                    base_value_source=base_value_source)
 
-    def price_all(self):
+    def price_all(self, *, calculate_risk: bool = True):
         """Reprice all positions using their params."""
         errors = []
         warnings = []
         for pos in self.positions:
             try:
-                self._price_position(pos)
+                self._price_position(pos, calculate_risk=calculate_risk)
                 warnings.extend(pos.warnings)
                 errors.extend(pos.errors)
             except Exception as exc:
@@ -768,7 +1005,11 @@ class PortfolioService:
             market_data_snapshot_id=self.portfolio.market_data_snapshot_id,
             inputs=self._portfolio_inputs(),
             result_id=f"portfolio_valuation:{self.portfolio.portfolio_id}",
-            details={"positions": len(self.positions), "errors": errors},
+            details={
+                "positions": len(self.positions),
+                "errors": errors,
+                "calculate_risk": bool(calculate_risk),
+            },
         )
         return PortfolioValuationResult(
             portfolio_id=self.portfolio.portfolio_id,
@@ -784,9 +1025,9 @@ class PortfolioService:
             inputs_hash=record.inputs_hash,
         )
 
-    def value(self) -> PortfolioValuationResult:
+    def value(self, *, calculate_risk: bool = True) -> PortfolioValuationResult:
         """Canonical portfolio valuation entry point."""
-        return self.price_all()
+        return self.price_all(calculate_risk=calculate_risk)
 
     @staticmethod
     def _require_valid_valuation(
@@ -1145,6 +1386,240 @@ class PortfolioService:
             self._add_exposure(pos, "Equity", "spot_gamma", pos.gamma, "Gamma", 1.0, factor_id="equity.spot_gamma")
             self._add_exposure(pos, "Volatility", "implied_vol", pos.vega, "Vega", 0.01, factor_id="vol.implied")
 
+        elif inst == "multi_asset_autocall":
+            constituents, correlation, reference_spots, contract = (
+                self._multi_asset_autocall_inputs(p)
+            )
+            from instruments.structured.multi_asset_autocall import (
+                multi_asset_autocall,
+                multi_asset_autocall_component_greeks,
+            )
+
+            if calculate_risk:
+                raw = multi_asset_autocall_component_greeks(
+                    constituents,
+                    contract.pop("r"),
+                    contract.pop("T"),
+                    correlation,
+                    reference_spots=reference_spots,
+                    **contract,
+                )
+            else:
+                raw = multi_asset_autocall(
+                    constituents,
+                    contract.pop("r"),
+                    contract.pop("T"),
+                    correlation,
+                    reference_spots=reference_spots,
+                    **contract,
+                )
+            price = float(raw["price"])
+            if not math.isfinite(price):
+                raise ValueError("multi-asset autocall returned a non-finite price")
+            pos.price = price
+            pos.market_value = price * qt
+            pos.model_id = "structured_autocall"
+            pos.model_status = "Approved"
+            pos.market_data_snapshot_id = str(p["resolved_snapshot_id"])
+            pos.metadata["pricing_diagnostics"] = {
+                key: raw[key]
+                for key in (
+                    "stderr", "ci95_low", "ci95_high", "n_assets",
+                    "n_sims", "steps", "seed", "greeks_method",
+                )
+                if key in raw
+            }
+            if any(item.kind == "bond" for item in constituents):
+                pos.warnings.append(
+                    "Bond underlyings use a price-index GBM proxy; cashflows, "
+                    "duration/convexity and issuer default are not modelled."
+                )
+            if not calculate_risk:
+                return
+
+            component_ids = self._component_factor_ids(p)
+            component_greeks = raw.get("component_greeks")
+            if not isinstance(component_greeks, dict):
+                raise ValueError("multi-asset autocall returned no component Greeks")
+            if set(component_greeks) != set(component_ids):
+                raise ValueError(
+                    "multi-asset autocall component Greeks do not match "
+                    "component_secids"
+                )
+            pos.delta = float(raw["delta"]) * qt
+            pos.gamma = float(raw["gamma"]) * qt
+            pos.vega = float(raw["vega"]) * qt
+            for secid in component_ids:
+                greek = component_greeks[secid]
+                slug = self._risk_factor_slug(secid)
+                delta = float(greek["delta"]) * qt
+                gamma = float(greek["gamma"]) * qt
+                vega = float(greek["vega"]) * qt
+                self._add_exposure(
+                    pos, "Equity", f"{secid} spot", delta,
+                    "Delta", 1.0, factor_type="spot",
+                    factor_id=f"equity.{slug}.spot")
+                self._add_exposure(
+                    pos, "Equity", f"{secid} spot gamma", gamma,
+                    "Gamma", 1.0, factor_type="spot_gamma",
+                    factor_id=f"equity.{slug}.spot_gamma")
+                self._add_exposure(
+                    pos, "Volatility", f"{secid} model vol", vega,
+                    "Vega", 0.01, factor_type="model_vol",
+                    factor_id=f"vol.{slug}.model")
+
+        elif inst == "custom_product":
+            request = self._custom_product_repricing_inputs(p)
+            from api import custom_products
+
+            raw = custom_products.get_store().reprice(
+                request["product_id"],
+                request["slots"],
+                request["market"],
+                valuation_state=request["valuation_state"],
+                scenario=request["scenario"],
+                n_sims=request["numerical"]["paths"],
+                steps=request["numerical"]["steps"],
+                seed=request["numerical"]["seed"],
+                version=request["definition_version"],
+                expected_definition_hash=request["definition_hash"],
+                include_greeks=calculate_risk,
+            )
+            price = float(raw["value"])
+            if not math.isfinite(price):
+                raise ValueError("custom product returned a non-finite price")
+            pos.price = price
+            pos.market_value = price * qt
+            pos.model_id = "custom_product_ast"
+            pos.model_status = str(raw.get("state") or "Version pinned")
+            pos.market_data_snapshot_id = request["resolved_snapshot_id"]
+            repricing_evidence = raw.get("repricing_evidence") or {}
+            greeks_evidence = raw.get("greeks_evidence") or {}
+            pos.metadata["custom_product_evidence"] = {
+                "custom_product_id": request["product_id"],
+                "definition_version": request["definition_version"],
+                "definition_hash": request["definition_hash"],
+                "attachment_hash": request["attachment_hash"],
+                "repricing_contract_hash": request["repricing_contract_hash"],
+                "resolved_snapshot_id": request["resolved_snapshot_id"],
+                "engine": raw.get("engine"),
+                "repricing_profile": request["repricing_profile"],
+                "payoff_basis": request["payoff_basis"],
+                "quantity_unit": request["quantity_unit"],
+                "state_mode": request["state_mode"],
+                "state_source": request["state_source"],
+                "correlation_matrix_hash": request[
+                    "correlation_evidence"].get("matrix_hash"),
+                "correlation_method": request[
+                    "correlation_evidence"].get("method"),
+                "rng_contract": repricing_evidence.get("rng_contract"),
+                "valuation_state_hash": repricing_evidence.get(
+                    "valuation_state_hash"),
+                "scenario_hash": repricing_evidence.get("scenario_hash"),
+            }
+            pos.metadata["pricing_diagnostics"] = {
+                key: raw[key]
+                for key in (
+                    "stderr", "n_sims", "steps", "seed", "greeks_method",
+                    "common_random_numbers", "spot_bump_relative",
+                    "vol_bump_absolute",
+                )
+                if key in raw
+            }
+            pos.metadata["pricing_diagnostics"]["repricing_profile"] = (
+                request["repricing_profile"])
+            pos.metadata["pricing_diagnostics"].update({
+                key: greeks_evidence[key]
+                for key in ("method", "repricings", "units", "bumps",
+                            "common_random_numbers")
+                if key in greeks_evidence
+            })
+            limitations = request["attachment"].get("limitations") or []
+            pos.warnings.extend(str(item) for item in limitations)
+            if not calculate_risk:
+                return
+
+            component_greeks = raw.get("component_greeks")
+            if isinstance(component_greeks, list):
+                keyed = {}
+                for block in component_greeks:
+                    name = (str(block.get("asset_name") or "")
+                            if isinstance(block, dict) else "")
+                    if not name or name in keyed:
+                        raise ValueError(
+                            "custom product component Greeks contain a missing "
+                            "or duplicate asset name")
+                    keyed[name] = block
+                component_greeks = keyed
+            if not isinstance(component_greeks, dict):
+                raise ValueError("custom product returned no component Greeks")
+            asset_names = request["asset_names"]
+            if set(component_greeks) != set(asset_names):
+                raise ValueError(
+                    "custom product component Greeks do not match exact "
+                    "valuation-state asset names")
+            totals = {"delta": 0.0, "gamma": 0.0, "vega": 0.0}
+            for asset_name, secid, kind in zip(
+                    asset_names, request["component_secids"],
+                    request["component_kinds"]):
+                block = component_greeks[asset_name]
+                if not isinstance(block, dict):
+                    raise ValueError(
+                        f"custom product Greek block '{asset_name}' is invalid")
+                values = {}
+                for greek_name in totals:
+                    try:
+                        value = float(block[greek_name])
+                    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                        raise ValueError(
+                            f"custom product {greek_name} for '{asset_name}' "
+                            "is missing or invalid") from exc
+                    if not math.isfinite(value):
+                        raise ValueError(
+                            f"custom product {greek_name} for '{asset_name}' "
+                            "is non-finite")
+                    values[greek_name] = value * qt
+                    totals[greek_name] += values[greek_name]
+                slug = self._risk_factor_slug(secid)
+                spot_bucket, spot_prefix, spot_label = {
+                    "equity": ("Equity", "equity", "spot"),
+                    "index": ("Equity", "equity", "index spot"),
+                    "bond": ("Credit", "credit", "price index"),
+                    "future": ("Equity", "future", "futures spot"),
+                    "commodity": ("Commodity", "commodity", "spot"),
+                }[kind]
+                self._add_exposure(
+                    pos, spot_bucket, f"{secid} {spot_label}", values["delta"],
+                    "Delta", 1.0, factor_type=f"{kind}_spot",
+                    factor_id=(
+                        f"{spot_prefix}.{slug}.price"
+                        if kind == "bond" else f"{spot_prefix}.{slug}.spot"
+                    ))
+                self._add_exposure(
+                    pos, spot_bucket, f"{secid} {spot_label} gamma",
+                    values["gamma"],
+                    "Gamma", 1.0, factor_type=f"{kind}_spot_gamma",
+                    factor_id=(
+                        f"{spot_prefix}.{slug}.price_gamma"
+                        if kind == "bond"
+                        else f"{spot_prefix}.{slug}.spot_gamma"
+                    ))
+                self._add_exposure(
+                    pos, "Volatility", f"{secid} model vol", values["vega"],
+                    "Vega", 0.01, factor_type="model_vol",
+                    factor_id=f"vol.{slug}.model")
+            pos.delta = totals["delta"]
+            pos.gamma = totals["gamma"]
+            pos.vega = totals["vega"]
+            pos.metadata["custom_product_evidence"]["gamma_aggregation"] = (
+                "sum_diagonal_component_gammas_cross_gamma_excluded")
+            if len(asset_names) > 1:
+                pos.warnings.append(
+                    "Custom product headline Gamma is the sum of diagonal "
+                    "component gammas; cross-gamma and parallel gamma are not "
+                    "available yet."
+                )
+
         elif inst in ("barrier", "asian", "lookback", "spread", "basket", "autocall"):
             # Engines return price only (or MC) -> sensitivities via finite difference.
             base, S0, vol0 = self._equity_exotic_pricer(inst, p)
@@ -1333,6 +1808,451 @@ class PortfolioService:
             p["face"], p["real_coupon"], p["T"], p.get("freq", 2), p.get("base_cpi", 100.0),
             p.get("current_cpi", 100.0), p.get("inflation_rate", 0.04),
             p.get("day_count", "act365"), curve=curve)
+
+    def _multi_asset_autocall_inputs(self, params: dict):
+        """Build an immutable, snapshot-bound autocall repricing request.
+
+        Portfolio risk must never call the mutable market-data resolver inside
+        each historical scenario.  The capture boundary therefore persists the
+        complete resolved arrays plus their snapshot identity; this method
+        verifies that evidence and constructs the numerical engine inputs.
+        """
+        from instruments.structured.basket_note import Constituent
+
+        active_snapshot = self._require_snapshot(
+            "multi-asset autocall resolved market inputs"
+        )
+        resolved_snapshot_id = str(
+            (params or {}).get("resolved_snapshot_id") or ""
+        ).strip()
+        if not resolved_snapshot_id:
+            raise ValueError(
+                "multi-asset autocall requires resolved_snapshot_id"
+            )
+        if resolved_snapshot_id != active_snapshot.snapshot_id:
+            raise ValueError(
+                "multi-asset autocall resolved inputs belong to snapshot "
+                f"'{resolved_snapshot_id}', not bound snapshot "
+                f"'{active_snapshot.snapshot_id}'"
+            )
+
+        component_ids = self._component_factor_ids(params)
+        if not component_ids:
+            raise ValueError(
+                "multi-asset autocall requires explicit component_secids"
+            )
+        slugs = [self._risk_factor_slug(value) for value in component_ids]
+        if any(not slug for slug in slugs) or len(set(slugs)) != len(slugs):
+            raise ValueError(
+                "multi-asset autocall component_secids must be unique and "
+                "risk-factor safe"
+            )
+
+        def finite_list(key: str, *, positive: bool = False) -> list[float]:
+            raw = (params or {}).get(key)
+            if not isinstance(raw, (list, tuple)):
+                raise ValueError(
+                    f"multi-asset autocall {key} must be a resolved array"
+                )
+            values = []
+            for index, value in enumerate(raw):
+                if isinstance(value, bool):
+                    raise ValueError(f"{key}[{index}] must be a finite number")
+                try:
+                    number = float(value)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError(
+                        f"{key}[{index}] must be a finite number"
+                    ) from exc
+                if not math.isfinite(number) or (positive and number <= 0.0):
+                    qualifier = "positive " if positive else ""
+                    raise ValueError(
+                        f"{key}[{index}] must be a {qualifier}finite number"
+                    )
+                values.append(number)
+            return values
+
+        assets = finite_list("assets", positive=True)
+        reference_spots = finite_list("reference_spots", positive=True)
+        sigmas = finite_list("sigmas")
+        incomes = finite_list("incomes")
+        weights = finite_list("weights")
+        kinds_raw = (params or {}).get("component_kinds")
+        if not isinstance(kinds_raw, (list, tuple)):
+            raise ValueError(
+                "multi-asset autocall component_kinds must be a resolved array"
+            )
+        kinds = [str(value).strip().lower() for value in kinds_raw]
+        supported_kinds = {"equity", "index", "bond"}
+        invalid_kinds = sorted(set(kinds) - supported_kinds)
+        if invalid_kinds:
+            raise ValueError(
+                "multi-asset autocall unsupported component kinds: "
+                + ", ".join(invalid_kinds)
+            )
+        lengths = {
+            "component_secids": len(component_ids),
+            "component_kinds": len(kinds),
+            "assets": len(assets),
+            "reference_spots": len(reference_spots),
+            "sigmas": len(sigmas),
+            "incomes": len(incomes),
+            "weights": len(weights),
+        }
+        if len(set(lengths.values())) != 1 or not 1 <= len(component_ids) <= 5:
+            raise ValueError(
+                "multi-asset autocall resolved arrays must be aligned for 1 to "
+                f"5 components (lengths={lengths})"
+            )
+        if any(not 0.0 <= sigma <= 5.0 for sigma in sigmas):
+            raise ValueError("multi-asset autocall sigmas must be in [0, 5]")
+        if any(weight < 0.0 for weight in weights) or sum(weights) <= 0.0:
+            raise ValueError(
+                "multi-asset autocall weights must be non-negative with "
+                "positive sum"
+            )
+
+        raw_correlation = (params or {}).get("correlation")
+        if not isinstance(raw_correlation, (list, tuple)):
+            raise ValueError(
+                "multi-asset autocall correlation must be a resolved matrix"
+            )
+        correlation = []
+        for row_index, row in enumerate(raw_correlation):
+            if not isinstance(row, (list, tuple)):
+                raise ValueError(
+                    f"correlation[{row_index}] must be an array"
+                )
+            parsed_row = []
+            for column_index, value in enumerate(row):
+                try:
+                    number = float(value)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError(
+                        f"correlation[{row_index}][{column_index}] must be finite"
+                    ) from exc
+                if not math.isfinite(number):
+                    raise ValueError(
+                        f"correlation[{row_index}][{column_index}] must be finite"
+                    )
+                parsed_row.append(number)
+            correlation.append(parsed_row)
+        count = len(component_ids)
+        if len(correlation) != count or any(
+                len(row) != count for row in correlation):
+            raise ValueError(
+                f"multi-asset autocall correlation must have shape ({count}, {count})"
+            )
+
+        constituents = [
+            Constituent(
+                name=secid,
+                kind=kind,
+                spot=spot,
+                weight=weight,
+                vol=sigma,
+                income=income,
+            )
+            for secid, kind, spot, weight, sigma, income in zip(
+                component_ids, kinds, assets, weights, sigmas, incomes
+            )
+        ]
+        observations = (params or {}).get("observation_dates", [])
+        if not isinstance(observations, (list, tuple)):
+            raise ValueError(
+                "multi-asset autocall observation_dates must be an array"
+            )
+        contract = {
+            "r": params.get("r"),
+            "T": params.get("T"),
+            "observation_dates": list(observations),
+            "autocall_barrier": params.get("autocall_barrier", 1.20),
+            "autocall_aggregation": params.get(
+                "autocall_aggregation", "best_of"),
+            "protection_barrier": params.get("protection_barrier", 0.65),
+            "protection_aggregation": params.get(
+                "protection_aggregation", "worst_of"),
+            "protection_monitoring": params.get(
+                "protection_monitoring", "maturity"),
+            "coupon_barrier": params.get("coupon_barrier", 0.65),
+            "coupon_aggregation": params.get(
+                "coupon_aggregation", "worst_of"),
+            "coupon_rate": params.get("coupon_rate", 0.0),
+            "guaranteed_coupon": params.get("guaranteed_coupon", 0.05),
+            "memory_coupon": params.get("memory_coupon", True),
+            "notional": params.get("notional", 1_000.0),
+            "n_sims": params.get("n_sims", 20_000),
+            "steps": params.get("steps", 100),
+            "seed": params.get("seed", 42),
+        }
+        return constituents, correlation, reference_spots, contract
+
+    def _custom_product_repricing_inputs(self, params: dict) -> dict:
+        """Validate and unpack a version/snapshot-bound custom-AST position."""
+        import hashlib
+        import json
+
+        active_snapshot = self._require_snapshot(
+            "custom product resolved market inputs")
+        resolved_snapshot_id = str(
+            (params or {}).get("resolved_snapshot_id") or ""
+        ).strip()
+        if not resolved_snapshot_id:
+            raise ValueError("custom product requires resolved_snapshot_id")
+        if resolved_snapshot_id != active_snapshot.snapshot_id:
+            raise ValueError(
+                "custom product resolved inputs belong to snapshot "
+                f"'{resolved_snapshot_id}', not bound snapshot "
+                f"'{active_snapshot.snapshot_id}'")
+
+        resolved_contract = (params or {}).get("resolved_contract")
+        if not isinstance(resolved_contract, dict):
+            raise ValueError("custom product requires immutable resolved contract")
+        if resolved_contract.get("schema") != \
+                "custom-product-portfolio-repricing-v1":
+            raise ValueError("custom product repricing schema is unsupported")
+        expected_contract_hash = str(
+            resolved_contract.get("repricing_contract_hash") or ""
+        )
+        hash_payload = dict(resolved_contract)
+        hash_payload.pop("repricing_contract_hash", None)
+        try:
+            encoded = json.dumps(
+                hash_payload, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "custom product resolved contract is not canonical JSON") from exc
+        actual_contract_hash = hashlib.sha256(encoded).hexdigest()
+        if (len(expected_contract_hash) != 64
+                or actual_contract_hash != expected_contract_hash
+                or str((params or {}).get("repricing_contract_hash") or "")
+                != expected_contract_hash):
+            raise ValueError("custom product repricing contract hash mismatch")
+
+        product_id = str((params or {}).get("custom_product_id") or "").strip()
+        definition_hash = str((params or {}).get("definition_hash") or "").strip()
+        attachment_hash = str((params or {}).get("attachment_hash") or "").strip()
+        definition_version = (params or {}).get("definition_version")
+        payoff_basis = str((params or {}).get("payoff_basis") or "")
+        quantity_unit = str((params or {}).get("quantity_unit") or "")
+        state_mode = str((params or {}).get("state_mode") or "")
+        state_source = str((params or {}).get("state_source") or "")
+        definition_state_at_pricing = str(
+            (params or {}).get("definition_state_at_pricing") or "")
+        if (not product_id or len(definition_hash) != 64
+                or len(attachment_hash) != 64
+                or isinstance(definition_version, bool)
+                or not isinstance(definition_version, int)
+                or definition_version < 1):
+            raise ValueError(
+                "custom product version/hash evidence is missing or invalid")
+        if definition_state_at_pricing != "published":
+            raise ValueError(
+                "custom product portfolio repricing requires a published definition")
+        if (payoff_basis != "normalized_notional"
+                or quantity_unit != "currency_notional"):
+            raise ValueError(
+                "custom product payoff/quantity unit contract is unsupported")
+        if state_mode != "inception" or state_source != "explicit_assumption":
+            raise ValueError(
+                "custom product requires explicit canonical inception state")
+        for key, value in (
+            ("custom_product_id", product_id),
+            ("definition_hash", definition_hash),
+            ("attachment_hash", attachment_hash),
+            ("definition_version", definition_version),
+            ("resolved_snapshot_id", resolved_snapshot_id),
+            ("definition_state_at_pricing", definition_state_at_pricing),
+            ("payoff_basis", payoff_basis),
+            ("quantity_unit", quantity_unit),
+            ("state_mode", state_mode),
+            ("state_source", state_source),
+        ):
+            if resolved_contract.get(key) != value:
+                raise ValueError(
+                    f"custom product flattened {key} differs from resolved contract")
+
+        asset_names = [str(value) for value in
+                       ((params or {}).get("asset_names") or [])]
+        component_ids = self._component_factor_ids(params)
+        component_kinds = [str(value).strip().lower() for value in
+                           ((params or {}).get("component_kinds") or [])]
+
+        def finite_list(key: str, *, positive: bool = False) -> list[float]:
+            raw = (params or {}).get(key)
+            if not isinstance(raw, (list, tuple)):
+                raise ValueError(f"custom product {key} must be an aligned array")
+            values = []
+            for index, value in enumerate(raw):
+                if isinstance(value, bool):
+                    raise ValueError(f"{key}[{index}] must be a finite number")
+                try:
+                    number = float(value)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError(
+                        f"{key}[{index}] must be a finite number") from exc
+                if not math.isfinite(number) or (positive and number <= 0.0):
+                    qualifier = "positive " if positive else ""
+                    raise ValueError(
+                        f"{key}[{index}] must be a {qualifier}finite number")
+                values.append(number)
+            return values
+
+        assets = finite_list("assets", positive=True)
+        reference_spots = finite_list("reference_spots", positive=True)
+        sigmas = finite_list("sigmas")
+        incomes = finite_list("incomes")
+        lengths = {
+            "asset_names": len(asset_names),
+            "component_secids": len(component_ids),
+            "component_kinds": len(component_kinds),
+            "assets": len(assets),
+            "reference_spots": len(reference_spots),
+            "sigmas": len(sigmas),
+            "incomes": len(incomes),
+        }
+        if len(set(lengths.values())) != 1 or not 1 <= len(asset_names) <= 5:
+            raise ValueError(
+                "custom product arrays must align for 1 to 5 components: "
+                f"{lengths}")
+        if (len(set(asset_names)) != len(asset_names)
+                or len({self._risk_factor_slug(value) for value in component_ids})
+                != len(component_ids)):
+            raise ValueError(
+                "custom product asset names and component SECIDs must be unique")
+        invalid_kinds = sorted(
+            set(component_kinds)
+            - {"equity", "index", "bond", "future", "commodity"})
+        if invalid_kinds:
+            raise ValueError(
+                "custom product unsupported component kinds: "
+                + ", ".join(invalid_kinds))
+        if any(not 0.0 <= value <= 5.0 for value in sigmas):
+            raise ValueError("custom product sigmas must be in [0, 5]")
+
+        correlation = (params or {}).get("correlation")
+        correlation_evidence = (params or {}).get("correlation_evidence")
+        count = len(asset_names)
+        if (not isinstance(correlation, (list, tuple))
+                or len(correlation) != count
+                or any(not isinstance(row, (list, tuple))
+                       or len(row) != count for row in correlation)):
+            raise ValueError(
+                f"custom product correlation must have shape ({count}, {count})")
+        if not isinstance(correlation_evidence, dict):
+            raise ValueError("custom product correlation evidence is required")
+
+        slots = (params or {}).get("slots")
+        market = (params or {}).get("market")
+        numerical = (params or {}).get("numerical")
+        valuation_state = (params or {}).get("valuation_state")
+        attachment = (params or {}).get("attachment")
+        if (not isinstance(slots, dict) or not isinstance(market, dict)
+                or not isinstance(numerical, dict)
+                or not isinstance(valuation_state, dict)
+                or not isinstance(attachment, dict)):
+            raise ValueError(
+                "custom product canonical slots/market/numerical/state/evidence "
+                "are required")
+        for key, value in (
+            ("slots", slots),
+            ("market", market),
+            ("numerical", numerical),
+            ("valuation_state", valuation_state),
+            ("attachment", attachment),
+            ("correlation", correlation),
+            ("correlation_evidence", correlation_evidence),
+        ):
+            if resolved_contract.get(key) != value:
+                raise ValueError(
+                    f"custom product {key} differs from resolved contract")
+        if valuation_state.get("mode") != "inception":
+            raise ValueError(
+                "custom product seasoned state is unsupported; canonical "
+                "inception state is required")
+        if list(valuation_state.get("asset_names") or []) != asset_names:
+            raise ValueError(
+                "custom product valuation-state assets do not match definition")
+        if list(resolved_contract.get("asset_names") or []) != asset_names:
+            raise ValueError(
+                "custom product asset names differ from resolved contract")
+        for key, values in (
+            ("component_secids", component_ids),
+            ("component_kinds", component_kinds),
+            ("assets", assets),
+            ("reference_spots", reference_spots),
+            ("sigmas", sigmas),
+            ("incomes", incomes),
+        ):
+            if list(resolved_contract.get(key) or []) != values:
+                raise ValueError(
+                    f"custom product {key} differs from resolved contract")
+
+        try:
+            paths = int(numerical["paths"])
+            steps = int(numerical["steps"])
+            seed = int(numerical["seed"])
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                "custom product numerical paths/steps/seed are invalid") from exc
+        if (paths != numerical.get("paths") or steps != numerical.get("steps")
+                or seed != numerical.get("seed")):
+            raise ValueError(
+                "custom product numerical paths/steps/seed must be exact integers")
+        repricing_profile = (params or {}).get("custom_repricing_profile")
+        if repricing_profile not in {None, "custom_hist_crn_v1"}:
+            raise ValueError("custom product repricing profile is unsupported")
+        if repricing_profile == "custom_hist_crn_v1":
+            paths = 1_000
+
+        scenario = (params or {}).get("scenario")
+        if scenario is not None and not isinstance(scenario, dict):
+            raise ValueError("custom product scenario must be an object")
+        try:
+            rate_shift = float((params or {}).get("scenario_rate_shift", 0.0))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                "custom product scenario rate shift must be finite") from exc
+        if not math.isfinite(rate_shift):
+            raise ValueError("custom product scenario rate shift must be finite")
+        scenario_market = dict(market)
+        try:
+            scenario_market["r"] = float(scenario_market.get("r", 0.0)) + rate_shift
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("custom product market rate must be finite") from exc
+        if (not math.isfinite(scenario_market["r"])
+                or not -1.0 <= scenario_market["r"] <= 2.0):
+            raise ValueError("custom product scenario market rate is invalid")
+        return {
+            "product_id": product_id,
+            "definition_version": definition_version,
+            "definition_hash": definition_hash,
+            "attachment_hash": attachment_hash,
+            "repricing_contract_hash": expected_contract_hash,
+            "resolved_snapshot_id": resolved_snapshot_id,
+            "asset_names": asset_names,
+            "component_secids": component_ids,
+            "component_kinds": component_kinds,
+            "assets": assets,
+            "reference_spots": reference_spots,
+            "sigmas": sigmas,
+            "incomes": incomes,
+            "correlation": [list(row) for row in correlation],
+            "correlation_evidence": dict(correlation_evidence),
+            "slots": dict(slots),
+            "market": scenario_market,
+            "numerical": {"paths": paths, "steps": steps, "seed": seed},
+            "repricing_profile": repricing_profile,
+            "payoff_basis": payoff_basis,
+            "quantity_unit": quantity_unit,
+            "state_mode": state_mode,
+            "state_source": state_source,
+            "valuation_state": dict(valuation_state),
+            "scenario": dict(scenario) if scenario is not None else None,
+            "attachment": dict(attachment),
+        }
 
     def _equity_exotic_pricer(self, inst: str, p: dict):
         """Return (value_fn(S, sigma) -> governed result, base_spot, base_vol) for an exotic."""
@@ -2003,7 +2923,11 @@ class PortfolioService:
             slug = self._risk_factor_slug(component_id)
             if factor_id in {
                 f"equity.{slug}.spot", f"equity.{slug}.spot_gamma",
+                f"credit.{slug}.price", f"credit.{slug}.price_gamma",
+                f"future.{slug}.spot", f"future.{slug}.spot_gamma",
+                f"commodity.{slug}.spot", f"commodity.{slug}.spot_gamma",
                 f"vol.{slug}.implied",
+                f"vol.{slug}.model",
             }:
                 return component_id
         return None
@@ -2025,7 +2949,8 @@ class PortfolioService:
                 key = f"S{index + 1}"
                 if isinstance(params.get(key), (int, float)):
                     return float(params[key])
-            if index >= 0 and pos.instrument == "basket":
+            if index >= 0 and pos.instrument in {
+                    "basket", "multi_asset_autocall", "custom_product"}:
                 assets = params.get("assets") or []
                 if index < len(assets) and isinstance(assets[index], (int, float)):
                     return float(assets[index])

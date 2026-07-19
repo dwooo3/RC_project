@@ -5,7 +5,9 @@ from enum import Enum
 from typing import Literal
 
 
-RiskFactorBucket = Literal["Rates", "FX", "Equity", "Credit", "Volatility"]
+RiskFactorBucket = Literal[
+    "Rates", "FX", "Equity", "Credit", "Commodity", "Volatility"
+]
 
 
 class RiskFactorHierarchy(str, Enum):
@@ -13,6 +15,7 @@ class RiskFactorHierarchy(str, Enum):
     FX = "FX"
     EQUITY = "Equity"
     CREDIT = "Credit"
+    COMMODITY = "Commodity"
     VOLATILITY = "Volatility"
 
 

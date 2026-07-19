@@ -4,11 +4,13 @@ round-trip through AppDB persistence."""
 
 from __future__ import annotations
 
+from datetime import date
 import math
 
 import pytest
 
 from api.pricing_workstation import PRODUCTS, TO_POSITION, find_product, to_position
+from domain.market_data import MarketDataSnapshot
 from domain.portfolio import Position
 from infra.db.app_db import AppDB
 from services.portfolio_service import PortfolioService
@@ -20,20 +22,51 @@ def _default_values(product) -> dict:
     return {s.key: s.default for s in product.params_for(engine, [], [])}
 
 
-@pytest.mark.parametrize("product_id", sorted(TO_POSITION))
+@pytest.mark.parametrize(
+    "product_id", sorted(set(TO_POSITION) - {"custom_product"}))
 def test_captured_position_reprices(product_id):
     product = find_product(product_id)
     assert product is not None, f"{product_id} in TO_POSITION but not in PRODUCTS"
-    inst, params, desc = to_position(product_id, _default_values(product))
+    values = _default_values(product)
+    snapshot = None
+    if product_id == "multi_asset_autocall":
+        # This product is capturable only from its immutable priced state.  A
+        # generic form default has identities but no as-of spot/vol/correlation
+        # bundle and must remain rejected by the production adapter.
+        snapshot = MarketDataSnapshot(
+            snapshot_id="capture-snapshot",
+            valuation_date=date(2026, 7, 18),
+            source="MANUAL",
+            quality="MANUAL",
+        )
+        values.update({
+            "resolved_snapshot_id": snapshot.snapshot_id,
+            "component_secids": ["SBER"],
+            "component_kinds": ["equity"],
+            "assets": [100.0],
+            "reference_spots": [100.0],
+            "sigmas": [0.2],
+            "incomes": [0.0],
+            "weights": [1.0],
+            "correlation": [[1.0]],
+            "n_sims": 1_000,
+            "steps": 10,
+        })
+    inst, params, desc = to_position(product_id, values)
     assert desc
 
-    ps = PortfolioService()
+    ps = PortfolioService(snapshot=snapshot) if snapshot else PortfolioService()
     ps.add(Position(id=f"t_{product_id}", instrument=inst, quantity=1.0,
                     description=desc, params=params))
     ps.price_all()
     pos = ps.positions[0]
     assert not pos.errors, f"{product_id} -> {inst}: {pos.errors}"
     assert pos.market_value == pos.market_value, f"{product_id}: NaN market value"
+
+
+def test_custom_product_capture_requires_successful_pinned_pricing_evidence():
+    with pytest.raises(ValueError, match="resolved inputs from a successful"):
+        to_position("custom_product", {"attachment_json": "{}"}, "custom_mc")
 
 
 def test_non_capturable_products_return_none():

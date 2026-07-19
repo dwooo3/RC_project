@@ -13,10 +13,12 @@ struct PricingNewLegBody: Encodable, Sendable {
     let currency: String?
     let params: [String: BridgeValue]
     let quantity: Double
+    let customProduct: PricingNewCustomProductAttachment?
 
     enum CodingKeys: String, CodingKey {
         case id, label, product, engine, currency, params, quantity
         case riskFactorID = "risk_factor_id"
+        case customProduct = "custom_product"
     }
 }
 
@@ -40,10 +42,12 @@ struct PricingNewStoredLeg: Decodable, Sendable {
     let currency: String?
     let params: [String: JSONValue]
     let quantity: Double
+    let customProduct: PricingNewCustomProductAttachment?
 
     enum CodingKeys: String, CodingKey {
         case id, label, product, engine, currency, params, quantity
         case riskFactorID = "risk_factor_id"
+        case customProduct = "custom_product"
     }
 }
 
@@ -127,10 +131,15 @@ struct PricingNewRiskProvenance: Decodable, Sendable {
     let historyLastDate: String?
     let historyObservations: Int
     let snapshotID: String
+    let valuationDate: String?
     let calculationID: String
+    let calculationTimestamp: String?
     let inputsHash: String
     let portfolioSource: String
     let globalPortfolioUsed: Bool
+    let factorDiagnostics: JSONValue?
+    let scenarioMatrixHash: String?
+    let customRepricing: JSONValue?
 
     enum CodingKeys: String, CodingKey {
         case historySource = "history_source"
@@ -138,10 +147,15 @@ struct PricingNewRiskProvenance: Decodable, Sendable {
         case historyLastDate = "history_last_date"
         case historyObservations = "history_observations"
         case snapshotID = "snapshot_id"
+        case valuationDate = "valuation_date"
         case calculationID = "calculation_id"
+        case calculationTimestamp = "calculation_timestamp"
         case inputsHash = "inputs_hash"
         case portfolioSource = "portfolio_source"
         case globalPortfolioUsed = "global_portfolio_used"
+        case factorDiagnostics = "factor_diagnostics"
+        case scenarioMatrixHash = "scenario_matrix_hash"
+        case customRepricing = "custom_repricing"
     }
 }
 
@@ -151,8 +165,10 @@ struct PricingNewRiskResult: Decodable, Sendable {
     let confidence: Double
     let window: Int
     let horizon: Int
+    let horizonMethod: String?
     let model: String
     let modelLabel: String
+    let modelDiagnostics: JSONValue?
     let currency: String
     let portfolioValue: Double
     let positions: Int
@@ -172,6 +188,8 @@ struct PricingNewRiskResult: Decodable, Sendable {
         case scope, partial, confidence, window, horizon, model, currency
         case positions, es, histogram, hyppl, factors, capability, provenance
         case modelLabel = "model_label"
+        case horizonMethod = "horizon_method"
+        case modelDiagnostics = "model_diagnostics"
         case portfolioValue = "portfolio_value"
         case varValue = "var"
         case nScenarios = "n_scenarios"
@@ -378,7 +396,9 @@ final class PricingNewWorkspaceViewModel {
             && !legs.isEmpty && legs.count <= maxLegs
             && legs.allSatisfy { !$0.productID.isEmpty && !$0.engineID.isEmpty
                 && $0.quantity.isFinite && $0.numericValues.values.allSatisfy(\.isFinite)
-                && inputsWithinSchema($0) && engineAllowed($0) }
+                && inputsWithinSchema($0) && engineAllowed($0)
+                && ($0.productID != "custom_product"
+                    || customAttachment(for: $0) != nil) }
     }
 
     var availableGreekKeys: [String] {
@@ -411,7 +431,9 @@ final class PricingNewWorkspaceViewModel {
     }
 
     func products(for assetClass: String) -> [WsProductModel] {
-        products.filter { $0.assetClass == assetClass }
+        products.filter {
+            $0.assetClass == assetClass && $0.id != "custom_product"
+        }
             .sorted { lhs, rhs in
                 let order = ["Vanilla", "Forwards", "Options", "Swaps", "Bonds",
                              "Exotics", "Multi-asset", "Structured notes"]
@@ -456,6 +478,57 @@ final class PricingNewWorkspaceViewModel {
                     : nil) ?? products(for: assetClass).first ?? products.first else { return }
         legs.append(PricingNewLegDraft(
             label: "Position \(legs.count + 1)", product: product))
+    }
+
+    func attachCustomProduct(_ attachment: PricingNewCustomProductAttachment) throws {
+        guard legs.count < maxLegs else {
+            throw BridgeError.server(
+                "Worksheet уже содержит максимум \(maxLegs) позиций")
+        }
+        guard let product = products.first(where: { $0.id == "custom_product" }),
+              let engine = product.engines.first(where: { $0.id == "custom_mc" })
+        else {
+            throw BridgeError.server(
+                "Custom Product Engine отсутствует в текущем каталоге")
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(attachment)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw BridgeError.server(
+                "Не удалось сериализовать version-pinned custom attachment")
+        }
+        let draft = PricingNewLegDraft(
+            label: attachment.productName, product: product,
+            engineID: engine.id)
+        draft.choiceValues["attachment_json"] = json
+        draft.showAdvanced = false
+        let assetCurrencies = attachment.market.assets.compactMap(\.currency)
+        let currencies = Set(assetCurrencies)
+        // Never infer a book currency from only part of a custom basket.  An
+        // unresolved/manual asset keeps aggregation and transient risk behind
+        // the explicit currency gate instead of silently inheriting RUB/USD.
+        draft.currency = assetCurrencies.count == attachment.market.assets.count
+            && currencies.count == 1 ? (currencies.first ?? "") : ""
+        draft.selectedUnderlyings = attachment.market.assets.compactMap { asset in
+            guard let secid = asset.secid, let category = asset.category else {
+                return nil
+            }
+            return PricingNewUnderlyingRef(
+                secid: secid, category: category,
+                label: asset.label ?? asset.assetName,
+                currency: asset.currency)
+        }
+        legs.append(draft)
+    }
+
+    func customAttachment(for leg: PricingNewLegDraft)
+        -> PricingNewCustomProductAttachment? {
+        guard leg.productID == "custom_product",
+              let raw = leg.choiceValues["attachment_json"],
+              let data = raw.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(
+            PricingNewCustomProductAttachment.self, from: data)
     }
 
     func duplicate(_ leg: PricingNewLegDraft) {
@@ -627,13 +700,22 @@ final class PricingNewWorkspaceViewModel {
         let body = PricingNewPriceBody(
             name: name,
             legs: legs.map { leg in
-                PricingNewLegBody(
+                let attachment = customAttachment(for: leg)
+                var params = leg.bridgeParams()
+                if attachment != nil {
+                    // The immutable run stores this as a typed nested object;
+                    // the server materialises the legacy flat adapter only for
+                    // the generic workstation dispatcher.
+                    params.removeValue(forKey: "attachment_json")
+                }
+                return PricingNewLegBody(
                     id: leg.id.uuidString, label: leg.label,
                     product: leg.productID, engine: leg.engineID,
                     riskFactorID: leg.selectedUnderlyings.isEmpty ? nil
                         : leg.selectedUnderlyings.map(\.secid).joined(separator: "+"),
                     currency: leg.currency.isEmpty ? nil : leg.currency,
-                    params: leg.bridgeParams(), quantity: leg.quantity)
+                    params: params, quantity: leg.quantity,
+                    customProduct: attachment)
             },
             envID: envID.isEmpty ? nil : envID)
         isPricing = true
@@ -701,6 +783,27 @@ final class PricingNewWorkspaceViewModel {
                     default: break
                     }
                 }
+                if let attachment = stored.customProduct {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+                    let encoded = try encoder.encode(attachment)
+                    guard let json = String(data: encoded, encoding: .utf8) else {
+                        throw BridgeError.server(
+                            "Custom attachment в run не является UTF-8 JSON")
+                    }
+                    draft.choiceValues["attachment_json"] = json
+                    draft.showAdvanced = false
+                    draft.selectedUnderlyings = attachment.market.assets.compactMap {
+                        asset in
+                        guard let secid = asset.secid,
+                              let category = asset.category else { return nil }
+                        return PricingNewUnderlyingRef(
+                            secid: secid,
+                            category: category,
+                            label: asset.label ?? asset.assetName,
+                            currency: asset.currency)
+                    }
+                }
                 let storedSecID: String? = {
                     if case .string(let value)? = stored.params["secid"] { return value }
                     return stored.riskFactorID
@@ -722,7 +825,8 @@ final class PricingNewWorkspaceViewModel {
                                 label: secid,
                                 currency: stored.currency)
                         }
-                } else if let secid = storedSecID,
+                } else if stored.customProduct == nil,
+                          let secid = storedSecID,
                           !secid.contains("+") {
                     draft.selectedUnderlyings = [PricingNewUnderlyingRef(
                         secid: secid, category: "restored", label: secid,

@@ -5,7 +5,10 @@ import SwiftUI
 /// adapts automatically, and only the brand/status accents are fixed.
 enum Theme {
     // Brand + status accents (fixed across appearances)
-    static let accent   = Color(red: 0.80, green: 0.47, blue: 0.35)   // terracotta
+    /// Brand accent — user-selectable in the design panel. Reading this inside
+    /// a view body registers an observation dependency on the setting, so a
+    /// change repaints exactly the views that use the accent.
+    static var accent: Color { DesignSettings.shared.accentColor }
     static let positive = Color(red: 0.13, green: 0.70, blue: 0.38)   // green
     static let negative = Color(red: 0.90, green: 0.27, blue: 0.24)   // red
     static let warning  = Color(red: 0.86, green: 0.60, blue: 0.10)   // amber
@@ -29,18 +32,21 @@ enum Theme {
     static let radius: CGFloat = 10
 
     // MARK: Elevation & surfaces
-    /// Card corner radius — generous continuous (squircle) corners, floating look.
-    static let cardRadius: CGFloat = 16
-    /// Clean, solid card fill — paper-white in light, near-black in dark (no grey
-    /// translucency). `textBackgroundColor` is the true content white, so cards
-    /// read as bright floating panels rather than grey material.
-    static let cardFill = Color(nsColor: .textBackgroundColor)
+    /// Card corner radius — generous continuous (squircle) corners, floating
+    /// look. Adjustable in the design panel.
+    static var cardRadius: CGFloat { CGFloat(DesignSettings.shared.cornerRadius) }
+    /// Clean, solid card fill — paper-white in light; in dark an elevated
+    /// dark GREY (not the near-black `textBackgroundColor`), so cards read as
+    /// panels sitting above the window background instead of black holes.
+    /// The exact tone follows the design panel's "Тон блоков" slider.
+    static var cardFill: Color { DesignSettings.shared.cardFillColor }
     /// Barely-there edge so a white card keeps definition against a light page.
     static let hairline = Color.primary.opacity(0.05)
-    /// Soft, wide ambient shadow — the "float".
-    static let cardShadow = Color.black.opacity(0.08)
+    /// Soft, wide ambient shadow — the "float". Strength is a design-panel
+    /// slider; defaults noticeably softer than the old fixed values.
+    static var cardShadow: Color { DesignSettings.shared.cardShadowColor }
     /// Tight contact shadow layered under the ambient one for crispness.
-    static let cardContactShadow = Color.black.opacity(0.05)
+    static var cardContactShadow: Color { DesignSettings.shared.cardContactShadowColor }
     /// Content column max width — keeps line length comfortable on wide displays.
     static let contentMaxWidth: CGFloat = 1240
 

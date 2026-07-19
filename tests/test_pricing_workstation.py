@@ -63,6 +63,15 @@ def test_every_engine_prices_with_defaults(svc, product_id, engine_id):
     if product.needs_curve:
         params["curve_id"] = FLAT_CURVE      # no live snapshot in tests
 
+    # Custom Product is intentionally builder-only: there is no safe generic
+    # default for a version/hash-pinned payout definition and its market-data
+    # evidence.  The dedicated Pricing_new integration tests exercise the full
+    # nested attachment path; this matrix verifies the fail-closed boundary.
+    if product_id == "custom_product":
+        with pytest.raises(ValueError, match="attachment_json is required"):
+            price_ws(svc, None, product_id, engine_id, params)
+        return
+
     result = price_ws(svc, None, product_id, engine_id, params)
 
     assert result["errors"] == [], (
@@ -73,6 +82,8 @@ def test_every_engine_prices_with_defaults(svc, product_id, engine_id):
         assert result["value"] == result["value"], (   # NaN guard
             f"{product_id}/{engine_id} returned NaN")
     assert result["model_id"] == engine.model_id
+    assert "engine" not in result["resolved_params"]
+    assert "attachment_json" not in result["resolved_params"]
 
 
 def test_catalogue_serializes():

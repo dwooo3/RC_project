@@ -264,7 +264,7 @@ struct PnlExplainPane: View {
                                     .font(.system(size: 11))
                             }
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.borderedProminent).tint(Theme.accent)
                         .disabled(isImporting || actualInput.isEmpty)
                     }
                     Text("Basel APL должен быть очищен от комиссий; разрыв с HypPL покажет вклад сделок/интрадея/lifecycle/theta.")

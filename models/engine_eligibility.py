@@ -100,6 +100,7 @@ _PRODUCT_MODEL_BINDINGS = {
     "autocall": "correlated_gbm",
     "multi_asset_autocall": "correlated_gbm",
     "basket_note": "correlated_gbm",
+    "custom_product": "correlated_gbm",
     "tarn": "correlated_gbm",
     "accumulator": "correlated_gbm",
     "convertible": "equity_credit_hybrid",

@@ -16,16 +16,18 @@ pricing environment; every derived pricing route uses the same policy.
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import date
 import sys
+from typing import Literal
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, FiniteFloat
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 
 from api import (
     catalog,
@@ -129,10 +131,84 @@ class WsBookPriceRequest(BaseModel):
     env_id: str | None = None
 
 
+class _PricingNewCustomContractModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class PricingNewCustomRateRequest(_PricingNewCustomContractModel):
+    value: FiniteFloat = Field(ge=-1.0, le=2.0)
+    market_value: FiniteFloat | None = None
+    source: Literal["market_snapshot", "manual_override"]
+    snapshot_id: str | None = None
+    market_data_source: str | None = None
+    market_data_quality: str | None = None
+    overridden: bool = False
+    override_reason: str | None = None
+
+
+class PricingNewCustomAssetRequest(_PricingNewCustomContractModel):
+    index: int = Field(ge=0, le=4)
+    asset_name: str = Field(min_length=1, max_length=80)
+    secid: str | None = None
+    category: Literal[
+        "equities", "indices", "bonds", "futures", "commodities"
+    ] | None = None
+    label: str | None = None
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    spot: FiniteFloat = Field(gt=0.0)
+    volatility: FiniteFloat = Field(ge=0.0, le=5.0)
+    carry_yield: FiniteFloat = Field(ge=-1.0, le=1.0)
+    market_spot: FiniteFloat | None = None
+    market_volatility: FiniteFloat | None = None
+    market_carry_yield: FiniteFloat | None = None
+    source: Literal["market_snapshot", "manual_override"]
+    snapshot_id: str | None = None
+    market_data_source: str | None = None
+    market_data_quality: str | None = None
+    spot_overridden: bool = False
+    volatility_overridden: bool = False
+    carry_overridden: bool = False
+    override_reason: str | None = None
+
+
+class PricingNewCustomMarketRequest(_PricingNewCustomContractModel):
+    rate: PricingNewCustomRateRequest
+    assets: list[PricingNewCustomAssetRequest] = Field(
+        min_length=1, max_length=5)
+    correlation: list[list[FiniteFloat]]
+
+
+class PricingNewCustomNumericalRequest(_PricingNewCustomContractModel):
+    paths: int = Field(ge=1_000, le=200_000)
+    steps: int = Field(ge=16, le=1_024)
+    seed: int = Field(ge=0, le=2_147_483_647)
+
+
+class PricingNewCustomProductRequest(_PricingNewCustomContractModel):
+    schema_version: Literal[1]
+    product_id: str = Field(min_length=1, max_length=160)
+    product_name: str = Field(min_length=1, max_length=240)
+    definition_version: int = Field(ge=1)
+    definition_state: str = Field(min_length=1, max_length=40)
+    definition_hash: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+    engine_id: Literal["custom_mc_gbm", "custom_mc_multi_gbm"]
+    slots: dict[str, FiniteFloat]
+    market: PricingNewCustomMarketRequest
+    numerical: PricingNewCustomNumericalRequest
+    # Optional only for decoding runs saved before the explicit unit/state
+    # contract was introduced. New Pricing_new attachments always populate
+    # these fields; portfolio risk rejects a legacy-unspecified convention.
+    payoff_basis: Literal["normalized_notional"] | None = None
+    state_mode: Literal["inception"] | None = None
+    state_source: Literal["explicit_assumption"] | None = None
+    limitations: list[str] = Field(default_factory=list, max_length=100)
+
+
 class PricingNewLegRequest(WsBookLegRequest):
     """Pricing_new adds the explicit P&L currency required by transient risk."""
 
     currency: str | None = Field(default=None, min_length=3, max_length=3)
+    custom_product: PricingNewCustomProductRequest | None = None
 
 
 class PricingNewPriceRequest(BaseModel):
@@ -331,6 +407,80 @@ def ws_book_price(req: WsBookPriceRequest) -> dict:
 
 
 # ── Pricing_new: one named worksheet, immutable history and transient risk ──
+def _pricing_new_execution_legs(legs: list[dict]) -> list[dict]:
+    """Materialise typed custom attachments for the generic WS dispatcher.
+
+    The persisted request retains the nested object.  ``attachment_json`` is
+    an internal compatibility adapter only and therefore never becomes the
+    user-facing run contract.
+    """
+    materialized = []
+    for raw in legs:
+        leg = dict(raw)
+        attachment = leg.get("custom_product")
+        is_custom = leg.get("product") == "custom_product"
+        if is_custom and not isinstance(attachment, dict):
+            raise ValueError(
+                "custom_product leg requires a typed custom_product attachment")
+        if not is_custom and attachment is not None:
+            raise ValueError(
+                "custom_product attachment is only valid for product='custom_product'")
+        params = dict(leg.get("params") or {})
+        if is_custom:
+            if "attachment_json" in params:
+                raise ValueError(
+                    "attachment_json is an internal field and cannot be supplied directly")
+            params["attachment_json"] = json.dumps(
+                attachment, ensure_ascii=False, allow_nan=False,
+                sort_keys=True, separators=(",", ":"))
+        leg["params"] = params
+        leg.pop("custom_product", None)
+        materialized.append(leg)
+    return materialized
+
+
+def _pricing_new_run_runtime(record):
+    """Re-open the immutable snapshot used by a saved Pricing_new run.
+
+    Environment selection is retained for permissions and model defaults, but
+    its *current* active snapshot must never replace the one recorded in the
+    run.  Exact in-memory/MOEX/demo reconstruction is delegated to the market
+    service and fails closed when the old snapshot cannot be reproduced.
+    """
+    env_id = record.request.get("env_id")
+    env, current, service, _curves, _surfaces = _workstation_runtime(env_id)
+    expected = str(record.result.get("snapshot_id") or "").strip()
+    if not expected:
+        raise pricing_new_risk.PricingNewRiskError(
+            "pinned_snapshot_missing",
+            "Saved Pricing_new run has no immutable market-data snapshot id.",
+        )
+    if str(getattr(current, "snapshot_id", "") or "") == expected:
+        snapshot = current
+    else:
+        resolver = getattr(service.market_data, "resolve_pinned_snapshot", None)
+        if not callable(resolver):
+            raise pricing_new_risk.PricingNewRiskError(
+                "pinned_snapshot_unavailable",
+                f"Saved snapshot '{expected}' cannot be resolved by this runtime.",
+            )
+        try:
+            snapshot = resolver(expected)
+        except Exception as exc:
+            raise pricing_new_risk.PricingNewRiskError(
+                "pinned_snapshot_unavailable",
+                f"Saved snapshot '{expected}' is unavailable: {exc}",
+            ) from exc
+    if str(getattr(snapshot, "snapshot_id", "") or "") != expected:
+        raise pricing_new_risk.PricingNewRiskError(
+            "pinned_snapshot_mismatch",
+            f"Snapshot resolver returned a different snapshot for '{expected}'.",
+        )
+    curve_ids = list((getattr(snapshot, "curves", None) or {}).keys())
+    surface_ids = _vol_surface_ids(snapshot)
+    return env, snapshot, service, curve_ids, surface_ids
+
+
 @app.post("/pricing-new/runs/price")
 def pricing_new_price(req: PricingNewPriceRequest) -> dict:
     """Price 1–5 editable legs on one frozen runtime and persist the exact run."""
@@ -338,11 +488,12 @@ def pricing_new_price(req: PricingNewPriceRequest) -> dict:
         env, snapshot, ws_service, curve_ids, surface_ids = _workstation_runtime(
             req.env_id
         )
-        request_payload = req.model_dump(mode="json", exclude={"name"})
+        request_payload = req.model_dump(
+            mode="json", exclude={"name"}, exclude_none=True)
         result = pricing_workstation.price_book_ws(
             ws_service,
             snapshot,
-            request_payload["legs"],
+            _pricing_new_execution_legs(request_payload["legs"]),
             env=env,
             curve_ids=curve_ids,
             surface_ids=surface_ids,
@@ -388,8 +539,15 @@ def pricing_new_run(run_id: str) -> dict:
 def pricing_new_risk_capabilities(run_id: str) -> dict:
     try:
         record = _pricing_new_runs.get_run(run_id)
+        _env, snapshot, _service, _curves, _surfaces = (
+            _pricing_new_run_runtime(record)
+        )
+        risk_legs = pricing_new_risk.legs_with_resolved_pricing_inputs(
+            record.request.get("legs") or [], record.result)
         return jsonable(pricing_new_risk.evaluate_book_capabilities(
-            record.request.get("legs") or []))
+            risk_legs,
+            bound_snapshot_id=str(snapshot.snapshot_id),
+        ))
     except PricingNewRunNotFoundError:
         raise HTTPException(status_code=404, detail=f"unknown Pricing_new run '{run_id}'")
     except pricing_new_risk.PricingNewRiskError as exc:
@@ -401,11 +559,14 @@ def pricing_new_run_risk(run_id: str, req: PricingNewRiskRequest) -> dict:
     """VaR/ES for exactly the saved worksheet, never the global portfolio."""
     try:
         record = _pricing_new_runs.get_run(run_id)
-        env_id = record.request.get("env_id")
-        _env, snapshot, _service, _curves, _surfaces = _workstation_runtime(env_id)
+        _env, snapshot, _service, _curves, _surfaces = (
+            _pricing_new_run_runtime(record)
+        )
+        risk_legs = pricing_new_risk.legs_with_resolved_pricing_inputs(
+            record.request.get("legs") or [], record.result)
         result = pricing_new_risk.calculate_transient_book_risk(
             _SnapshotContext(CONTEXT, snapshot),
-            record.request.get("legs") or [],
+            risk_legs,
             confidence=req.confidence,
             window=req.window,
             horizon=req.horizon,
