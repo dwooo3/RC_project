@@ -16,6 +16,9 @@ final class PricingNewCustomAssetDraft: Identifiable {
     var category: String?
     var label: String?
     var currency: String?
+    var board: String?
+    var fixingPriceBasis: PricingNewCustomPriceBasis = .close
+    var fixingSession = ""
     var spot: Double = 100
     var snapshotID: String?
     var marketDataSource: String?
@@ -40,6 +43,9 @@ final class PricingNewCustomAssetDraft: Identifiable {
         category = nil
         label = nil
         currency = nil
+        board = nil
+        fixingPriceBasis = .close
+        fixingSession = ""
         snapshotID = nil
         marketDataSource = nil
         marketDataQuality = nil
@@ -50,6 +56,36 @@ final class PricingNewCustomAssetDraft: Identifiable {
         query = ""
         overrideReason = ""
     }
+}
+
+/// Explicit contractual dates and MOEX fixing conventions. No observation
+/// date is synthesized from maturity: the user owns every contractual date.
+@MainActor
+@Observable
+final class PricingNewCustomContractScheduleDraft {
+    var effectiveDate = ""
+    var contractualMaturityDate = ""
+    var contractualObservationDates: [String] = []
+    var businessDayConvention: PricingNewCustomBusinessDayConvention = .unadjusted
+    var useLatestCalendarVersion = true
+    var calendarVersion = 1
+}
+
+/// User-owned lifecycle state for an already-live custom trade. Current spots
+/// are deliberately absent: they are read from the resolved market rows so a
+/// saved attachment cannot contain two competing current-market levels.
+@MainActor
+@Observable
+final class PricingNewCustomSeasonedStateDraft {
+    var referenceSpots: [String: Double] = [:]
+    var runningMin: [String: Double] = [:]
+    var runningMax: [String: Double] = [:]
+    var stateValues: [String: Double] = [:]
+    var observationIndex = 0
+    var elapsedTime = 0.0
+    var alive = true
+    var stateAsOf = ""
+    var stateSourceHash = ""
 }
 
 /// State adapter between the existing generic Custom Product Engine and the
@@ -67,6 +103,17 @@ final class PricingNewCustomProductIntegrationViewModel {
     var rateMarketDataSource: String?
     var rateMarketDataQuality: String?
     var rateOverrideReason = ""
+    var correlationMode = "auto"
+    var correlationMethod = "ewma"
+    var correlationLookback = 252
+    var correlationDecay = 0.97
+    var correlationMinSamples = 60
+    var correlationFallbackPolicy = "prior"
+    var stateMode: PricingNewCustomValuationMode = .inception
+    let seasonedState = PricingNewCustomSeasonedStateDraft()
+    let contractSchedule = PricingNewCustomContractScheduleDraft()
+    var stateSnapshotID: String?
+    var stateSnapshotAsOf: String?
     var isLoading = false
     var showPayoutEditor = false
 
@@ -93,10 +140,209 @@ final class PricingNewCustomProductIntegrationViewModel {
 
     var canAttach: Bool { contractIssues.isEmpty }
 
+    var effectiveCorrelationMode: String {
+        if correlationMode != "auto" { return correlationMode }
+        let fullySnapshotBound = !assetDrafts.isEmpty && assetDrafts.allSatisfy {
+            $0.source == .marketSnapshot
+                && $0.snapshotID != nil && $0.secid != nil
+        }
+        return fullySnapshotBound ? "historical" : "manual"
+    }
+
+    var definitionStateDefaults: [String: Double]? {
+        guard let editor = core.editor else { return nil }
+        var values: [String: Double] = [:]
+        for state in editor.states {
+            let name = state.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, values[name] == nil else { return nil }
+            values[name] = state.initial
+        }
+        return values
+    }
+
+    var resolvedObservationCount: Int? {
+        guard let editor = core.editor else { return nil }
+        let raw = editor.obsSlot.isEmpty
+            ? editor.obsCount : core.slotValues[editor.obsSlot]
+        guard let raw, raw.isFinite, raw.rounded() == raw,
+              raw >= 1, raw <= 10_000 else { return nil }
+        return Int(raw)
+    }
+
+    var resolvedMaturity: Double? {
+        guard let editor = core.editor else { return nil }
+        let raw = editor.matSlot.isEmpty
+            ? editor.matValue : core.slotValues[editor.matSlot]
+        guard let raw, raw.isFinite, raw > 0 else { return nil }
+        return raw
+    }
+
+    func currentSpot(for assetName: String) -> Double? {
+        assetDrafts.first(where: { $0.assetName == assetName })?.spot
+    }
+
+    func currentPerformance(for assetName: String) -> Double? {
+        guard let current = currentSpot(for: assetName), current.isFinite,
+              let reference = seasonedState.referenceSpots[assetName],
+              reference.isFinite, reference > 0 else { return nil }
+        return current / reference
+    }
+
+    func selectStateMode(_ next: PricingNewCustomValuationMode) {
+        guard next != stateMode else { return }
+        stateMode = next
+        if next == .seasoned { resetSeasonedState() }
+    }
+
+    var requiresExplicitContractSchedule: Bool {
+        core.detail?.state == "published" || stateMode == .seasoned
+    }
+
+    func resetContractSchedule() {
+        contractSchedule.effectiveDate = ""
+        contractSchedule.contractualMaturityDate = ""
+        contractSchedule.contractualObservationDates = Array(
+            repeating: "", count: resolvedObservationCount ?? 0)
+        contractSchedule.businessDayConvention = .unadjusted
+        contractSchedule.useLatestCalendarVersion = true
+        contractSchedule.calendarVersion = 1
+        for asset in assetDrafts {
+            asset.fixingPriceBasis = .close
+            asset.fixingSession = ""
+        }
+        if stateMode == .seasoned {
+            seasonedState.observationIndex = 0
+            seasonedState.elapsedTime = 0
+        }
+        invalidateContractScheduleEvidence(recomputeState: false)
+    }
+
+    func addContractualObservationDate() {
+        contractSchedule.contractualObservationDates.append("")
+        invalidateContractScheduleEvidence()
+    }
+
+    func removeContractualObservationDate(at index: Int) {
+        guard contractSchedule.contractualObservationDates.indices.contains(index)
+        else { return }
+        contractSchedule.contractualObservationDates.remove(at: index)
+        invalidateContractScheduleEvidence()
+    }
+
+    func setContractualObservationDate(_ value: String, at index: Int) {
+        guard contractSchedule.contractualObservationDates.indices.contains(index)
+        else { return }
+        contractSchedule.contractualObservationDates[index] = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        invalidateContractScheduleEvidence()
+    }
+
+    func invalidateContractScheduleEvidence(recomputeState: Bool = true) {
+        seasonedState.stateSourceHash = ""
+        if recomputeState { applyClientResolvableScheduleState() }
+    }
+
+    func applyClientResolvableScheduleState() {
+        guard stateMode == .seasoned,
+              let schedule = contractScheduleInput(),
+              let resolved = PricingNewCustomProductContract
+                .unadjustedSeasonedPosition(
+                    schedule: schedule,
+                    stateAsOf: seasonedState.stateAsOf) else { return }
+        seasonedState.observationIndex = resolved.observationIndex
+        seasonedState.elapsedTime = resolved.elapsedTime
+    }
+
+    func resetSeasonedState() {
+        let names = core.assetNames
+        let spots = Dictionary(names.compactMap { name -> (String, Double)? in
+            guard let spot = currentSpot(for: name), spot.isFinite, spot > 0
+            else { return nil }
+            return (name, spot)
+        }, uniquingKeysWith: { first, _ in first })
+        seasonedState.referenceSpots = spots
+        seasonedState.runningMin = Dictionary(
+            uniqueKeysWithValues: names.map { ($0, 1.0) })
+        seasonedState.runningMax = Dictionary(
+            uniqueKeysWithValues: names.map { ($0, 1.0) })
+        seasonedState.stateValues = definitionStateDefaults ?? [:]
+        seasonedState.observationIndex = 0
+        seasonedState.elapsedTime = 0.0
+        seasonedState.alive = true
+        seasonedState.stateAsOf = stateSnapshotAsOf ?? ""
+        seasonedState.stateSourceHash = ""
+        applyClientResolvableScheduleState()
+    }
+
+    func contractScheduleInput() -> PricingNewCustomContractSchedule? {
+        let effective = contractSchedule.effectiveDate
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let maturity = contractSchedule.contractualMaturityDate
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let observations = contractSchedule.contractualObservationDates.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let hasExplicitDate = !effective.isEmpty || !maturity.isEmpty
+            || observations.contains(where: { !$0.isEmpty })
+        guard hasExplicitDate else { return nil }
+        let bindings = assetDrafts.sorted { $0.index < $1.index }.map { asset in
+            PricingNewCustomFixingBinding(
+                assetName: asset.assetName,
+                secid: asset.secid?.trimmingCharacters(
+                    in: .whitespacesAndNewlines) ?? "",
+                priceBasis: asset.fixingPriceBasis,
+                board: nonEmpty(asset.board),
+                session: asset.fixingSession.trimmingCharacters(
+                    in: .whitespacesAndNewlines),
+                source: .moex,
+                missingFixingPolicy: .error)
+        }
+        return PricingNewCustomContractSchedule(
+            schemaVersion: 1,
+            effectiveDate: effective,
+            contractualMaturityDate: maturity,
+            contractualObservationDates: observations,
+            businessDayConvention: contractSchedule.businessDayConvention,
+            calendarID: .moexStock,
+            calendarVersion: contractSchedule.useLatestCalendarVersion
+                ? nil : contractSchedule.calendarVersion,
+            dayCountConvention: .act365F,
+            valuationCutoff: .postClosePostEvents,
+            fixingBindings: bindings)
+    }
+
+    func valuationStateInput() -> PricingNewCustomValuationStateInput? {
+        guard stateMode == .seasoned else { return nil }
+        let names = core.assetNames
+        let current = Dictionary(
+            names.compactMap { name -> (String, Double)? in
+                guard let spot = currentSpot(for: name) else { return nil }
+                return (name, spot)
+            }, uniquingKeysWith: { first, _ in first })
+        let sourceHash = nonEmpty(seasonedState.stateSourceHash)?.lowercased()
+        return PricingNewCustomValuationStateInput(
+            schemaVersion: 1,
+            stateContract: "custom_ast_seasoned_state_v1",
+            mode: PricingNewCustomValuationMode.seasoned.rawValue,
+            assetNames: names,
+            currentSpots: current,
+            referenceSpots: seasonedState.referenceSpots,
+            observationIndex: seasonedState.observationIndex,
+            stateValues: seasonedState.stateValues,
+            runningMin: seasonedState.runningMin,
+            runningMax: seasonedState.runningMax,
+            elapsedTime: seasonedState.elapsedTime,
+            alive: seasonedState.alive,
+            stateAsOf: seasonedState.stateAsOf,
+            stateSourceHash: sourceHash)
+    }
+
     func load() async {
         isLoading = true
         await core.load()
         synchronizeAssetDrafts(reset: true)
+        resetContractSchedule()
+        await refreshValuationContext()
         isLoading = false
     }
 
@@ -104,30 +350,35 @@ final class PricingNewCustomProductIntegrationViewModel {
         await core.select(id)
         clearRateEvidence()
         synchronizeAssetDrafts(reset: true)
+        resetLifecycleState()
     }
 
     func create(from template: CustomProductSummary) async {
         await core.createFromTemplate(template)
         clearRateEvidence()
         synchronizeAssetDrafts(reset: true)
+        resetLifecycleState()
     }
 
     func createAdvanced() async {
         await core.createAdvanced()
         clearRateEvidence()
         synchronizeAssetDrafts(reset: true)
+        resetLifecycleState()
         showPayoutEditor = true
     }
 
     func saveAndCompile() async {
         await core.saveAndCompile()
         synchronizeAssetDrafts(reset: false)
+        resetLifecycleState()
     }
 
     func compile() async {
         guard let id = core.selectedID else { return }
         await core.lifecycle { try await self.core.client.customCompile(id) }
         synchronizeAssetDrafts(reset: false)
+        resetLifecycleState()
     }
 
     func newVersion() async {
@@ -137,6 +388,7 @@ final class PricingNewCustomProductIntegrationViewModel {
         }
         await core.select(id)
         synchronizeAssetDrafts(reset: false)
+        resetLifecycleState()
         showPayoutEditor = true
     }
 
@@ -172,10 +424,52 @@ final class PricingNewCustomProductIntegrationViewModel {
         environmentID = normalized
         for draft in assetDrafts { draft.resetToManual() }
         clearRateEvidence()
+        stateSnapshotID = nil
+        stateSnapshotAsOf = nil
+        seasonedState.stateAsOf = ""
+        seasonedState.stateSourceHash = ""
+    }
+
+    /// Resolve the exact environment snapshot and its authoritative valuation
+    /// date through existing typed endpoints. Snapshot identifiers are opaque;
+    /// no date is inferred from their spelling.
+    func refreshValuationContext() async {
+        let requestedEnvironment = environmentID
+        do {
+            let environments = try await core.client.environments()
+            let response = try await core.client.snapshots()
+            guard requestedEnvironment == environmentID else { return }
+            let pinned = environments.first {
+                $0.envID.caseInsensitiveCompare(requestedEnvironment)
+                    == .orderedSame
+            }?.snapshotID
+            let resolvedID = nonEmpty(pinned) ?? response.active
+            let resolved = response.snapshots.first { $0.snapshotID == resolvedID }
+            stateSnapshotID = resolvedID
+            stateSnapshotAsOf = nonEmpty(resolved?.valuationDate)
+            if stateMode == .seasoned {
+                let nextAsOf = stateSnapshotAsOf ?? ""
+                if seasonedState.stateAsOf != nextAsOf {
+                    seasonedState.stateAsOf = nextAsOf
+                    seasonedState.stateSourceHash = ""
+                    applyClientResolvableScheduleState()
+                }
+            }
+        } catch {
+            guard requestedEnvironment == environmentID else { return }
+            stateSnapshotID = nil
+            stateSnapshotAsOf = nil
+            if stateMode == .seasoned {
+                seasonedState.stateAsOf = ""
+                seasonedState.stateSourceHash = ""
+            }
+        }
     }
 
     func synchronizeAssetDrafts(reset: Bool) {
         let names = core.assetNames
+        let previousNames = assetDrafts.sorted { $0.index < $1.index }
+            .map(\.assetName)
         core.synchronizeMarketInputs(assetCount: names.count)
         let old = reset ? [] : assetDrafts
         assetDrafts = names.enumerated().map { index, name in
@@ -187,6 +481,9 @@ final class PricingNewCustomProductIntegrationViewModel {
                 return existing
             }
             return PricingNewCustomAssetDraft(index: index, assetName: name)
+        }
+        if previousNames != names {
+            seasonedState.stateSourceHash = ""
         }
     }
 
@@ -235,6 +532,7 @@ final class PricingNewCustomProductIntegrationViewModel {
             asset.category = facts.category
             asset.label = facts.label
             asset.currency = normalizedCurrency(facts.currency)
+            asset.board = nonEmpty(facts.board)
             asset.snapshotID = nonEmpty(facts.snapshotID)
             asset.marketDataSource = nonEmpty(facts.marketDataSource)
             asset.marketDataQuality = nonEmpty(facts.marketDataQuality)
@@ -247,6 +545,7 @@ final class PricingNewCustomProductIntegrationViewModel {
             asset.overrideReason = ""
             asset.hits = []
             asset.query = ""
+            invalidateContractScheduleEvidence()
 
             if let rate = facts.facts["r_zero"] ?? nil {
                 let firstResolution = rateSnapshotID == nil
@@ -266,6 +565,7 @@ final class PricingNewCustomProductIntegrationViewModel {
 
     func useManualInput(for asset: PricingNewCustomAssetDraft) {
         asset.resetToManual()
+        invalidateContractScheduleEvidence()
     }
 
     func makeAttachment() throws -> PricingNewCustomProductAttachment {
@@ -282,6 +582,7 @@ final class PricingNewCustomProductIntegrationViewModel {
                 category: draft.category,
                 label: draft.label,
                 currency: draft.currency,
+                board: draft.board,
                 spot: draft.spot,
                 volatility: value(core.marketSigmas, at: index,
                                   fallback: core.marketSigma),
@@ -318,10 +619,30 @@ final class PricingNewCustomProductIntegrationViewModel {
                 overrideReason: nonEmpty(rateOverrideReason)),
             assets: assets,
             correlation: core.marketCorrelation,
+            correlationCalibration: PricingNewCorrelationCalibrationInput(
+                mode: correlationMode,
+                method: correlationMethod,
+                lookback: correlationLookback,
+                decay: correlationDecay,
+                minSamples: correlationMinSamples,
+                fallbackPolicy: correlationFallbackPolicy),
             paths: core.nSims,
             steps: core.mcSteps,
             seed: core.seed,
-            editorDirty: core.isEditorDirty)
+            editorDirty: core.isEditorDirty,
+            stateMode: stateMode,
+            valuationState: valuationStateInput(),
+            contractSchedule: contractScheduleInput(),
+            definitionStateDefaults: definitionStateDefaults,
+            resolvedObservationCount: resolvedObservationCount,
+            resolvedMaturity: resolvedMaturity,
+            expectedStateAsOf: stateSnapshotAsOf)
+    }
+
+    private func resetLifecycleState() {
+        stateMode = .inception
+        resetContractSchedule()
+        resetSeasonedState()
     }
 
     private func clearRateEvidence() {

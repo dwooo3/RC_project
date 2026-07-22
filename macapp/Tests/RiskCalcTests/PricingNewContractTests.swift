@@ -58,8 +58,56 @@ final class PricingNewContractTests: XCTestCase {
         XCTAssertFalse(risk.provenance.globalPortfolioUsed)
         XCTAssertEqual(risk.provenance.portfolioSource, "request_legs_only")
         XCTAssertNil(risk.horizonMethod)
+        XCTAssertNil(risk.historicalStateMode)
         XCTAssertNil(risk.modelDiagnostics)
         XCTAssertNil(risk.provenance.customRepricing)
+    }
+
+    func testRiskRequestEncodesTypedHistoricalStateMode() throws {
+        let body = PricingNewRiskBody(
+            confidence: 0.99,
+            window: 500,
+            horizon: 10,
+            model: "historical_full_reprice",
+            historicalStateMode: .actualTradeBackcast,
+            nSims: 100_000,
+            seed: 42)
+
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(body))
+                as? [String: Any])
+
+        XCTAssertEqual(json["historical_state_mode"] as? String,
+                       "actual_trade_backcast")
+        XCTAssertNil(json["historicalStateMode"])
+    }
+
+    @MainActor
+    func testHistoricalStateModeDefaultsCurrentUntilExplicitSelection() {
+        let vm = PricingNewWorkspaceViewModel()
+
+        XCTAssertEqual(vm.effectiveHistoricalStateMode, .currentStateHypPL)
+        XCTAssertFalse(vm.historicalStateModeWasExplicitlySelected)
+
+        vm.selectHistoricalStateMode(.actualTradeBackcast)
+
+        XCTAssertEqual(vm.effectiveHistoricalStateMode, .actualTradeBackcast)
+        XCTAssertTrue(vm.historicalStateModeWasExplicitlySelected)
+    }
+
+    @MainActor
+    func testCustomASTDefaultsToActualBackcastUnlessUserOverrides() throws {
+        let product = try JSONDecoder().decode(
+            WsProductModel.self,
+            from: Data(#"{"id":"custom_product","name":"Custom","asset_class":"hybrid","group":"Structured","note":"","capturable":false,"engines":[]}"#.utf8))
+        let vm = PricingNewWorkspaceViewModel()
+        vm.legs = [PricingNewLegDraft(label: "Live custom", product: product)]
+
+        XCTAssertEqual(vm.effectiveHistoricalStateMode, .actualTradeBackcast)
+        XCTAssertFalse(vm.historicalStateModeWasExplicitlySelected)
+
+        vm.selectHistoricalStateMode(.currentStateHypPL)
+        XCTAssertEqual(vm.effectiveHistoricalStateMode, .currentStateHypPL)
     }
 
     func testTransientRiskDecodesOperationalAndCustomRepricingEvidence() throws {
@@ -68,6 +116,7 @@ final class PricingNewContractTests: XCTestCase {
           "scope":"pricing_new_transient_book","partial":false,
           "confidence":0.99,"window":500,"horizon":1,
           "horizon_method":"none",
+          "historical_state_mode":"actual_trade_backcast",
           "model":"historical_full_reprice","model_label":"Historical (full reprice)",
           "model_diagnostics":{"method":"historical_full_reprice"},
           "currency":"RUB","portfolio_value":1000,"positions":1,
@@ -103,6 +152,7 @@ final class PricingNewContractTests: XCTestCase {
         let execution = try XCTUnwrap(custom["execution"]?.objectValue)
 
         XCTAssertEqual(risk.horizonMethod, "none")
+        XCTAssertEqual(risk.historicalStateMode, "actual_trade_backcast")
         XCTAssertEqual(risk.modelDiagnostics?.objectValue?["method"]?.stringValue,
                        "historical_full_reprice")
         XCTAssertEqual(risk.provenance.valuationDate, "2026-07-16")

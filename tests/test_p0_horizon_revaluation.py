@@ -45,6 +45,11 @@ def test_horizon_aggregates_factors_and_uses_window_end_date():
     assert aggregated["eq"].tolist() == pytest.approx([3.0, 5.0, 7.0])
     assert aggregated["eq_names"]["EQ"].tolist() == pytest.approx(
         [3.0, 5.0, 7.0])
+    paths = aggregated["spot_return_paths"]
+    assert paths["dates"] == [["d1", "d2"], ["d2", "d3"], ["d3", "d4"]]
+    assert paths["fallback_log_returns"] == [[1.0, 2.0], [2.0, 3.0], [3.0, 4.0]]
+    assert paths["log_returns_by_factor"]["EQ"] == paths[
+        "fallback_log_returns"]
 
 
 def test_horizon_reprices_once_instead_of_summing_daily_nonlinear_pnl():

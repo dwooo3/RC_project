@@ -20,6 +20,9 @@ from api.pricing_workstation import (
 )
 from domain.market_data import MarketDataSnapshot, MarketDataSource
 from domain.portfolio import Position
+from infra.db.market_data_db import MarketDataDB
+from infra.moex_calendar import calendar_payload_hash
+from services.market_data_service import MarketDataService
 from services.portfolio_service import PortfolioService
 from services.pricing_service import PricingService
 
@@ -30,6 +33,39 @@ def _snapshot() -> MarketDataSnapshot:
         valuation_date=date(2026, 7, 18),
         source=MarketDataSource.MANUAL,
         quality="MANUAL",
+    )
+
+
+def _snapshot_on(value: date) -> MarketDataSnapshot:
+    return MarketDataSnapshot(
+        snapshot_id="SNAP-CUSTOM",
+        valuation_date=value,
+        source=MarketDataSource.MANUAL,
+        quality="MANUAL",
+    )
+
+
+def _stock_calendar(db: MarketDataDB, start: date, end: date) -> dict:
+    days = []
+    cursor = start
+    while cursor <= end:
+        days.append({
+            "tradedate": cursor.isoformat(),
+            "is_traded": int(cursor.weekday() < 5),
+            "trade_session_date": None,
+            "reason": None if cursor.weekday() < 5 else "H",
+            "updatetime": "2026-07-20 23:00:00",
+        })
+        cursor = date.fromordinal(cursor.toordinal() + 1)
+    digest = calendar_payload_hash(
+        calendar_id="MOEX_STOCK", market="stock",
+        from_date=start, till_date=end, days=days,
+    )
+    return db.save_trading_calendar_version(
+        calendar_id="MOEX_STOCK", market="stock",
+        from_date=start, till_date=end, days=days,
+        source="MOEX", source_url="https://apim.moex.com/iss/calendars/stock",
+        payload_hash=digest, fetched_at="2026-07-20T23:01:00+00:00",
     )
 
 
@@ -147,6 +183,154 @@ def test_definition_hash_mismatch_fails_closed(custom_store):
         )
 
 
+def test_custom_attachment_resolves_contractual_dates_on_pinned_moex_calendar(
+    custom_store,
+):
+    detail = custom_store.get("phoenix_autocall")
+    payload = json.loads(_attachment(detail))
+    payload["slots"]["n_obs"] = 2.0
+    payload["slots"]["T"] = 0.5
+    payload["contract_schedule"] = {
+        "schema_version": 1,
+        "effective_date": "2026-07-20",
+        "contractual_maturity_date": "2026-08-02",
+        "contractual_observation_dates": ["2026-07-26", "2026-08-02"],
+        "business_day_convention": "MODIFIED_FOLLOWING",
+        "calendar_id": "MOEX_STOCK",
+        "calendar_version": 1,
+        "day_count_convention": "ACT/365F",
+        "valuation_cutoff": "POST_CLOSE_POST_EVENTS",
+        "fixing_bindings": [{
+            "asset_name": "S",
+            "secid": "SBER",
+            "price_basis": "CLOSE",
+            "board": "TQBR",
+            "session": "",
+            "source": "MOEX",
+            "missing_fixing_policy": "error",
+        }],
+    }
+    db = MarketDataDB(":memory:")
+    db.init_schema()
+    _stock_calendar(db, date(2026, 7, 20), date(2026, 8, 3))
+    market = MarketDataService(market_db=db)
+    service = PricingService(market_data=market)
+
+    result = price_ws(
+        service,
+        _snapshot_on(date(2026, 7, 20)),
+        "custom_product",
+        "custom_mc",
+        {"attachment_json": json.dumps(payload)},
+    )
+
+    assert result["errors"] == []
+    resolved = result["resolved_inputs"]
+    schedule = resolved["contract_schedule"]
+    assert schedule["contractual_observation_dates"] == [
+        "2026-07-26", "2026-08-02"]
+    assert schedule["observation_dates"] == ["2026-07-27", "2026-08-03"]
+    assert schedule["maturity_date"] == "2026-08-03"
+    assert schedule["calendar"]["calendar_id"] == "MOEX_STOCK"
+    assert schedule["calendar"]["version"] == "1"
+    assert len(schedule["calendar"]["payload_hash"]) == 64
+    assert resolved["fixing_bindings"]["bindings"][0] == {
+        "asset_name": "S",
+        "secid": "SBER",
+        "factor_id": "SBER:price",
+        "price_basis": "CLOSE",
+        "board": "TQBR",
+        "session": "",
+        "source": "MOEX",
+        "missing_fixing_policy": "error",
+    }
+    assert resolved["inception_seed"]["effective_date"] == "2026-07-20"
+    assert resolved["valuation_state"]["instance_schedule_hash"] == \
+        schedule["schedule_hash"]
+
+
+def test_multi_asset_attachment_binds_historical_correlation_calibration(
+    custom_store, monkeypatch,
+):
+    definition = {
+        "name": "Two asset historical correlation",
+        "description": "integration test",
+        "author": "maker",
+        "assets": ["A", "B"],
+        "slots": {}, "state": {},
+        "schedule": {"observations": 1, "maturity": 1.0},
+        "observation_program": [],
+        "maturity_program": [{
+            "action": "pay", "amount": {"node": "worst_of"},
+        }],
+    }
+    created = custom_store.create(definition=definition, author="maker")
+    custom_store.compile(created["id"])
+    custom_store.submit(created["id"], "maker")
+    custom_store.approve(created["id"], "checker")
+    detail = custom_store.publish(created["id"])
+    payload = {
+        "schema_version": 1, "product_id": detail["id"],
+        "product_name": definition["name"], "definition_version": 1,
+        "definition_state": "published",
+        "definition_hash": detail["definition_hash"],
+        "engine_id": "custom_mc_multi_gbm", "slots": {},
+        "market": {
+            "rate": {"value": 0.1, "source": "manual_override",
+                     "override_reason": "test"},
+            "assets": [
+                {"index": index, "asset_name": name, "secid": secid,
+                 "category": "equities", "currency": "RUB", "spot": spot,
+                 "volatility": 0.2, "carry_yield": 0.0,
+                 "source": "market_snapshot", "snapshot_id": "SNAP-CUSTOM"}
+                for index, (name, secid, spot) in enumerate(
+                    [("A", "AAA", 100.0), ("B", "BBB", 200.0)])
+            ],
+            "correlation": [[1.0, 0.25], [0.25, 1.0]],
+            "correlation_calibration": {
+                "mode": "historical", "method": "ewma", "lookback": 120,
+                "decay": 0.96, "min_samples": 40,
+                "fallback_policy": "error",
+            },
+        },
+        "numerical": {"paths": 1_000, "steps": 16, "seed": 7},
+        "payoff_basis": "normalized_notional",
+        "state_mode": "inception", "state_source": "explicit_assumption",
+        "limitations": [],
+    }
+    observed = {}
+
+    def calibrated(factor_ids, **kwargs):
+        observed["factor_ids"] = factor_ids
+        observed.update(kwargs)
+        return {
+            "factor_ids": factor_ids, "as_of": "2026-07-18",
+            "lookback": 120, "method": "ewma", "decay": 0.96,
+            "min_samples": 40, "fallback_policy": "error",
+            "raw_matrix": [[1.0, 0.6], [0.6, 1.0]],
+            "matrix": [[1.0, 0.6], [0.6, 1.0]],
+            "matrix_hash": "e" * 64, "adjustment_frobenius": 0.0,
+            "raw_min_eigenvalue": 0.4, "adjusted_min_eigenvalue": 0.4,
+            "adjustment_material": False, "pairs": [], "series": [],
+            "fallback": False,
+        }
+
+    service = PricingService()
+    monkeypatch.setattr(service.market_data, "historical_correlation", calibrated)
+    result = price_ws(
+        service, _snapshot(), "custom_product", "custom_mc",
+        {"attachment_json": json.dumps(payload)},
+    )
+
+    assert result["errors"] == []
+    assert observed["factor_ids"] == ["AAA:price", "BBB:price"]
+    resolved = result["resolved_inputs"]
+    assert resolved["correlation"] == [[1.0, 0.6], [0.6, 1.0]]
+    assert resolved["correlation_evidence"][
+        "historical_estimation_bound"] is True
+    assert resolved["correlation_evidence"]["matrix_hash"] == "e" * 64
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
@@ -166,6 +350,57 @@ def test_attachment_contract_is_checked_against_exact_definition(
     mutate(payload)
 
     with pytest.raises(ValueError, match=message):
+        price_ws(
+            PricingService(), _snapshot(), "custom_product", "custom_mc",
+            {"attachment_json": json.dumps(payload)},
+        )
+
+
+def _seasoned_attachment(detail: dict, *, market_spot: float = 310.0,
+                         state_spot: float = 310.0) -> dict:
+    payload = json.loads(_attachment(detail))
+    payload["state_mode"] = "seasoned"
+    payload["state_source"] = "seasoned_observation"
+    payload["market"]["assets"][0]["spot"] = market_spot
+    payload["valuation_state"] = {
+        "schema_version": 1,
+        "state_contract": "custom_ast_seasoned_state_v1",
+        "mode": "seasoned",
+        "asset_names": ["S"],
+        "current_spots": {"S": state_spot},
+        "reference_spots": {"S": 300.0},
+        "observation_index": 1,
+        "state_values": {"memory": 0.0},
+        "running_min": {"S": 0.90},
+        "running_max": {"S": 1.05},
+        "elapsed_time": 0.30,
+        "alive": True,
+        "state_as_of": "2026-07-18",
+        "state_source_hash": "a" * 64,
+    }
+    return payload
+
+
+def test_seasoned_attachment_prices_on_one_bound_market_state(custom_store):
+    detail = custom_store.get("phoenix_autocall")
+    result = price_ws(
+        PricingService(), _snapshot(), "custom_product", "custom_mc",
+        {"attachment_json": json.dumps(_seasoned_attachment(detail))},
+    )
+
+    assert result["errors"] == []
+    state = result["resolved_inputs"]["valuation_state"]
+    assert state["mode"] == "seasoned"
+    assert state["current_spots"] == {"S": 310.0}
+    assert state["state_source_hash"] == "a" * 64
+
+
+def test_seasoned_attachment_rejects_state_market_spot_split(custom_store):
+    detail = custom_store.get("phoenix_autocall")
+    payload = _seasoned_attachment(
+        detail, market_spot=310.0, state_spot=309.0)
+
+    with pytest.raises(ValueError, match="must equal the bound market asset spot"):
         price_ws(
             PricingService(), _snapshot(), "custom_product", "custom_mc",
             {"attachment_json": json.dumps(payload)},
@@ -463,6 +698,12 @@ def test_custom_component_exposure_taxonomy_and_gamma_semantics(
             name: {"delta": 1.0, "gamma": 0.1, "vega": 0.01}
             for name in request["asset_names"]
         },
+        "parallel_gamma": 0.8,
+        "parallel_cross_gamma": 0.4,
+        "parallel_diagonal_gamma": 0.4,
+        "cross_gamma_matrix": (np.eye(4) * 0.1).tolist(),
+        "cross_gamma_pairs": [],
+        "gamma_convention": "d2PV/dx2 for parallel relative spot shock",
     })
     position = Position(
         id="typed", instrument="custom_product", quantity=1.0,
@@ -478,10 +719,12 @@ def test_custom_component_exposure_taxonomy_and_gamma_semantics(
     assert exposures["credit.ru000a.price"].bucket == "Credit"
     assert exposures["future.siu6.spot"].bucket == "Equity"
     assert exposures["commodity.gold.spot"].bucket == "Commodity"
-    assert position.gamma == pytest.approx(0.4)
+    assert position.gamma == pytest.approx(0.8)
     assert position.metadata["custom_product_evidence"]["gamma_aggregation"] \
-        == "sum_diagonal_component_gammas_cross_gamma_excluded"
-    assert any("cross-gamma" in warning for warning in position.warnings)
+        == "parallel_relative_spot_shock"
+    assert position.metadata["custom_product_evidence"][
+        "parallel_cross_gamma"] == pytest.approx(0.4)
+    assert not any("cross-gamma" in warning for warning in position.warnings)
 
 
 def test_custom_historical_profile_uses_paired_1000_path_base_cache(
@@ -570,8 +813,16 @@ def test_custom_product_runs_through_transient_historical_risk_pipeline(
                 dS_by_name={"SBER": float(shock)},
                 spot_shock_convention="log",
                 custom_repricing_profile=custom_repricing_profile,
+                horizon=1,
+                custom_path_scenario={
+                    "schema": "historical-custom-spot-path-v1",
+                    "day_count_basis": 252,
+                    "dates": [f"2026-01-{index + 1:02d}"],
+                    "fallback_log_returns": [float(shock)],
+                    "log_returns_by_factor": {"SBER": [float(shock)]},
+                },
             )
-            for shock in shocks
+            for index, shock in enumerate(shocks)
         ]
         pnl = [item["pnl"] for item in repriced]
         return {
@@ -592,6 +843,26 @@ def test_custom_product_runs_through_transient_historical_risk_pipeline(
                     item["base_value_source"] for item in repriced
                 }),
                 "scenario_count": len(repriced),
+                "path_roll_applied": True,
+                "path_days": 1,
+                "path_day_count_basis": 252,
+                "path_roll_contract": "historical-custom-spot-path-v1",
+                "pnl_convention": (
+                    "horizon_cashflows_plus_end_pv_minus_current_base_pv"),
+                "path_roll_hashes": [
+                    item["custom_path_roll_evidence"][0]["path_hash"]
+                    for item in repriced
+                ],
+                "path_roll_evidence": [
+                    {
+                        "path_hash": item["custom_path_roll_evidence"][0]["path_hash"],
+                        "transition_hash": item["custom_path_roll_evidence"][0]["transition_hash"],
+                        "cashflow_ledger_hash": item["custom_path_roll_evidence"][0]["cashflow_ledger_hash"],
+                        "output_state_hash": item["custom_path_roll_evidence"][0]["output_state_hash"],
+                        "terminal": item["custom_path_roll_evidence"][0]["terminal"],
+                    }
+                    for item in repriced
+                ],
             },
             "scenario_matrix_hash": "c" * 64,
             "horizon_method": "none",
@@ -620,7 +891,7 @@ def test_custom_product_runs_through_transient_historical_risk_pipeline(
     assert "paired custom risk profile" in result["data_quality"]
 
 
-def test_custom_product_blocks_multi_day_risk_before_history(
+def test_custom_product_accepts_multi_day_risk_with_path_roll_evidence(
     custom_store, monkeypatch,
 ):
     detail = custom_store.get("phoenix_autocall")
@@ -629,20 +900,119 @@ def test_custom_product_blocks_multi_day_risk_before_history(
     ctx = SimpleNamespace(
         portfolio=base, snapshot=_snapshot(), audit=base.audit,
     )
-    monkeypatch.setattr(
-        pricing_new_risk.marketrisk,
-        "hyppl",
-        lambda *_args, **_kwargs: pytest.fail(
-            "history must not run without custom time-roll semantics"),
+    observed = {}
+
+    def fake_hyppl(_ctx, window, frm=None, till=None, portfolio=None,
+                   horizon=1, **_kwargs):
+        observed["horizon"] = horizon
+        return {
+            "dates": ["2026-01-10", "2026-01-20"],
+            "pnl": np.asarray([-2.0, 3.0]),
+            "factors": ["EQ:SBER"],
+            "factor_warnings": [], "factor_diagnostics": {},
+            "reprice_errors": [], "reprice_warnings": [],
+            "repricing_evidence": {
+                "profile": "custom_hist_crn_v1", "inner_paths": 1_000,
+                "common_random_numbers": True, "paired_profile_base": True,
+                "base_value": 100.0, "scenario_count": 2,
+                "path_roll_applied": True, "path_days": 10,
+                "path_day_count_basis": 252,
+                "path_roll_contract": "historical-custom-spot-path-v1",
+                "pnl_convention": (
+                    "horizon_cashflows_plus_end_pv_minus_current_base_pv"),
+                "path_roll_hashes": ["a" * 64, "b" * 64],
+                "path_roll_evidence": [
+                    {
+                        "path_hash": "a" * 64,
+                        "transition_hash": "d" * 64,
+                        "cashflow_ledger_hash": "e" * 64,
+                        "output_state_hash": "f" * 64,
+                        "terminal": False,
+                    },
+                    {
+                        "path_hash": "b" * 64,
+                        "transition_hash": "1" * 64,
+                        "cashflow_ledger_hash": "2" * 64,
+                        "output_state_hash": "3" * 64,
+                        "terminal": False,
+                    },
+                ],
+            },
+            "scenario_matrix_hash": "c" * 64,
+            "horizon_method": "factor_aggregation_full_reprice",
+        }
+
+    monkeypatch.setattr(pricing_new_risk.marketrisk, "hyppl", fake_hyppl)
+    result = pricing_new_risk.calculate_transient_book_risk(
+        ctx, [leg], window=250, horizon=10)
+
+    assert observed["horizon"] == 10
+    assert result["horizon"] == 10
+    assert result["n_scenarios"] == 2
+
+
+def test_portfolio_full_reprice_applies_sequential_ten_day_custom_path(
+    custom_store,
+):
+    detail = custom_store.get("phoenix_autocall")
+    leg, _book_result = _priced_risk_leg(detail)
+    instrument, params, description = to_position(
+        "custom_product", leg["params"], engine_id="custom_mc")
+    service = PortfolioService(snapshot=_snapshot())
+    service.add(Position(
+        id="custom-path", instrument=instrument, quantity=1.0,
+        currency="RUB", description=description, params=params,
+    ))
+    daily = float(np.log(1.10) / 10.0)
+    result = service.full_reprice_pnl(
+        dS=0.0,
+        dS_by_name={"SBER": float(np.log(1.10))},
+        spot_shock_convention="log",
+        custom_repricing_profile="custom_hist_crn_v1",
+        horizon=10,
+        custom_path_scenario={
+            "schema": "historical-custom-spot-path-v1",
+            "day_count_basis": 252,
+            "dates": [f"2026-01-{day:02d}" for day in range(1, 11)],
+            "fallback_log_returns": [daily] * 10,
+            "log_returns_by_factor": {"SBER": [daily] * 10},
+        },
     )
 
-    with pytest.raises(pricing_new_risk.PricingNewRiskError) as caught:
-        pricing_new_risk.calculate_transient_book_risk(
-            ctx, [leg], window=250, horizon=10)
+    assert result["valid"] is True
+    assert result["horizon"] == 10
+    evidence = result["custom_path_roll_evidence"][0]
+    assert evidence["requested_days"] == 10
+    assert evidence["end_elapsed_time"] == pytest.approx(10 / 252)
+    assert evidence["path_hash"]
+    assert evidence["transition_hash"]
 
-    assert caught.value.code == "custom_horizon_time_roll_unsupported"
-    assert caught.value.details["custom_legs"] == ["custom"]
-    assert caught.value.details["requested_horizon"] == 10
+
+def test_portfolio_custom_path_endpoint_mismatch_fails_closed(custom_store):
+    detail = custom_store.get("phoenix_autocall")
+    leg, _book_result = _priced_risk_leg(detail)
+    instrument, params, description = to_position(
+        "custom_product", leg["params"], engine_id="custom_mc")
+    service = PortfolioService(snapshot=_snapshot())
+    service.add(Position(
+        id="custom-path-mismatch", instrument=instrument, quantity=1.0,
+        currency="RUB", description=description, params=params,
+    ))
+
+    with pytest.raises(ValueError, match="differs from endpoint shock"):
+        service.full_reprice_pnl(
+            dS_by_name={"SBER": float(np.log(1.10))},
+            spot_shock_convention="log",
+            custom_repricing_profile="custom_hist_crn_v1",
+            horizon=2,
+            custom_path_scenario={
+                "schema": "historical-custom-spot-path-v1",
+                "day_count_basis": 252,
+                "dates": ["2026-01-01", "2026-01-02"],
+                "fallback_log_returns": [0.0, 0.0],
+                "log_returns_by_factor": {"SBER": [0.0, 0.0]},
+            },
+        )
 
 
 def test_custom_product_blocks_more_than_500_scenarios_before_valuation(

@@ -104,6 +104,7 @@ extension ContractDecodeTests {
     func testDecodeUnderlyingFacts() throws {
         let f = try JSONDecoder().decode(UnderlyingFacts.self, from: load("ws_underlying"))
         XCTAssertEqual(f.secid, "SBER")
+        XCTAssertEqual(f.board, "TQBR")
         XCTAssertNotNil(f.facts["spot"] ?? nil)
         // null facts (atm_iv) must decode, not throw
         XCTAssertTrue(f.facts.keys.contains("atm_iv"))

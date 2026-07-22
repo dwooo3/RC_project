@@ -54,6 +54,15 @@ def _iso_day(value: Any) -> str:
         raise ValueError(f"expected ISO date or datetime, got {value!r}") from exc
 
 
+def _sha256_token(value: Any, *, field: str = "payload_hash") -> str:
+    """Return one canonical SHA-256 digest or fail before persistence."""
+    token = str(value or "").strip().lower()
+    if (len(token) != 64
+            or any(character not in "0123456789abcdef" for character in token)):
+        raise ValueError(f"{field} must be a SHA-256 hex digest")
+    return token
+
+
 # table -> (columns, conflict-key columns) for upserts
 _TABLES = {
     "instruments": (
@@ -314,6 +323,35 @@ def _schema_statements(dialect: str) -> list[str]:
             status TEXT NOT NULL, production_eligible INTEGER NOT NULL, completeness_pct REAL,
             freshness_days INTEGER, alerts_json TEXT, checks_json TEXT)""",
         "CREATE INDEX IF NOT EXISTS idx_validation_reports_snap ON market_data_validation_reports (snapshot_id, validation_ts)",
+        # Governed MOEX trading-calendar snapshots.  A version is immutable:
+        # re-ingesting identical semantic content reuses its payload hash,
+        # while an exchange revision cuts a new version and preserves the old
+        # rows for calculation replay.
+        """CREATE TABLE IF NOT EXISTS trading_calendar_versions (
+            calendar_id TEXT NOT NULL, version INTEGER NOT NULL, market TEXT NOT NULL,
+            from_date TEXT NOT NULL, till_date TEXT NOT NULL, source TEXT NOT NULL,
+            source_url TEXT NOT NULL, payload_hash TEXT NOT NULL, fetched_at TEXT NOT NULL,
+            source_updated_at TEXT, row_count INTEGER NOT NULL, created_at TEXT NOT NULL,
+            PRIMARY KEY (calendar_id, version), UNIQUE (calendar_id, payload_hash))""",
+        "CREATE INDEX IF NOT EXISTS idx_trading_calendar_versions_latest "
+        "ON trading_calendar_versions(calendar_id, version)",
+        """CREATE TABLE IF NOT EXISTS trading_calendar_days (
+            calendar_id TEXT NOT NULL, version INTEGER NOT NULL, tradedate TEXT NOT NULL,
+            is_traded INTEGER NOT NULL, trade_session_date TEXT, reason TEXT,
+            updatetime TEXT, PRIMARY KEY (calendar_id, version, tradedate))""",
+        "CREATE INDEX IF NOT EXISTS idx_trading_calendar_days_range "
+        "ON trading_calendar_days(calendar_id, version, tradedate)",
+        # Exact contractual fixings used by historical state reconstruction.
+        # Empty board/session strings are canonical identities (rather than
+        # NULLs, whose uniqueness semantics differ across SQL backends).
+        """CREATE TABLE IF NOT EXISTS contract_fixings (
+            factor_id TEXT NOT NULL, observed_date TEXT NOT NULL, value REAL NOT NULL,
+            price_basis TEXT NOT NULL, board TEXT NOT NULL DEFAULT '',
+            session TEXT NOT NULL DEFAULT '', source TEXT NOT NULL,
+            fetched_at TEXT NOT NULL, payload_hash TEXT NOT NULL,
+            PRIMARY KEY (factor_id, observed_date, price_basis, board, session, source))""",
+        "CREATE INDEX IF NOT EXISTS idx_contract_fixings_window "
+        "ON contract_fixings(factor_id, observed_date)",
     ]
 
 
@@ -1118,6 +1156,509 @@ class MarketDataDB:
             f"VALUES ({self._placeholders(6)})",
             (endpoint, status, rows, _iso(started_at), _iso(finished_at), error),
         )
+
+    # -- governed trading calendars and contractual fixings ---------------
+    def save_trading_calendar_version(
+        self,
+        *,
+        calendar_id: str,
+        market: str,
+        from_date,
+        till_date,
+        days: list[dict],
+        source: str,
+        source_url: str,
+        payload_hash: str,
+        fetched_at,
+        source_updated_at=None,
+    ) -> dict:
+        """Persist one immutable, fully-covered trading-calendar version.
+
+        ``days`` must contain exactly one row for every calendar date in the
+        inclusive header interval.  This makes a missing ISS row materially
+        different from a non-trading day and prevents consumers from silently
+        substituting a Monday-Friday calendar.  Identical semantic payloads
+        are idempotent and return the existing version.
+        """
+        calendar_id = str(calendar_id or "").strip().upper()
+        market = str(market or "").strip().lower()
+        source = str(source or "").strip().upper()
+        source_url = str(source_url or "").strip()
+        if not calendar_id or not market or not source or not source_url:
+            raise ValueError(
+                "calendar_id, market, source and source_url are required")
+        if market not in {"stock", "futures", "currency"}:
+            raise ValueError(f"unsupported MOEX calendar market {market!r}")
+        start = date.fromisoformat(_iso_day(from_date))
+        end = date.fromisoformat(_iso_day(till_date))
+        if start > end:
+            raise ValueError("from_date must be on or before till_date")
+        digest = _sha256_token(payload_hash)
+        if fetched_at in (None, ""):
+            raise ValueError("fetched_at is required")
+        fetched_token = _iso(fetched_at)
+
+        normalised: dict[str, dict] = {}
+        for raw in days:
+            if not isinstance(raw, dict):
+                raise ValueError("trading calendar day must be an object")
+            tradedate = _iso_day(raw.get("tradedate"))
+            raw_flag = raw.get("is_traded")
+            if isinstance(raw_flag, bool):
+                flag = int(raw_flag)
+            elif raw_flag in (0, 1, "0", "1"):
+                flag = int(raw_flag)
+            else:
+                raise ValueError(
+                    f"calendar {tradedate}: is_traded must be 0 or 1")
+            session = raw.get("trade_session_date")
+            session = _iso_day(session) if session not in (None, "") else None
+            reason = str(raw.get("reason") or "").strip().upper() or None
+            if reason not in {None, "H", "W", "N", "T"}:
+                raise ValueError(
+                    f"calendar {tradedate}: unsupported reason {reason!r}")
+            if reason == "W" and (flag != 1 or session is None):
+                raise ValueError(
+                    f"calendar {tradedate}: W session requires is_traded=1 "
+                    "and trade_session_date")
+            if session is not None and session < tradedate:
+                raise ValueError(
+                    f"calendar {tradedate}: trade_session_date cannot be earlier")
+            if flag == 0 and session is not None:
+                raise ValueError(
+                    f"calendar {tradedate}: closed day cannot map to a session")
+            if reason == "W" and session == tradedate:
+                raise ValueError(
+                    f"calendar {tradedate}: W must map to a later session")
+            if tradedate in normalised:
+                raise ValueError(f"duplicate trading calendar date {tradedate}")
+            normalised[tradedate] = {
+                "tradedate": tradedate,
+                "is_traded": flag,
+                "trade_session_date": session,
+                "reason": reason,
+                "updatetime": (
+                    str(raw.get("updatetime")).strip()
+                    if raw.get("updatetime") not in (None, "") else None),
+            }
+
+        expected = []
+        cursor_day = start
+        while cursor_day <= end:
+            expected.append(cursor_day.isoformat())
+            cursor_day += timedelta(days=1)
+        missing = sorted(set(expected) - set(normalised))
+        extra = sorted(set(normalised) - set(expected))
+        if missing or extra:
+            details = []
+            if missing:
+                details.append("missing " + ", ".join(missing[:5]))
+            if extra:
+                details.append("outside range " + ", ".join(extra[:5]))
+            raise ValueError(
+                "trading calendar coverage is incomplete: " + "; ".join(details))
+
+        for tradedate, row in normalised.items():
+            target = row.get("trade_session_date")
+            if row["is_traded"] == 1 and target is not None:
+                target_row = normalised.get(target)
+                if target_row is None:
+                    raise ValueError(
+                        f"calendar {tradedate}: trade_session_date {target} is "
+                        "outside governed coverage")
+                if target_row["is_traded"] != 1:
+                    raise ValueError(
+                        f"calendar {tradedate}: mapped session {target} is not open")
+
+        # The database independently verifies the semantic digest supplied by
+        # the provider.  This makes a direct/manual import governed too and
+        # prevents a caller from binding arbitrary day rows to a trusted hash.
+        from infra.moex_calendar import calendar_payload_hash
+        computed_digest = calendar_payload_hash(
+            calendar_id=calendar_id,
+            market=market,
+            from_date=start,
+            till_date=end,
+            days=normalised.values(),
+        )
+        if computed_digest != digest:
+            raise ValueError(
+                "trading calendar payload_hash does not match day semantics")
+
+        existing = self._query_one(
+            f"SELECT * FROM trading_calendar_versions "
+            f"WHERE calendar_id={self.ph} AND payload_hash={self.ph}",
+            (calendar_id, digest),
+        )
+        if existing is not None:
+            if (existing.get("market") != market
+                    or existing.get("from_date") != start.isoformat()
+                    or existing.get("till_date") != end.isoformat()
+                    or int(existing.get("row_count") or 0) != len(expected)):
+                raise ValueError(
+                    "calendar payload hash collides with different metadata")
+            return {**existing, "created": False}
+
+        ordered = [normalised[token] for token in expected]
+        created_at = datetime.now().isoformat()
+        with self._lock:
+            cur = self.conn.cursor()
+            try:
+                cur.execute(
+                    f"SELECT COALESCE(MAX(version), 0) AS max_version FROM "
+                    f"trading_calendar_versions WHERE calendar_id={self.ph}",
+                    (calendar_id,),
+                )
+                maximum = self._rowdict(cur, cur.fetchone())
+                version = int(maximum["max_version"]) + 1
+                cur.execute(
+                    "INSERT INTO trading_calendar_versions "
+                    "(calendar_id, version, market, from_date, till_date, source, "
+                    "source_url, payload_hash, fetched_at, source_updated_at, "
+                    f"row_count, created_at) VALUES ({self._placeholders(12)})",
+                    (calendar_id, version, market, start.isoformat(), end.isoformat(),
+                     source, source_url, digest, fetched_token,
+                     (_iso(source_updated_at)
+                      if source_updated_at not in (None, "") else None),
+                     len(ordered), created_at),
+                )
+                cur.executemany(
+                    "INSERT INTO trading_calendar_days "
+                    "(calendar_id, version, tradedate, is_traded, "
+                    "trade_session_date, reason, updatetime) "
+                    f"VALUES ({self._placeholders(7)})",
+                    [(calendar_id, version, row["tradedate"], row["is_traded"],
+                      row["trade_session_date"], row["reason"], row["updatetime"])
+                     for row in ordered],
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        return {
+            "calendar_id": calendar_id,
+            "version": version,
+            "market": market,
+            "from_date": start.isoformat(),
+            "till_date": end.isoformat(),
+            "source": source,
+            "source_url": source_url,
+            "payload_hash": digest,
+            "fetched_at": fetched_token,
+            "source_updated_at": (
+                _iso(source_updated_at)
+                if source_updated_at not in (None, "") else None),
+            "row_count": len(ordered),
+            "created_at": created_at,
+            "created": True,
+        }
+
+    def get_trading_calendar_version(
+        self, calendar_id: str, version: int | None = None,
+    ) -> dict | None:
+        calendar_id = str(calendar_id or "").strip().upper()
+        if not calendar_id:
+            raise ValueError("calendar_id is required")
+        if version is None:
+            return self._query_one(
+                f"SELECT * FROM trading_calendar_versions "
+                f"WHERE calendar_id={self.ph} ORDER BY version DESC LIMIT 1",
+                (calendar_id,),
+            )
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise ValueError("calendar version must be a positive integer")
+        return self._query_one(
+            f"SELECT * FROM trading_calendar_versions "
+            f"WHERE calendar_id={self.ph} AND version={self.ph}",
+            (calendar_id, version),
+        )
+
+    def list_trading_calendar_versions(self, calendar_id: str) -> list[dict]:
+        calendar_id = str(calendar_id or "").strip().upper()
+        if not calendar_id:
+            raise ValueError("calendar_id is required")
+        return self._query(
+            f"SELECT * FROM trading_calendar_versions "
+            f"WHERE calendar_id={self.ph} ORDER BY version",
+            (calendar_id,),
+        )
+
+    def get_trading_calendar_days(
+        self,
+        calendar_id: str,
+        version: int,
+        *,
+        from_date=None,
+        till_date=None,
+    ) -> list[dict]:
+        calendar_id = str(calendar_id or "").strip().upper()
+        if not calendar_id:
+            raise ValueError("calendar_id is required")
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise ValueError("calendar version must be a positive integer")
+        clauses = [f"calendar_id={self.ph}", f"version={self.ph}"]
+        params: list[Any] = [calendar_id, version]
+        if from_date is not None:
+            clauses.append(f"tradedate>={self.ph}")
+            params.append(_iso_day(from_date))
+        if till_date is not None:
+            clauses.append(f"tradedate<={self.ph}")
+            params.append(_iso_day(till_date))
+        if (from_date is not None and till_date is not None
+                and _iso_day(from_date) > _iso_day(till_date)):
+            raise ValueError("from_date must be on or before till_date")
+        return self._query(
+            "SELECT tradedate, is_traded, trade_session_date, reason, updatetime "
+            f"FROM trading_calendar_days WHERE {' AND '.join(clauses)} "
+            "ORDER BY tradedate",
+            tuple(params),
+        )
+
+    def save_contract_fixings(self, rows: list[dict]) -> int:
+        """Atomically append exact immutable contractual fixings.
+
+        A repeated row with the same identity/value/hash is idempotent.  The
+        same identity with changed economics or provenance is rejected instead
+        of silently replacing the observation used by an old calculation.
+        """
+        if not isinstance(rows, list):
+            raise ValueError("contract fixings must be a list")
+        normalised: dict[tuple[str, ...], dict] = {}
+        for raw in rows:
+            if not isinstance(raw, dict):
+                raise ValueError("contract fixing must be an object")
+            factor_id = str(raw.get("factor_id") or "").strip()
+            price_basis = str(raw.get("price_basis") or "").strip().upper()
+            board = str(raw.get("board") or "").strip().upper()
+            session = str(raw.get("session") or "").strip().upper()
+            source = str(raw.get("source") or "").strip().upper()
+            if not factor_id or not price_basis or not source:
+                raise ValueError(
+                    "factor_id, price_basis and source are required")
+            observed_date = _iso_day(raw.get("observed_date"))
+            try:
+                value = float(raw.get("value"))
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("contract fixing value must be finite") from exc
+            if not math.isfinite(value):
+                raise ValueError("contract fixing value must be finite")
+            if raw.get("fetched_at") in (None, ""):
+                raise ValueError("contract fixing fetched_at is required")
+            fetched_at = _iso(raw.get("fetched_at"))
+            payload_hash = _sha256_token(raw.get("payload_hash"))
+            key = (factor_id, observed_date, price_basis, board, session, source)
+            row = {
+                "factor_id": factor_id,
+                "observed_date": observed_date,
+                "value": value,
+                "price_basis": price_basis,
+                "board": board,
+                "session": session,
+                "source": source,
+                "fetched_at": fetched_at,
+                "payload_hash": payload_hash,
+            }
+            duplicate = normalised.get(key)
+            if duplicate is not None and (
+                    duplicate["value"] != value
+                    or duplicate["payload_hash"] != payload_hash):
+                raise ValueError(
+                    "conflicting contract fixing identities in one batch")
+            normalised[key] = row
+        if not normalised:
+            return 0
+
+        inserts: list[dict] = []
+        with self._lock:
+            cur = self.conn.cursor()
+            try:
+                for key, row in normalised.items():
+                    cur.execute(
+                        "SELECT value, payload_hash FROM contract_fixings WHERE "
+                        f"factor_id={self.ph} AND observed_date={self.ph} AND "
+                        f"price_basis={self.ph} AND board={self.ph} AND "
+                        f"session={self.ph} AND source={self.ph}",
+                        key,
+                    )
+                    existing_raw = cur.fetchone()
+                    if existing_raw is not None:
+                        existing = self._rowdict(cur, existing_raw)
+                        if (float(existing["value"]) != row["value"]
+                                or existing["payload_hash"] != row["payload_hash"]):
+                            raise ValueError(
+                                "contract fixing identity already exists with "
+                                "different value or payload_hash")
+                        continue
+                    inserts.append(row)
+                if inserts:
+                    cur.executemany(
+                        "INSERT INTO contract_fixings "
+                        "(factor_id, observed_date, value, price_basis, board, "
+                        "session, source, fetched_at, payload_hash) "
+                        f"VALUES ({self._placeholders(9)})",
+                        [(row["factor_id"], row["observed_date"], row["value"],
+                          row["price_basis"], row["board"], row["session"],
+                          row["source"], row["fetched_at"], row["payload_hash"])
+                         for row in inserts],
+                    )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        return len(inserts)
+
+    def get_contract_fixings_window(
+        self,
+        factor_id: str,
+        from_date,
+        till_date,
+        *,
+        price_basis: str,
+        source: str,
+        board: str = "",
+        session: str = "",
+    ) -> list[dict]:
+        """Read only the exact requested fixing identity and inclusive window."""
+        factor_id = str(factor_id or "").strip()
+        price_basis = str(price_basis or "").strip().upper()
+        source = str(source or "").strip().upper()
+        board = str(board or "").strip().upper()
+        session = str(session or "").strip().upper()
+        if not factor_id or not price_basis or not source:
+            raise ValueError("factor_id, price_basis and source are required")
+        start = _iso_day(from_date)
+        end = _iso_day(till_date)
+        if start > end:
+            raise ValueError("from_date must be on or before till_date")
+        return self._query(
+            "SELECT factor_id, observed_date, value, price_basis, board, "
+            "session, source, fetched_at, payload_hash FROM contract_fixings "
+            f"WHERE factor_id={self.ph} AND observed_date>={self.ph} "
+            f"AND observed_date<={self.ph} AND price_basis={self.ph} "
+            f"AND board={self.ph} AND session={self.ph} AND source={self.ph} "
+            "ORDER BY observed_date",
+            (factor_id, start, end, price_basis, board, session, source),
+        )
+
+    def get_contract_fixing(
+        self,
+        factor_id: str,
+        observed_date,
+        *,
+        price_basis: str,
+        source: str,
+        board: str = "",
+        session: str = "",
+    ) -> dict | None:
+        rows = self.get_contract_fixings_window(
+            factor_id,
+            observed_date,
+            observed_date,
+            price_basis=price_basis,
+            source=source,
+            board=board,
+            session=session,
+        )
+        return rows[0] if rows else None
+
+    def contract_fixing_coverage(
+        self,
+        factor_id: str,
+        *,
+        source: str,
+        board: str = "",
+        session: str = "",
+        price_basis: str | None = None,
+    ) -> dict:
+        """Return the inclusive exact-fixing span for one bound identity.
+
+        ``price_basis=None`` deliberately counts distinct dates across every
+        immutable MOEX basis.  MarketStore uses that form only as an
+        operational download cursor: one history response persists all
+        available named bases, while pricing still requests and validates its
+        exact basis through :meth:`get_contract_fixings_window`.
+        """
+        factor_id = str(factor_id or "").strip()
+        source = str(source or "").strip().upper()
+        board = str(board or "").strip().upper()
+        session = str(session or "").strip().upper()
+        if not factor_id or not source:
+            raise ValueError("factor_id and source are required")
+        clauses = [
+            f"factor_id={self.ph}",
+            f"board={self.ph}",
+            f"session={self.ph}",
+            f"source={self.ph}",
+        ]
+        params: list[Any] = [factor_id, board, session, source]
+        basis = None
+        if price_basis is not None:
+            basis = str(price_basis or "").strip().upper()
+            if not basis:
+                raise ValueError("price_basis cannot be empty")
+            clauses.append(f"price_basis={self.ph}")
+            params.append(basis)
+        row = self._query_one(
+            "SELECT MIN(observed_date) AS first_date, "
+            "MAX(observed_date) AS last_date, "
+            "COUNT(DISTINCT observed_date) AS date_count "
+            f"FROM contract_fixings WHERE {' AND '.join(clauses)}",
+            tuple(params),
+        ) or {}
+        return {
+            "factor_id": factor_id,
+            "source": source,
+            "board": board,
+            "session": session,
+            "price_basis": basis,
+            "first_date": row.get("first_date"),
+            "last_date": row.get("last_date"),
+            "date_count": int(row.get("date_count") or 0),
+        }
+
+    def contract_fixing_dates(
+        self,
+        factor_id: str,
+        from_date,
+        till_date,
+        *,
+        source: str,
+        board: str = "",
+        session: str = "",
+        price_basis: str | None = None,
+    ) -> list[str]:
+        """Return distinct governed dates for an operational coverage audit."""
+        factor_id = str(factor_id or "").strip()
+        source = str(source or "").strip().upper()
+        board = str(board or "").strip().upper()
+        session = str(session or "").strip().upper()
+        if not factor_id or not source:
+            raise ValueError("factor_id and source are required")
+        start = _iso_day(from_date)
+        end = _iso_day(till_date)
+        if start > end:
+            raise ValueError("from_date must be on or before till_date")
+        clauses = [
+            f"factor_id={self.ph}",
+            f"observed_date>={self.ph}",
+            f"observed_date<={self.ph}",
+            f"board={self.ph}",
+            f"session={self.ph}",
+            f"source={self.ph}",
+        ]
+        params: list[Any] = [factor_id, start, end, board, session, source]
+        if price_basis is not None:
+            basis = str(price_basis or "").strip().upper()
+            if not basis:
+                raise ValueError("price_basis cannot be empty")
+            clauses.append(f"price_basis={self.ph}")
+            params.append(basis)
+        rows = self._query(
+            "SELECT DISTINCT observed_date FROM contract_fixings "
+            f"WHERE {' AND '.join(clauses)} ORDER BY observed_date",
+            tuple(params),
+        )
+        return [str(row["observed_date"]) for row in rows]
 
     # -- reads -------------------------------------------------------------
     def get_snapshot_meta(self, snapshot_id) -> dict | None:

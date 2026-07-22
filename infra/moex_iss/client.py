@@ -38,13 +38,19 @@ def parse_iss_json(payload: dict) -> dict[str, list[dict]]:
     return blocks
 
 
-def _default_fetch(timeout: float) -> Callable[[str], str]:
+def _default_fetch(
+    timeout: float,
+    headers: dict[str, str] | None = None,
+) -> Callable[[str], str]:
     from infra.certs import market_data_ssl_context
 
     ctx = market_data_ssl_context()    # trusts the anti-DDoS proxy chain too
 
+    request_headers = {"User-Agent": "RiskCalc-ISS-Client/1.0"}
+    request_headers.update(headers or {})
+
     def fetch(url: str) -> str:
-        req = urllib.request.Request(url, headers={"User-Agent": "RiskCalc-ISS-Client/1.0"})
+        req = urllib.request.Request(url, headers=request_headers)
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310 (public API)
             return resp.read().decode("utf-8")
 
@@ -64,9 +70,24 @@ class IssClient:
         backoff: float = 0.5,
         timeout: float = 15.0,
         lang: str = "en",
+        bearer_token: str | None = None,
+        headers: dict[str, str] | None = None,
     ):
         self.base_url = base_url.rstrip("/")
-        self._fetch = fetch or _default_fetch(timeout)
+        transport_headers = dict(headers or {})
+        token = str(bearer_token or "").strip()
+        if token:
+            supplied_authorization = next(
+                (name for name in transport_headers
+                 if name.casefold() == "authorization"),
+                None,
+            )
+            if supplied_authorization is not None:
+                raise ValueError(
+                    "bearer_token and an explicit Authorization header are "
+                    "mutually exclusive")
+            transport_headers["Authorization"] = f"Bearer {token}"
+        self._fetch = fetch or _default_fetch(timeout, transport_headers)
         self._min_interval = (1.0 / rate_limit_per_sec) if rate_limit_per_sec else 0.0
         self._last_call = 0.0
         self.max_retries = max_retries

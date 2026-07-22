@@ -150,6 +150,7 @@ class PricingNewCustomAssetRequest(_PricingNewCustomContractModel):
     index: int = Field(ge=0, le=4)
     asset_name: str = Field(min_length=1, max_length=80)
     secid: str | None = None
+    board: str | None = Field(default=None, max_length=40)
     category: Literal[
         "equities", "indices", "bonds", "futures", "commodities"
     ] | None = None
@@ -171,17 +172,88 @@ class PricingNewCustomAssetRequest(_PricingNewCustomContractModel):
     override_reason: str | None = None
 
 
+class PricingNewCorrelationCalibrationRequest(_PricingNewCustomContractModel):
+    mode: Literal["manual", "historical"] = "manual"
+    method: Literal["pearson", "ewma"] = "ewma"
+    lookback: int = Field(default=252, ge=2, le=10_000)
+    decay: FiniteFloat = Field(default=0.97, gt=0.0, lt=1.0)
+    min_samples: int = Field(default=60, ge=2, le=10_000)
+    fallback_policy: Literal["error", "prior"] = "error"
+
+
 class PricingNewCustomMarketRequest(_PricingNewCustomContractModel):
     rate: PricingNewCustomRateRequest
     assets: list[PricingNewCustomAssetRequest] = Field(
         min_length=1, max_length=5)
     correlation: list[list[FiniteFloat]]
+    correlation_calibration: PricingNewCorrelationCalibrationRequest | None = None
 
 
 class PricingNewCustomNumericalRequest(_PricingNewCustomContractModel):
     paths: int = Field(ge=1_000, le=200_000)
     steps: int = Field(ge=16, le=1_024)
     seed: int = Field(ge=0, le=2_147_483_647)
+
+
+class PricingNewCustomFixingBindingRequest(_PricingNewCustomContractModel):
+    """Exact MOEX close identity used to rebuild one asset's legal state."""
+
+    asset_name: str = Field(min_length=1, max_length=80)
+    secid: str = Field(min_length=1, max_length=80)
+    price_basis: Literal[
+        "CLOSE", "LEGALCLOSEPRICE", "WAPRICE", "SETTLEPRICE"
+    ]
+    # Board is optional at the HTTP edge only: the pricing boundary resolves
+    # it from the instrument master and pins the resolved value.  A missing or
+    # ambiguous board never survives into actual backcast evidence.
+    board: str | None = Field(default=None, max_length=40)
+    session: str = Field(default="", max_length=40)
+    source: Literal["MOEX"] = "MOEX"
+    missing_fixing_policy: Literal["error"] = "error"
+
+
+class PricingNewCustomContractScheduleRequest(_PricingNewCustomContractModel):
+    """User-entered contractual dates resolved by a governed MOEX calendar."""
+
+    schema_version: Literal[1]
+    effective_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    contractual_maturity_date: str = Field(
+        pattern=r"^\d{4}-\d{2}-\d{2}$")
+    contractual_observation_dates: list[str] = Field(
+        min_length=1, max_length=1_000)
+    business_day_convention: Literal[
+        "UNADJUSTED", "FOLLOWING", "MODIFIED_FOLLOWING", "PRECEDING",
+        "MODIFIED_PRECEDING",
+    ] = "MODIFIED_FOLLOWING"
+    calendar_id: Literal["MOEX_STOCK"] = "MOEX_STOCK"
+    calendar_version: int | None = Field(default=None, ge=1)
+    day_count_convention: Literal["ACT/365F"] = "ACT/365F"
+    valuation_cutoff: Literal[
+        "POST_CLOSE_POST_EVENTS"
+    ] = "POST_CLOSE_POST_EVENTS"
+    fixing_bindings: list[PricingNewCustomFixingBindingRequest] = Field(
+        min_length=1, max_length=5)
+
+
+class PricingNewCustomValuationStateRequest(_PricingNewCustomContractModel):
+    schema_version: Literal[1]
+    state_contract: Literal["custom_ast_seasoned_state_v1"]
+    mode: Literal["seasoned"]
+    asset_names: list[str] = Field(min_length=1, max_length=5)
+    current_spots: dict[str, FiniteFloat]
+    reference_spots: dict[str, FiniteFloat]
+    observation_index: int = Field(ge=0)
+    state_values: dict[str, FiniteFloat]
+    running_min: dict[str, FiniteFloat]
+    running_max: dict[str, FiniteFloat]
+    elapsed_time: FiniteFloat = Field(gt=0.0)
+    alive: bool
+    state_as_of: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    # A seasoned state is an observed lifecycle fact, not a free-form pricing
+    # assumption.  Require the immutable source fingerprint at the HTTP
+    # boundary so a saved Pricing_new run can always prove which fixing/state
+    # ledger produced it.
+    state_source_hash: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
 
 
 class PricingNewCustomProductRequest(_PricingNewCustomContractModel):
@@ -199,8 +271,11 @@ class PricingNewCustomProductRequest(_PricingNewCustomContractModel):
     # contract was introduced. New Pricing_new attachments always populate
     # these fields; portfolio risk rejects a legacy-unspecified convention.
     payoff_basis: Literal["normalized_notional"] | None = None
-    state_mode: Literal["inception"] | None = None
-    state_source: Literal["explicit_assumption"] | None = None
+    state_mode: Literal["inception", "seasoned"] | None = None
+    state_source: Literal[
+        "explicit_assumption", "seasoned_observation"] | None = None
+    valuation_state: PricingNewCustomValuationStateRequest | None = None
+    contract_schedule: PricingNewCustomContractScheduleRequest | None = None
     limitations: list[str] = Field(default_factory=list, max_length=100)
 
 
@@ -223,6 +298,9 @@ class PricingNewRiskRequest(BaseModel):
     window: int = Field(default=500, ge=60, le=10_000)
     horizon: int = Field(default=1, ge=1, le=250)
     model: str = "historical_full_reprice"
+    historical_state_mode: Literal[
+        "current_state_hyppl", "actual_trade_backcast"
+    ] = "current_state_hyppl"
     n_sims: int = Field(default=100_000, ge=1_000, le=2_000_000)
     seed: int = Field(default=42, ge=0, le=2_147_483_647)
 
@@ -571,6 +649,7 @@ def pricing_new_run_risk(run_id: str, req: PricingNewRiskRequest) -> dict:
             window=req.window,
             horizon=req.horizon,
             model=req.model,
+            historical_state_mode=req.historical_state_mode,
             n_sims=req.n_sims,
             seed=req.seed,
         )
@@ -652,7 +731,12 @@ def pricing_new_underlying(env_id: str, category: str, secid: str) -> dict:
             if clean is not None:
                 payload["facts"]["spot"] = float(clean)
         payload.update({
+            "board": str(payload.get("board") or (
+                CONTEXT.market_db.get_instrument_ref(secid) or {}
+            ).get("board") or "") or None,
             "snapshot_id": snapshot_id,
+            "valuation_date": str(
+                getattr(snapshot, "valuation_date", "") or "")[:10],
             "market_data_source": str(getattr(snapshot, "source", "") or ""),
             "market_data_quality": str(getattr(snapshot, "quality", "") or ""),
         })

@@ -14,3 +14,8 @@ macapp/.build/
 macapp/.swiftpm/
 *.xcuserstate
 xcuserdata/
+
+# Ad-hoc source-bundle exports (redundant with tracked sources)
+market_data_backend_files.zip
+market_data_history_backend_files.zip
+*.zip

@@ -4,6 +4,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
+import infra.certs
+import infra.moex_iss.client as client_module
 from infra.moex_iss.client import IssClient, parse_iss_json
 
 
@@ -32,6 +34,52 @@ def test_build_url_applies_meta_off_and_lang():
     assert "iss.meta=off" in url
     assert "lang=en" in url
     assert "iss.only=params" in url
+
+
+def test_default_transport_sends_algopack_bearer_without_persisting_it(
+    monkeypatch,
+):
+    observed = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        @staticmethod
+        def read():
+            return b"{}"
+
+    def urlopen(request, **kwargs):
+        observed["authorization"] = request.get_header("Authorization")
+        observed["url"] = request.full_url
+        observed.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr(
+        infra.certs, "market_data_ssl_context", lambda: "ssl-context")
+    monkeypatch.setattr(client_module.urllib.request, "urlopen", urlopen)
+    client = IssClient(
+        base_url="https://apim.moex.com/iss",
+        bearer_token="secret-api-key",
+        rate_limit_per_sec=0,
+    )
+
+    assert client.get_blocks("calendars/stock") == {}
+    assert observed["authorization"] == "Bearer secret-api-key"
+    assert observed["url"].startswith(
+        "https://apim.moex.com/iss/calendars/stock.json?")
+    assert not hasattr(client, "bearer_token")
+
+
+def test_bearer_and_authorization_header_are_mutually_exclusive():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        IssClient(
+            bearer_token="token",
+            headers={"Authorization": "Bearer other"},
+        )
 
 
 # ── pagination ───────────────────────────────────────────

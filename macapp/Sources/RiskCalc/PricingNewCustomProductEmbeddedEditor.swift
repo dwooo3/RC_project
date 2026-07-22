@@ -40,6 +40,8 @@ struct PricingNewCustomProductEmbeddedEditor: View {
                             .frame(minWidth: 470, maxWidth: .infinity,
                                    alignment: .topLeading)
                     }
+                    contractSchedulePane(detail)
+                    valuationStatePane(detail)
                     compileAndResultPane(detail)
                     if let editor = vm.core.editor {
                         PricingNewCustomASTInlineEditor(
@@ -57,7 +59,10 @@ struct PricingNewCustomProductEmbeddedEditor: View {
             vm.setEnvironment(environmentID)
             await vm.load()
         }
-        .onChange(of: environmentID) { _, next in vm.setEnvironment(next) }
+        .onChange(of: environmentID) { _, next in
+            vm.setEnvironment(next)
+            Task { await vm.refreshValuationContext() }
+        }
         .onChange(of: vm.core.editor?.assets ?? []) { _, _ in
             vm.synchronizeAssetDrafts(reset: false)
         }
@@ -225,7 +230,12 @@ struct PricingNewCustomProductEmbeddedEditor: View {
     private func slotBinding(_ key: String, spec: CustomSlotSpec) -> Binding<Double> {
         Binding(
             get: { vm.core.slotValues[key] ?? spec.defaultValue },
-            set: { vm.core.slotValues[key] = $0 })
+            set: {
+                vm.core.slotValues[key] = $0
+                if vm.stateMode == .seasoned {
+                    vm.seasonedState.stateSourceHash = ""
+                }
+            })
     }
 
     private func slotRange(_ spec: CustomSlotSpec) -> String {
@@ -235,6 +245,408 @@ struct PricingNewCustomProductEmbeddedEditor: View {
         case let (nil, hi?): return "≤ \(Fmt.number(hi, digits: 3))"
         default: return ""
         }
+    }
+
+    // MARK: Trade lifecycle / seasoned state
+
+    private func contractSchedulePane(_ detail: CustomProductDetail) -> some View {
+        let scheduleIssues = vm.contractIssues.filter {
+            $0.path.hasPrefix("contract_schedule")
+                || $0.code.contains("CONTRACT_SCHEDULE")
+        }
+        return VStack(alignment: .leading, spacing: Theme.s2) {
+            Divider()
+            HStack(spacing: Theme.s2) {
+                Text("CONTRACTUAL SCHEDULE · MOEX")
+                    .font(Typography.label).foregroundStyle(Theme.accent)
+                if vm.requiresExplicitContractSchedule {
+                    Pill(text: "required", color: Theme.warning)
+                }
+                Text("explicit dates only · definition \(detail.definitionHash.prefix(10))")
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                Button("Очистить") { vm.resetContractSchedule() }
+                    .controlSize(.mini)
+            }
+
+            HStack(alignment: .bottom, spacing: Theme.s2) {
+                PricingNewCustomLabeledField(label: "Effective date") {
+                    scheduleDateField(
+                        vm.contractSchedule.effectiveDate,
+                        placeholder: "YYYY-MM-DD") { value in
+                            vm.contractSchedule.effectiveDate = value
+                            vm.invalidateContractScheduleEvidence()
+                        }
+                }
+                PricingNewCustomLabeledField(label: "Contractual maturity") {
+                    scheduleDateField(
+                        vm.contractSchedule.contractualMaturityDate,
+                        placeholder: "YYYY-MM-DD") { value in
+                            vm.contractSchedule.contractualMaturityDate = value
+                            vm.invalidateContractScheduleEvidence()
+                        }
+                }
+                PricingNewCustomLabeledField(label: "BDC") {
+                    Picker("", selection: Binding(
+                        get: { vm.contractSchedule.businessDayConvention },
+                        set: {
+                            vm.contractSchedule.businessDayConvention = $0
+                            vm.invalidateContractScheduleEvidence()
+                        })) {
+                        ForEach(PricingNewCustomBusinessDayConvention.allCases,
+                                id: \.self) { convention in
+                            Text(convention.rawValue).tag(convention)
+                        }
+                    }
+                    .labelsHidden().pickerStyle(.menu).frame(width: 185)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("CALENDAR")
+                        .font(Typography.label).foregroundStyle(.secondary)
+                    HStack(spacing: 5) {
+                        Text("MOEX_STOCK")
+                            .font(.system(size: 9, design: .monospaced))
+                        Toggle("server latest", isOn: Binding(
+                            get: { vm.contractSchedule.useLatestCalendarVersion },
+                            set: {
+                                vm.contractSchedule.useLatestCalendarVersion = $0
+                                vm.invalidateContractScheduleEvidence()
+                            }))
+                            .toggleStyle(.checkbox).font(Typography.micro)
+                        if !vm.contractSchedule.useLatestCalendarVersion {
+                            TextField("v", value: Binding(
+                                get: { vm.contractSchedule.calendarVersion },
+                                set: {
+                                    vm.contractSchedule.calendarVersion = $0
+                                    vm.invalidateContractScheduleEvidence()
+                                }), format: .number)
+                                .textFieldStyle(.roundedBorder).monospacedDigit()
+                                .frame(width: 54)
+                        }
+                    }
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("FIXED CONVENTIONS")
+                        .font(Typography.label).foregroundStyle(.secondary)
+                    Text("ACT/365F · POST_CLOSE_POST_EVENTS")
+                        .font(.system(size: 9, design: .monospaced))
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(alignment: .top, spacing: Theme.s2) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 5) {
+                        Text("CONTRACTUAL OBSERVATION DATES")
+                            .font(Typography.label).foregroundStyle(.secondary)
+                        Text("\(vm.contractSchedule.contractualObservationDates.count) / "
+                             + "\(vm.resolvedObservationCount.map(String.init) ?? "—")")
+                            .font(Typography.micro).monospacedDigit()
+                        Button {
+                            vm.addContractualObservationDate()
+                        } label: {
+                            Label("blank date", systemImage: "plus")
+                        }
+                        .controlSize(.mini)
+                    }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 5) {
+                            ForEach(vm.contractSchedule.contractualObservationDates.indices,
+                                    id: \.self) { index in
+                                HStack(spacing: 2) {
+                                    Text("\(index + 1)")
+                                        .font(Typography.micro).monospacedDigit()
+                                        .foregroundStyle(.tertiary)
+                                    scheduleDateField(
+                                        vm.contractSchedule
+                                            .contractualObservationDates[index],
+                                        placeholder: "YYYY-MM-DD") { value in
+                                            vm.setContractualObservationDate(
+                                                value, at: index)
+                                        }
+                                    Button {
+                                        vm.removeContractualObservationDate(at: index)
+                                    } label: {
+                                        Image(systemName: "xmark")
+                                    }
+                                    .buttonStyle(.plain).foregroundStyle(.tertiary)
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: Theme.s2,
+                 verticalSpacing: 4) {
+                GridRow {
+                    Text("ASSET")
+                    Text("SECID")
+                    Text("PRICE BASIS")
+                    Text("BOARD")
+                    Text("SESSION")
+                    Text("SOURCE / MISSING")
+                }
+                .font(Typography.label).foregroundStyle(.secondary)
+                ForEach(vm.assetDrafts) { asset in
+                    PricingNewCustomFixingBindingRow(vm: vm, asset: asset)
+                }
+            }
+
+            Text(vm.contractSchedule.businessDayConvention == .unadjusted
+                 ? "UNADJUSTED: UI проверяет processed observations и ACT/365F elapsed по explicit dates."
+                 : "Holiday adjustment выполняет backend по versioned MOEX calendar; UI не создаёт локальные resolved dates.")
+                .font(Typography.micro)
+                .foregroundStyle(vm.contractSchedule.businessDayConvention == .unadjusted
+                                 ? Color.secondary.opacity(0.65) : Theme.warning)
+            if !scheduleIssues.isEmpty {
+                PricingNewFlowLayout(spacing: 5) {
+                    ForEach(scheduleIssues.prefix(6)) { issue in
+                        Label(issue.message,
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(Typography.micro).foregroundStyle(Theme.negative)
+                            .help("\(issue.code) · \(issue.path)")
+                    }
+                }
+            }
+        }
+    }
+
+    private func scheduleDateField(
+        _ value: String,
+        placeholder: String,
+        onChange: @escaping (String) -> Void
+    ) -> some View {
+        TextField(placeholder, text: Binding(
+            get: { value },
+            set: { onChange($0.trimmingCharacters(in: .whitespacesAndNewlines)) }))
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 10, design: .monospaced))
+            .frame(width: 112)
+    }
+
+    private func valuationStatePane(_ detail: CustomProductDetail) -> some View {
+        let stateIssues = vm.contractIssues.filter {
+            $0.path.hasPrefix("valuation_state")
+                || $0.code.contains("_STATE_")
+        }
+        return VStack(alignment: .leading, spacing: Theme.s2) {
+            Divider()
+            HStack(spacing: Theme.s3) {
+                Text("VALUATION STATE")
+                    .font(Typography.label).foregroundStyle(Theme.accent)
+                Picker("Lifecycle state", selection: Binding(
+                    get: { vm.stateMode },
+                    set: { vm.selectStateMode($0) }
+                )) {
+                    Text("Inception").tag(PricingNewCustomValuationMode.inception)
+                    Text("Seasoned / live trade")
+                        .tag(PricingNewCustomValuationMode.seasoned)
+                }
+                .labelsHidden().pickerStyle(.segmented).frame(width: 260)
+                if vm.stateMode == .seasoned {
+                    Pill(text: "explicit path state", color: Theme.warning)
+                    Text("definition \(detail.definitionHash.prefix(10))")
+                        .font(.system(size: 8, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                } else {
+                    Text("current spots become contractual reference spots")
+                        .font(Typography.micro).foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 0)
+            }
+
+            if vm.stateMode == .seasoned {
+                seasonedControls
+                seasonedAssetGrid
+                seasonedVariables
+                if !stateIssues.isEmpty {
+                    PricingNewFlowLayout(spacing: 5) {
+                        ForEach(stateIssues.prefix(6)) { issue in
+                            Label(issue.message,
+                                  systemImage: "exclamationmark.triangle.fill")
+                                .font(Typography.micro)
+                                .foregroundStyle(Theme.negative)
+                                .help("\(issue.code) · \(issue.path)")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var seasonedControls: some View {
+        HStack(alignment: .bottom, spacing: Theme.s2) {
+            PricingNewCustomLabeledField(label: "Processed obs") {
+                TextField("", value: Binding(
+                    get: { vm.seasonedState.observationIndex },
+                    set: {
+                        vm.seasonedState.observationIndex = $0
+                        vm.seasonedState.stateSourceHash = ""
+                    }), format: .number)
+                    .textFieldStyle(.roundedBorder).monospacedDigit()
+                    .frame(width: 72)
+                    .disabled(vm.contractSchedule.businessDayConvention
+                              == .unadjusted)
+            }
+            PricingNewCustomLabeledField(label: "Elapsed, y") {
+                TextField("", value: Binding(
+                    get: { vm.seasonedState.elapsedTime },
+                    set: {
+                        vm.seasonedState.elapsedTime = $0
+                        vm.seasonedState.stateSourceHash = ""
+                    }), format: .number)
+                    .textFieldStyle(.roundedBorder).monospacedDigit()
+                    .frame(width: 82)
+                    .disabled(vm.contractSchedule.businessDayConvention
+                              == .unadjusted)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("CONTRACT SCHEDULE")
+                    .font(Typography.label).foregroundStyle(.secondary)
+                Text("\(vm.contractSchedule.contractualObservationDates.count) obs · "
+                     + (vm.contractSchedule.contractualMaturityDate.isEmpty
+                        ? "maturity —"
+                        : vm.contractSchedule.contractualMaturityDate))
+                    .font(Typography.caption).monospacedDigit()
+            }
+            Toggle("Alive", isOn: Binding(
+                get: { vm.seasonedState.alive },
+                set: {
+                    vm.seasonedState.alive = $0
+                    vm.seasonedState.stateSourceHash = ""
+                }))
+                .toggleStyle(.checkbox).font(Typography.caption)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("SNAPSHOT AS-OF")
+                    .font(Typography.label).foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text(vm.seasonedState.stateAsOf.isEmpty
+                         ? "unresolved" : vm.seasonedState.stateAsOf)
+                        .font(Typography.caption).monospacedDigit()
+                        .foregroundStyle(vm.seasonedState.stateAsOf.isEmpty
+                                         ? Theme.negative : .primary)
+                    if let snapshot = vm.stateSnapshotID {
+                        Text(snapshot).font(.system(size: 8, design: .monospaced))
+                            .foregroundStyle(.tertiary).lineLimit(1)
+                    }
+                }
+            }
+            PricingNewCustomLabeledField(label: "State source SHA-256") {
+                TextField("64 hex · source fixing/state record", text: Binding(
+                    get: { vm.seasonedState.stateSourceHash },
+                    set: {
+                        vm.seasonedState.stateSourceHash = $0
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                            .lowercased()
+                    }))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 9, design: .monospaced))
+                    .frame(minWidth: 250)
+            }
+            Button("Сбросить state") { vm.resetSeasonedState() }
+                .controlSize(.mini)
+        }
+    }
+
+    private var seasonedAssetGrid: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            Grid(alignment: .leading, horizontalSpacing: Theme.s2,
+                 verticalSpacing: 4) {
+                GridRow {
+                    Text("ASSET")
+                    Text("CURRENT")
+                    Text("REFERENCE")
+                    Text("PERF")
+                    Text("RUN MIN")
+                    Text("RUN MAX")
+                }
+                .font(Typography.label).foregroundStyle(.secondary)
+                ForEach(vm.core.assetNames, id: \.self) { name in
+                    GridRow {
+                        Text(name).font(Typography.captionStrong).frame(width: 100,
+                                                                       alignment: .leading)
+                        Text(vm.currentSpot(for: name).map {
+                            Fmt.number($0, digits: 6)
+                        } ?? "—")
+                            .font(Typography.caption).monospacedDigit()
+                            .frame(width: 92, alignment: .trailing)
+                        stateField(referenceBinding(name), width: 92)
+                        Text(vm.currentPerformance(for: name).map {
+                            Fmt.number($0, digits: 6)
+                        } ?? "—")
+                            .font(Typography.caption).monospacedDigit()
+                            .frame(width: 82, alignment: .trailing)
+                        stateField(runningMinBinding(name), width: 82)
+                        stateField(runningMaxBinding(name), width: 82)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var seasonedVariables: some View {
+        if let defaults = vm.definitionStateDefaults, !defaults.isEmpty {
+            HStack(spacing: Theme.s2) {
+                Text("STATE VARIABLES")
+                    .font(Typography.label).foregroundStyle(.secondary)
+                ForEach(defaults.keys.sorted(), id: \.self) { name in
+                    HStack(spacing: 4) {
+                        Text(name).font(.system(size: 9, design: .monospaced))
+                        stateField(stateValueBinding(name), width: 82)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+        } else if vm.definitionStateDefaults == nil {
+            Label("State schema недоступна — attachment заблокирован",
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(Typography.micro).foregroundStyle(Theme.negative)
+        } else {
+            Text("Definition не содержит mutable state variables")
+                .font(Typography.micro).foregroundStyle(.tertiary)
+        }
+    }
+
+    private func referenceBinding(_ name: String) -> Binding<Double> {
+        stateDictionaryBinding(\.referenceSpots, name: name,
+                               fallback: vm.currentSpot(for: name) ?? 0)
+    }
+
+    private func runningMinBinding(_ name: String) -> Binding<Double> {
+        stateDictionaryBinding(\.runningMin, name: name, fallback: 1)
+    }
+
+    private func runningMaxBinding(_ name: String) -> Binding<Double> {
+        stateDictionaryBinding(\.runningMax, name: name, fallback: 1)
+    }
+
+    private func stateValueBinding(_ name: String) -> Binding<Double> {
+        stateDictionaryBinding(\.stateValues, name: name,
+                               fallback: vm.definitionStateDefaults?[name] ?? 0)
+    }
+
+    private func stateDictionaryBinding(
+        _ keyPath: ReferenceWritableKeyPath<PricingNewCustomSeasonedStateDraft,
+                                             [String: Double]>,
+        name: String,
+        fallback: Double
+    ) -> Binding<Double> {
+        Binding(
+            get: { vm.seasonedState[keyPath: keyPath][name] ?? fallback },
+            set: { value in
+                vm.seasonedState[keyPath: keyPath][name] = value
+                vm.seasonedState.stateSourceHash = ""
+            })
+    }
+
+    private func stateField(_ value: Binding<Double>, width: CGFloat)
+        -> some View {
+        TextField("", value: value, format: .number)
+            .textFieldStyle(.roundedBorder).monospacedDigit().frame(width: width)
     }
 
     // MARK: Market and numerical inputs
@@ -307,7 +719,9 @@ struct PricingNewCustomProductEmbeddedEditor: View {
     private var correlationGrid: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("CORRELATION · upper triangle")
+                Text(vm.effectiveCorrelationMode == "historical"
+                     ? "CORRELATION PRIOR · historical calibration"
+                     : "CORRELATION · manual upper triangle")
                     .font(Typography.label).foregroundStyle(.secondary)
                 Spacer()
                 TextField("default ρ", value: Bindable(vm.core).marketRho,
@@ -316,6 +730,60 @@ struct PricingNewCustomProductEmbeddedEditor: View {
                 Button("Заполнить ρ") { vm.core.applyEquicorrelation() }
                     .controlSize(.mini)
             }
+            HStack(spacing: Theme.s2) {
+                PricingNewCustomLabeledField(label: "Mode") {
+                    Picker("", selection: Bindable(vm).correlationMode) {
+                        Text("Auto").tag("auto")
+                        Text("Historical").tag("historical")
+                        Text("Manual").tag("manual")
+                    }
+                    .labelsHidden().pickerStyle(.menu).frame(width: 105)
+                }
+                PricingNewCustomLabeledField(label: "Method") {
+                    Picker("", selection: Bindable(vm).correlationMethod) {
+                        Text("EWMA").tag("ewma")
+                        Text("Pearson").tag("pearson")
+                    }
+                    .labelsHidden().pickerStyle(.menu).frame(width: 100)
+                    .disabled(vm.effectiveCorrelationMode == "manual")
+                }
+                PricingNewCustomLabeledField(label: "Lookback") {
+                    TextField("", value: Bindable(vm).correlationLookback,
+                              format: .number)
+                        .textFieldStyle(.roundedBorder).monospacedDigit()
+                        .frame(width: 70)
+                        .disabled(vm.effectiveCorrelationMode == "manual")
+                }
+                PricingNewCustomLabeledField(label: "Min samples") {
+                    TextField("", value: Bindable(vm).correlationMinSamples,
+                              format: .number)
+                        .textFieldStyle(.roundedBorder).monospacedDigit()
+                        .frame(width: 70)
+                        .disabled(vm.effectiveCorrelationMode == "manual")
+                }
+                if vm.correlationMethod == "ewma" {
+                    PricingNewCustomLabeledField(label: "Decay") {
+                        TextField("", value: Bindable(vm).correlationDecay,
+                                  format: .number)
+                            .textFieldStyle(.roundedBorder).monospacedDigit()
+                            .frame(width: 65)
+                            .disabled(vm.effectiveCorrelationMode == "manual")
+                    }
+                }
+                PricingNewCustomLabeledField(label: "On gaps") {
+                    Picker("", selection: Bindable(vm).correlationFallbackPolicy) {
+                        Text("Use prior").tag("prior")
+                        Text("Fail closed").tag("error")
+                    }
+                    .labelsHidden().pickerStyle(.menu).frame(width: 105)
+                    .disabled(vm.effectiveCorrelationMode == "manual")
+                }
+                Spacer(minLength: 0)
+            }
+            Text(vm.effectiveCorrelationMode == "historical"
+                 ? "Фактическая матрица будет оценена по истории SECID as-of snapshot; сетка ниже — prior при fallback."
+                 : "Сетка ниже — фактическая static correlation matrix для прайсинга.")
+                .font(Typography.micro).foregroundStyle(.tertiary)
             ScrollView(.horizontal, showsIndicators: false) {
                 Grid(horizontalSpacing: 4, verticalSpacing: 4) {
                     GridRow {
@@ -409,9 +877,13 @@ struct PricingNewCustomProductEmbeddedEditor: View {
                         }
                         .controlSize(.mini)
                         .disabled(vm.core.isPricing || vm.core.isEditorDirty
-                                  || !vm.core.valuationIssues.isEmpty)
+                                  || !vm.core.valuationIssues.isEmpty
+                                  || vm.stateMode == .seasoned)
                     }
-                    if let price = vm.core.priceResult {
+                    if vm.stateMode == .seasoned {
+                        Text("Legacy preview не принимает valuation_state; authoritative seasoned PV рассчитывается после добавления в Pricing_new.")
+                            .font(Typography.micro).foregroundStyle(Theme.warning)
+                    } else if let price = vm.core.priceResult {
                         HStack(spacing: Theme.s3) {
                             Text("PV \(Fmt.number(price.value, digits: 6))")
                                 .font(Typography.bodyMedium).monospacedDigit()
@@ -449,6 +921,10 @@ private struct PricingNewCustomAssetRow: View {
                     Pill(text: secid, color: Theme.positive)
                     Text(asset.category ?? "")
                         .font(Typography.micro).foregroundStyle(.tertiary)
+                    if let board = asset.board {
+                        Text(board).font(.system(size: 8, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    }
                     Text(asset.snapshotID ?? "snapshot missing")
                         .font(.system(size: 8, design: .monospaced))
                         .foregroundStyle(asset.snapshotID == nil
@@ -512,6 +988,11 @@ private struct PricingNewCustomAssetRow: View {
         .padding(6)
         .background(Color.primary.opacity(0.025),
                     in: RoundedRectangle(cornerRadius: 7))
+        .onChange(of: asset.spot) { _, _ in
+            if vm.stateMode == .seasoned {
+                vm.seasonedState.stateSourceHash = ""
+            }
+        }
     }
 
     private var sigmaBinding: Binding<Double> {
@@ -552,6 +1033,58 @@ private struct PricingNewCustomAssetRow: View {
             Text(label).font(Typography.micro).foregroundStyle(.tertiary)
             TextField("", value: binding, format: .number)
                 .textFieldStyle(.roundedBorder).monospacedDigit().frame(width: 72)
+        }
+    }
+}
+
+private struct PricingNewCustomFixingBindingRow: View {
+    @Bindable var vm: PricingNewCustomProductIntegrationViewModel
+    @Bindable var asset: PricingNewCustomAssetDraft
+
+    var body: some View {
+        GridRow {
+            Text(asset.assetName)
+                .font(Typography.captionStrong).frame(minWidth: 70,
+                                                       alignment: .leading)
+            Text(asset.secid ?? "unresolved")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(asset.secid == nil ? Theme.negative : .secondary)
+                .frame(minWidth: 90, alignment: .leading)
+            Picker("", selection: Binding(
+                get: { asset.fixingPriceBasis },
+                set: {
+                    asset.fixingPriceBasis = $0
+                    vm.invalidateContractScheduleEvidence()
+                })) {
+                ForEach(PricingNewCustomPriceBasis.allCases, id: \.self) { basis in
+                    Text(basis.rawValue).tag(basis)
+                }
+            }
+            .labelsHidden().pickerStyle(.menu).frame(width: 150)
+            TextField("server default", text: Binding(
+                get: { asset.board ?? "" },
+                set: {
+                    let value = $0.trimmingCharacters(
+                        in: .whitespacesAndNewlines)
+                    asset.board = value.isEmpty ? nil : value
+                    vm.invalidateContractScheduleEvidence()
+                }))
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 9, design: .monospaced))
+                .frame(width: 92)
+            TextField("empty = main", text: Binding(
+                get: { asset.fixingSession },
+                set: {
+                    asset.fixingSession = $0.trimmingCharacters(
+                        in: .whitespacesAndNewlines)
+                    vm.invalidateContractScheduleEvidence()
+                }))
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 9, design: .monospaced))
+                .frame(width: 104)
+            Text("MOEX · error")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.secondary)
         }
     }
 }

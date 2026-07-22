@@ -21,6 +21,8 @@ from services.market_data_service import MarketDataService
 
 DEFAULT_INDICES = ["IMOEX", "RVI", "RGBI", "RUCBTRNS"]
 DEFAULT_EQUITIES = ["SBER"]
+MOEX_CALENDAR_HISTORY_YEARS = 8
+MOEX_CALENDAR_FUTURE_YEARS = 2
 
 
 class EodIngestJob:
@@ -199,6 +201,19 @@ class EodIngestJob:
                 summary["steps"][name] = fn()
             except Exception as exc:  # isolate per-source failures
                 summary["steps"][name] = f"error: {exc}"
+
+        # Contractual schedules and actual-state backcasts consume the
+        # exchange's machine-readable session calendar, never a weekday
+        # heuristic.  Store a broad, versioned window on every EOD run so
+        # historical states and near-/medium-term maturities share the same
+        # immutable MOEX source.  A changed exchange calendar cuts a new DB
+        # version; existing saved trades remain pinned to their old version.
+        calendar_from = date(
+            valuation_date.year - MOEX_CALENDAR_HISTORY_YEARS, 1, 1)
+        calendar_till = date(
+            valuation_date.year + MOEX_CALENDAR_FUTURE_YEARS, 12, 31)
+        step("trading_calendar", lambda: moex.ingest_stock_calendar(
+            calendar_from, calendar_till))
 
         step("gcurve", lambda: moex.ingest_gcurve(sid, valuation_date))
         step("fx", lambda: moex.ingest_fx(sid, valuation_date))

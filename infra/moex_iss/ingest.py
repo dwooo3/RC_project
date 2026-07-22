@@ -88,6 +88,72 @@ class MoexIngestor:
     def snapshot_id_for(valuation_date: date) -> str:
         return f"moex-{valuation_date.isoformat()}"
 
+    # -- Governed machine-readable trading calendar -----------------------
+    def ingest_trading_calendar(
+        self,
+        from_date: date,
+        till_date: date,
+        *,
+        market: str = "stock",
+        calendar_id: str | None = None,
+        fetched_at=None,
+    ) -> dict:
+        """Fetch and persist a complete MOEX calendar version.
+
+        The provider uses ``show_all_days=1`` and fails closed on any missing
+        date or nullable trading flag.  The ISS client remains injected, so a
+        subscribed/authenticated transport can be supplied without embedding
+        credentials in the calendar or database contracts.
+        """
+        from infra.moex_calendar import MoexCalendarProvider
+
+        started = datetime.now()
+        endpoint = f"calendars/{str(market).strip().lower()}"
+        try:
+            payload = MoexCalendarProvider(self.client).fetch(
+                from_date,
+                till_date,
+                market=market,
+                calendar_id=calendar_id,
+                fetched_at=fetched_at,
+            )
+            stored = self.db.save_trading_calendar_version(
+                calendar_id=payload.calendar_id,
+                market=payload.market,
+                from_date=payload.from_date,
+                till_date=payload.till_date,
+                days=list(payload.days),
+                source=payload.source,
+                source_url=payload.source_url,
+                payload_hash=payload.payload_hash,
+                fetched_at=payload.fetched_at,
+                source_updated_at=payload.source_updated_at,
+            )
+            self.db.log_ingest(
+                endpoint, "ok", len(payload.days), started, datetime.now())
+            return stored
+        except Exception as exc:
+            self.db.log_ingest(
+                endpoint, "error", 0, started, datetime.now(), str(exc))
+            raise
+
+    def ingest_stock_calendar(
+        self,
+        from_date: date,
+        till_date: date,
+        *,
+        calendar_id: str = "MOEX_STOCK",
+        fetched_at=None,
+    ) -> dict:
+        """Convenience wrapper for the official ``calendars/stock`` feed."""
+        return self.ingest_trading_calendar(
+            from_date,
+            till_date,
+            market="stock",
+            calendar_id=calendar_id,
+            fetched_at=fetched_at,
+        )
+
     # -- G-curve (КБД) -----------------------------------------------------
     def ingest_gcurve(self, snapshot_id: str, valuation_date: date,
                       *, historical: bool = False) -> int:

@@ -168,6 +168,7 @@ struct PricingNewRiskResult: Decodable, Sendable {
     let horizonMethod: String?
     let model: String
     let modelLabel: String
+    let historicalStateMode: String?
     let modelDiagnostics: JSONValue?
     let currency: String
     let portfolioValue: Double
@@ -188,6 +189,7 @@ struct PricingNewRiskResult: Decodable, Sendable {
         case scope, partial, confidence, window, horizon, model, currency
         case positions, es, histogram, hyppl, factors, capability, provenance
         case modelLabel = "model_label"
+        case historicalStateMode = "historical_state_mode"
         case horizonMethod = "horizon_method"
         case modelDiagnostics = "model_diagnostics"
         case portfolioValue = "portfolio_value"
@@ -199,16 +201,28 @@ struct PricingNewRiskResult: Decodable, Sendable {
     }
 }
 
+enum PricingNewHistoricalStateMode: String, Codable, Sendable, Hashable,
+                                    CaseIterable {
+    /// Today's lifecycle/path state is held fixed and shocked by each
+    /// historical factor window. This is the conventional current-state HypPL.
+    case currentStateHypPL = "current_state_hyppl"
+    /// The trade lifecycle state is reconstructed as it stood on every
+    /// historical scenario date. This is a backcast, not ordinary HypPL.
+    case actualTradeBackcast = "actual_trade_backcast"
+}
+
 struct PricingNewRiskBody: Encodable, Sendable {
     let confidence: Double
     let window: Int
     let horizon: Int
     let model: String
+    let historicalStateMode: PricingNewHistoricalStateMode
     let nSims: Int
     let seed: Int
 
     enum CodingKeys: String, CodingKey {
         case confidence, window, horizon, model, seed
+        case historicalStateMode = "historical_state_mode"
         case nSims = "n_sims"
     }
 }
@@ -324,6 +338,8 @@ final class PricingNewWorkspaceViewModel {
     var riskWindow = 500
     var riskHorizon = 1
     var riskModel = "historical_full_reprice"
+    var historicalStateMode: PricingNewHistoricalStateMode = .currentStateHypPL
+    var historicalStateModeWasExplicitlySelected = false
     var riskSims = 100_000
     var riskSeed = 42
     var riskCapability: PricingNewRiskCapability?
@@ -388,6 +404,20 @@ final class PricingNewWorkspaceViewModel {
     }
 
     var isStale: Bool { result != nil && pricedSignature != currentSignature }
+
+    var containsCustomAST: Bool {
+        legs.contains { $0.productID == "custom_product" }
+    }
+
+    var effectiveHistoricalStateMode: PricingNewHistoricalStateMode {
+        if historicalStateModeWasExplicitlySelected { return historicalStateMode }
+        return containsCustomAST ? .actualTradeBackcast : .currentStateHypPL
+    }
+
+    func selectHistoricalStateMode(_ mode: PricingNewHistoricalStateMode) {
+        historicalStateMode = mode
+        historicalStateModeWasExplicitlySelected = true
+    }
     var canRunRisk: Bool {
         lastRunID != nil && !isStale && riskCapability?.supported == true && !isRisking
     }
@@ -875,6 +905,7 @@ final class PricingNewWorkspaceViewModel {
                 request: PricingNewRiskBody(
                     confidence: riskConfidence, window: riskWindow,
                     horizon: riskHorizon, model: riskModel,
+                    historicalStateMode: effectiveHistoricalStateMode,
                     nSims: riskSims, seed: riskSeed))
         } catch {
             riskErrorMessage = error.localizedDescription

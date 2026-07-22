@@ -1,1 +1,1 @@
-{"secid":"SBER","category":"equities","label":"Сбербанк","currency":"SUR","facts":{"spot":298.98,"vol":0.2013,"atm_iv":null,"rv30":0.2013,"div_yield":0.1165,"expiry_T":null,"r_zero":0.131619,"ytm":null}}
+{"secid":"SBER","category":"equities","label":"Сбербанк","currency":"SUR","board":"TQBR","facts":{"spot":298.98,"vol":0.2013,"atm_iv":null,"rv30":0.2013,"div_yield":0.1165,"expiry_T":null,"r_zero":0.131619,"ytm":null}}

@@ -408,6 +408,7 @@ struct PricingNewScreen: View {
         let constituents = evidence?["constituents"]?.arrayValue ?? []
         let resolved = priced.resolvedInputs?.objectValue
         let customState = resolved?["valuation_state"]?.objectValue
+        let correlationEvidence = resolved?["correlation_evidence"]?.objectValue
         let isCustomRepricing = resolved?["schema"]?.stringValue
             == "custom-product-portfolio-repricing-v1"
         return VStack(alignment: .leading, spacing: 5) {
@@ -454,6 +455,31 @@ struct PricingNewScreen: View {
                 }
                 .font(.system(size: 8, design: .monospaced))
                 .foregroundStyle(.secondary)
+                if let correlationEvidence {
+                    HStack(spacing: Theme.s2) {
+                        Pill(
+                            text: correlationEvidence["source"]?.stringValue
+                                ?? "correlation evidence missing",
+                            color: correlationEvidence["historical_estimation_bound"]?.boolValue == true
+                                ? Theme.positive : .secondary)
+                        Text(correlationEvidence["method"]?.stringValue ?? "manual")
+                        if let lookback = correlationEvidence["lookback"]?.doubleValue {
+                            Text("lookback \(Int(lookback))")
+                        }
+                        if let asOf = correlationEvidence["as_of"]?.stringValue {
+                            Text("as-of \(asOf)")
+                        }
+                        if correlationEvidence["fallback"]?.boolValue == true {
+                            Text("prior fallback used").foregroundStyle(Theme.warning)
+                        }
+                        if let hash = correlationEvidence["matrix_hash"]?.stringValue {
+                            Text("corr hash \(hash.prefix(12))")
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                }
             }
             if !constituents.isEmpty {
                 PricingNewFlowLayout(spacing: 5) {
@@ -790,12 +816,45 @@ private struct PricingNewInstrumentColumn: View {
                 .font(Typography.micro)
                 .foregroundStyle(attachment.payoffBasis == nil
                                  ? Theme.warning : .secondary)
-            Text("State \(stateMode) · source \(stateSource) · current spots = reference spots")
+            if let schedule = attachment.contractSchedule {
+                Text(contractScheduleSummary(schedule))
+                    .font(Typography.micro).foregroundStyle(.secondary)
+                Text("Fixings " + schedule.fixingBindings.map {
+                    "\($0.assetName):\($0.secid)/\($0.board ?? "default")/\($0.priceBasis.rawValue)"
+                }.joined(separator: " · "))
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundStyle(.tertiary).lineLimit(2)
+            } else {
+                Text("Contract schedule missing · legacy/current-state compatibility only")
+                    .font(Typography.micro).foregroundStyle(Theme.warning)
+            }
+            if let state = attachment.valuationState,
+               stateMode == PricingNewCustomValuationMode.seasoned.rawValue {
+                Text("State seasoned · obs \(state.observationIndex) · elapsed "
+                     + "\(Fmt.number(state.elapsedTime, digits: 6))y · as-of "
+                     + "\(state.stateAsOf) · source \(stateSource)")
+                    .font(Typography.micro).foregroundStyle(.secondary)
+                if let hash = state.stateSourceHash {
+                    Text("state source \(hash.prefix(16))")
+                        .font(.system(size: 8, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+            } else {
+                Text("State \(stateMode) · source \(stateSource) · current spots = reference spots")
+                    .font(Typography.micro)
+                    .foregroundStyle(attachment.stateMode == nil
+                                     ? Theme.warning : .secondary)
+            }
+            if let calibration = attachment.market.correlationCalibration {
+                Text("Correlation \(calibration.mode) · \(calibration.method) "
+                     + "\(calibration.lookback)d · fallback \(calibration.fallbackPolicy)")
+                    .font(Typography.micro).foregroundStyle(.secondary)
+            }
+            Text(stateMode == "seasoned"
+                 ? "Seasoned state is explicit and sequential historical path roll is enabled."
+                 : "Inception state; sequential historical path roll is enabled.")
                 .font(Typography.micro)
-                .foregroundStyle(attachment.stateMode == nil
-                                 ? Theme.warning : .secondary)
-            Text("Seasoned/path-dependent state is fail-closed; no hidden time roll")
-                .font(Typography.micro).foregroundStyle(Theme.warning)
+                .foregroundStyle(stateMode == "seasoned" ? Theme.positive : .secondary)
             if let resource {
                 Text("MC \(formatMillions(resource.unitPathPoints)) path-points "
                      + "(≈\(Int(resource.estimatedPeakMiB.rounded())) MiB) · Greeks "
@@ -810,6 +869,18 @@ private struct PricingNewInstrumentColumn: View {
 
     private func formatMillions(_ value: Double) -> String {
         String(format: "%.2fM", value / 1_000_000.0)
+    }
+
+    private func contractScheduleSummary(
+        _ schedule: PricingNewCustomContractSchedule
+    ) -> String {
+        let version = schedule.calendarVersion.map { "v\($0)" }
+            ?? "server latest"
+        return "Contract \(schedule.effectiveDate) → "
+            + "\(schedule.contractualMaturityDate) · "
+            + "\(schedule.contractualObservationDates.count) obs · "
+            + "\(schedule.businessDayConvention.rawValue) · "
+            + "\(schedule.calendarID.rawValue) \(version)"
     }
 
     private func groupColor(_ group: String) -> Color {
@@ -910,7 +981,7 @@ struct PricingNewRiskBlock: View {
     }
 
     private var customHorizonUnsupported: Bool {
-        hasCustomAST && vm.riskHorizon != 1
+        hasCustomAST && !(1...250).contains(vm.riskHorizon)
     }
 
     private var customWindowUnsupported: Bool {
@@ -936,13 +1007,18 @@ struct PricingNewRiskBlock: View {
                     }
                 }
                 controls
+                if vm.riskModel == "historical_full_reprice" {
+                    historicalStateExplanation
+                }
                 if hasCustomAST {
-                    Label("Custom AST risk · custom_hist_crn_v1 · 1 000 inner paths · paired CRN base · max 500 scenarios",
+                    Label(vm.effectiveHistoricalStateMode == .actualTradeBackcast
+                          ? "Custom AST actual-trade backcast · historical lifecycle reconstruction · 1 000 inner paths · paired CRN"
+                          : "Custom AST current-state HypPL · current lifecycle state + historical factor paths · 1 000 inner paths · paired CRN",
                           systemImage: "checkmark.shield.fill")
                         .font(Typography.micro)
                         .foregroundStyle(.secondary)
                     if customHorizonUnsupported {
-                        Label("Horizon > 1d заблокирован: нет canonical seasoned/time-roll state. Установи 1 день.",
+                        Label("Custom AST horizon должен быть от 1 до 250 дней.",
                               systemImage: "exclamationmark.triangle.fill")
                             .font(Typography.micro).foregroundStyle(Theme.warning)
                     }
@@ -978,6 +1054,20 @@ struct PricingNewRiskBlock: View {
                 Picker("Model", selection: $vm.riskModel) {
                     ForEach(models, id: \.0) { Text($0.1).tag($0.0) }
                 }.labelsHidden().pickerStyle(.menu).neutralControlTint().frame(width: 220)
+            }
+            riskField("STATE HISTORY") {
+                Picker("Historical state mode", selection: Binding(
+                    get: { vm.effectiveHistoricalStateMode },
+                    set: { vm.selectHistoricalStateMode($0) }
+                )) {
+                    Text("Current-state HypPL")
+                        .tag(PricingNewHistoricalStateMode.currentStateHypPL)
+                    Text("Actual trade backcast")
+                        .tag(PricingNewHistoricalStateMode.actualTradeBackcast)
+                }
+                .labelsHidden().pickerStyle(.menu).neutralControlTint()
+                .frame(width: 190)
+                .disabled(vm.riskModel != "historical_full_reprice")
             }
             riskField("CONFIDENCE") {
                 Picker("Confidence", selection: $vm.riskConfidence) {
@@ -1023,6 +1113,19 @@ struct PricingNewRiskBlock: View {
         .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
+    private var historicalStateExplanation: some View {
+        Group {
+            if vm.effectiveHistoricalStateMode == .actualTradeBackcast {
+                Label("Actual trade backcast восстанавливает lifecycle/path state сделки на каждой исторической scenario date. Это backcast P&L, не обычный HypPL.",
+                      systemImage: "calendar.badge.clock")
+            } else {
+                Label("Current-state HypPL применяет исторические factor paths к сегодняшнему lifecycle/path state сделки.",
+                      systemImage: "clock.arrow.circlepath")
+            }
+        }
+        .font(Typography.micro).foregroundStyle(.secondary)
+    }
+
     @ViewBuilder
     private var capabilityDetails: some View {
         if let capability = vm.riskCapability, !capability.supported {
@@ -1047,7 +1150,11 @@ struct PricingNewRiskBlock: View {
     }
 
     private func riskResult(_ result: PricingNewRiskResult) -> some View {
-        VStack(alignment: .leading, spacing: Theme.s3) {
+        let stateMode = result.historicalStateMode
+            ?? vm.effectiveHistoricalStateMode.rawValue
+        let isActualBackcast = stateMode
+            == PricingNewHistoricalStateMode.actualTradeBackcast.rawValue
+        return VStack(alignment: .leading, spacing: Theme.s3) {
             HStack(spacing: Theme.s2) {
                 PricingNewRiskTile(label: "VaR \(Fmt.percent(result.confidence * 100, digits: 1))",
                                    value: Fmt.money(result.varValue, currency: result.currency),
@@ -1068,7 +1175,9 @@ struct PricingNewRiskBlock: View {
             operationalEvidence(result)
             HStack(alignment: .top, spacing: Theme.s3) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("HYPOTHETICAL P&L DISTRIBUTION")
+                    Text(isActualBackcast
+                         ? "ACTUAL-TRADE BACKCAST P&L DISTRIBUTION"
+                         : "HYPOTHETICAL P&L DISTRIBUTION")
                         .font(Typography.label).foregroundStyle(.secondary)
                     Chart(result.histogram, id: \.x) { bin in
                         BarMark(x: .value("P&L", bin.x), y: .value("Count", bin.count))
@@ -1081,7 +1190,9 @@ struct PricingNewRiskBlock: View {
                 }
                 .frame(maxWidth: .infinity)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("HISTORICAL FULL-REPRICE HYPPL")
+                    Text(isActualBackcast
+                         ? "HISTORICAL ACTUAL-TRADE BACKCAST"
+                         : "HISTORICAL CURRENT-STATE HYPPL")
                         .font(Typography.label).foregroundStyle(.secondary)
                     Chart(Array(result.hyppl.enumerated()), id: \.offset) { index, point in
                         LineMark(x: .value("Scenario", index), y: .value("P&L", point.pnl))
@@ -1096,6 +1207,9 @@ struct PricingNewRiskBlock: View {
             }
             HStack(spacing: Theme.s3) {
                 Label(result.modelLabel, systemImage: "function")
+                Label(isActualBackcast ? "actual trade backcast"
+                      : "current-state HypPL",
+                      systemImage: "point.topleft.down.to.point.bottomright.curvepath")
                 Label("horizon \(result.horizon)d · \(result.horizonMethod ?? "legacy_unspecified")",
                       systemImage: "clock.arrow.circlepath")
                 Label("\(result.provenance.historyFirstDate ?? "—") → \(result.provenance.historyLastDate ?? "—")",
@@ -1128,6 +1242,12 @@ struct PricingNewRiskBlock: View {
             HStack(spacing: Theme.s2) {
                 Pill(text: "horizon \(result.horizonMethod ?? "legacy")",
                      color: result.horizonMethod == nil ? Theme.warning : Theme.positive)
+                Pill(text: result.historicalStateMode
+                     ?? vm.effectiveHistoricalStateMode.rawValue,
+                     color: (result.historicalStateMode
+                             ?? vm.effectiveHistoricalStateMode.rawValue)
+                        == PricingNewHistoricalStateMode.actualTradeBackcast.rawValue
+                        ? Theme.accent : .secondary)
                 if !model.isEmpty {
                     Text("model \(diagnosticsSummary(model))")
                 }

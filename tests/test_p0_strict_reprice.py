@@ -15,8 +15,11 @@ from services.risk_service import RiskService
 
 def _shifts(n: int = 1) -> dict:
     zeros = np.zeros(n)
+    dates = [f"2026-07-{i + 1:02d}" for i in range(n)]
+    start_dates = ["2026-06-30", *dates[:-1]]
     return {
-        "dates": [f"2026-07-{i + 1:02d}" for i in range(n)],
+        "dates": dates,
+        "previous_dates": start_dates,
         "eq": zeros.copy(),
         "dr": zeros.copy(),
         "dvol": zeros.copy(),
@@ -27,7 +30,33 @@ def _shifts(n: int = 1) -> dict:
         "fx_pairs": {},
         "factors": ["synthetic"],
         "factor_warnings": [],
+        "spot_return_paths": {
+            "schema": "historical-spot-return-paths-v1",
+            "day_count_basis": 252,
+            "dates": [[day] for day in dates],
+            "start_dates": start_dates,
+            "fallback_log_returns": [[0.0] for _ in dates],
+            "log_returns_by_factor": {},
+        },
     }
+
+
+def _path_roll_evidence() -> list[dict]:
+    return [{
+        "contract": "custom_ast_historical_path_roll_v1",
+        "requested_days": 1,
+        "consumed_days": 1,
+        "day_count_basis": 252,
+        "start_elapsed_time": 0.0,
+        "end_elapsed_time": 1.0 / 252.0,
+        "path_hash": "a" * 64,
+        "transition_hash": "b" * 64,
+        "cashflow_ledger_hash": "c" * 64,
+        "output_state_hash": "d" * 64,
+        "terminal": False,
+        "cashflow_count": 0,
+        "horizon_cashflow": 0.0,
+    }]
 
 
 class _ResultPortfolio:
@@ -123,6 +152,9 @@ def test_custom_hyppl_enforces_and_reports_paired_crn_profile():
                     "custom_profile_computed" if self.calls == 1
                     else "custom_profile_cache"
                 ),
+                "custom_path_roll_evidence": _path_roll_evidence(),
+                "pnl_convention": (
+                    "horizon_cashflows_plus_end_pv_minus_current_base_pv"),
             }
 
     result = marketrisk._hyppl_from_scenarios(
@@ -146,6 +178,53 @@ def test_custom_hyppl_enforces_and_reports_paired_crn_profile():
     assert evidence["base_value_sources"] == [
         "custom_profile_cache", "custom_profile_computed",
     ]
+    assert len(evidence["path_roll_evidence"]) == 2
+    assert evidence["path_roll_evidence"][0]["transition_hash"] == "b" * 64
+
+
+def test_custom_hyppl_requires_sequential_paths_and_rejects_sqrt_time():
+    class CustomPortfolio:
+        positions = [SimpleNamespace(instrument="custom_product")]
+        calls = 0
+
+        def full_reprice_pnl(self, **_kwargs):
+            self.calls += 1
+            raise AssertionError("repricer must not run after a failed path gate")
+
+    portfolio = CustomPortfolio()
+    missing_path = _shifts()
+    missing_path.pop("spot_return_paths")
+    with pytest.raises(ValueError, match="sequential spot-return paths"):
+        marketrisk._reprice_series(portfolio, missing_path)
+    with pytest.raises(ValueError, match="sqrt-time fallback is not valid"):
+        marketrisk._hyppl_from_scenarios(
+            portfolio, _shifts(), horizon_method="sqrt_time", horizon=10)
+    assert portfolio.calls == 0
+
+
+def test_custom_hyppl_rejects_malformed_transition_evidence():
+    class CustomPortfolio:
+        positions = [SimpleNamespace(instrument="custom_product")]
+
+        @staticmethod
+        def full_reprice_pnl(**_kwargs):
+            roll = dict(_path_roll_evidence()[0])
+            roll["transition_hash"] = "broken"
+            return {
+                "pnl": 1.0,
+                "base_value": 100.0,
+                "shocked_value": 101.0,
+                "errors": [],
+                "valid": True,
+                "custom_repricing_profile": "custom_hist_crn_v1",
+                "base_value_source": "custom_profile_computed",
+                "custom_path_roll_evidence": [roll],
+                "pnl_convention": (
+                    "horizon_cashflows_plus_end_pv_minus_current_base_pv"),
+            }
+
+    with pytest.raises(ValueError, match="audit hash"):
+        marketrisk._reprice_series(CustomPortfolio(), _shifts())
 
 
 @pytest.mark.parametrize(
@@ -169,6 +248,9 @@ def test_custom_hyppl_rejects_missing_profile_or_paired_base_evidence(mutation):
                 "valid": True,
                 "custom_repricing_profile": "custom_hist_crn_v1",
                 "base_value_source": "custom_profile_computed",
+                "custom_path_roll_evidence": _path_roll_evidence(),
+                "pnl_convention": (
+                    "horizon_cashflows_plus_end_pv_minus_current_base_pv"),
             }
             result.update(mutation)
             return result

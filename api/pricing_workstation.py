@@ -751,10 +751,9 @@ def _custom_product(svc, v, snapshot):
     ).strip()
     if payoff_basis not in {"normalized_notional", "legacy_unspecified"}:
         raise ValueError("custom product payoff_basis is unsupported")
-    if state_mode not in {"inception", "legacy_unspecified"}:
-        raise ValueError(
-            "custom product seasoned state is unsupported; state_mode must be inception")
-    if state_source not in {"explicit_assumption", "legacy_unspecified"}:
+    if state_mode not in {"inception", "seasoned", "legacy_unspecified"}:
+        raise ValueError("custom product state_mode is unsupported")
+    if state_source not in {"explicit_assumption", "seasoned_observation", "legacy_unspecified"}:
         raise ValueError("custom product state_source is unsupported")
 
     product_id = str(attachment.get("product_id") or "").strip()
@@ -897,18 +896,312 @@ def _custom_product(svc, v, snapshot):
     carries = [float(item["carry_yield"]) for item in ordered_assets]
     current_spots = [float(item["spot"]) for item in ordered_assets]
     market = {"r": float(rate_contract["value"])}
+    correlation_evidence = None
     if len(ordered_assets) == 1:
         market.update({"sigma": sigmas[0], "q": carries[0]})
+        correlation = [[1.0]]
     else:
         if not isinstance(correlation, list):
             raise ValueError("multi-asset custom product requires a correlation matrix")
+        calibration = market_contract.get("correlation_calibration") or {
+            "mode": "manual"
+        }
+        if not isinstance(calibration, dict):
+            raise ValueError("correlation_calibration must be an object")
+        calibration_mode = str(calibration.get("mode") or "manual").lower()
+        if calibration_mode == "historical":
+            if snapshot is None or not getattr(snapshot, "valuation_date", None):
+                raise ValueError(
+                    "historical correlation requires a bound valuation snapshot")
+            factor_ids = [
+                f"{str(item.get('secid') or '').strip()}:price"
+                for item in ordered_assets
+            ]
+            calibrated = svc.market_data.historical_correlation(
+                factor_ids,
+                as_of=snapshot.valuation_date,
+                lookback=int(calibration.get("lookback", 252)),
+                method=str(calibration.get("method") or "ewma"),
+                decay=float(calibration.get("decay", 0.97)),
+                min_samples=int(calibration.get("min_samples", 60)),
+                fallback_policy=str(
+                    calibration.get("fallback_policy") or "error"),
+                prior_matrix=(correlation if str(
+                    calibration.get("fallback_policy") or "error"
+                ).lower() == "prior" else None),
+            )
+            correlation = calibrated["matrix"]
+            correlation_evidence = {
+                "source": "historical_market_data",
+                "historical_estimation_bound": True,
+                "snapshot_id": active_snapshot_id or None,
+                **calibrated,
+            }
+        elif calibration_mode != "manual":
+            raise ValueError(
+                "correlation_calibration.mode must be manual or historical")
         market.update({"sigmas": sigmas, "qs": carries, "corr": correlation})
 
-    valuation_state = custom_products.inception_valuation_state(
-        definition,
-        dict(zip(expected_asset_names, current_spots)),
-        dict(zip(expected_asset_names, current_spots)),
-    )
+    contract_schedule = None
+    fixing_bindings = None
+    inception_seed = None
+    schedule_request = attachment.get("contract_schedule")
+    if schedule_request is not None:
+        if not isinstance(schedule_request, dict):
+            raise ValueError("custom product contract_schedule must be an object")
+        allowed_schedule_keys = {
+            "schema_version", "effective_date", "contractual_maturity_date",
+            "contractual_observation_dates", "business_day_convention",
+            "calendar_id", "calendar_version", "day_count_convention",
+            "valuation_cutoff", "fixing_bindings",
+        }
+        unknown_schedule_keys = sorted(
+            set(schedule_request) - allowed_schedule_keys)
+        if unknown_schedule_keys:
+            raise ValueError(
+                "custom product contract_schedule has unknown fields: "
+                + ", ".join(unknown_schedule_keys))
+        if schedule_request.get("schema_version") != 1:
+            raise ValueError("custom product contract_schedule supports schema_version=1")
+        market_db = getattr(svc.market_data, "market_db", None)
+        if market_db is None:
+            raise ValueError(
+                "custom product contractual schedule requires the governed "
+                "market-data database")
+        from infra.moex_calendar import MoexCalendarResolver
+
+        calendar_id = str(
+            schedule_request.get("calendar_id") or "MOEX_STOCK"
+        ).strip().upper()
+        if calendar_id != "MOEX_STOCK":
+            raise ValueError(
+                "custom product v1 supports calendar_id=MOEX_STOCK only")
+        raw_calendar_version = schedule_request.get("calendar_version")
+        if (raw_calendar_version is not None
+                and (isinstance(raw_calendar_version, bool)
+                     or not isinstance(raw_calendar_version, int)
+                     or raw_calendar_version < 1)):
+            raise ValueError("custom product calendar_version must be positive")
+        resolver = MoexCalendarResolver.from_db(
+            market_db, calendar_id, raw_calendar_version)
+        effective_date = str(schedule_request.get("effective_date") or "")
+        if not resolver.is_business_day(effective_date):
+            raise ValueError(
+                "custom product effective_date must be a distinct MOEX "
+                "contractual session")
+        contractual_observations = schedule_request.get(
+            "contractual_observation_dates")
+        if not isinstance(contractual_observations, list) \
+                or not contractual_observations:
+            raise ValueError(
+                "custom product contractual_observation_dates are required")
+        bdc = str(schedule_request.get(
+            "business_day_convention") or "MODIFIED_FOLLOWING").strip().upper()
+        if bdc not in {
+                "UNADJUSTED", "FOLLOWING", "MODIFIED_FOLLOWING",
+                "PRECEDING", "MODIFIED_PRECEDING"}:
+            raise ValueError("custom product business-day convention is unsupported")
+        resolver_bdc = bdc.lower().replace("_", "-")
+        resolved_observations = [
+            resolver.adjust(str(value), resolver_bdc).isoformat()
+            for value in contractual_observations
+        ]
+        contractual_maturity = str(
+            schedule_request.get("contractual_maturity_date") or "")
+        resolved_maturity = resolver.adjust(
+            contractual_maturity, resolver_bdc).isoformat()
+        if resolved_observations[-1] != resolved_maturity:
+            raise ValueError(
+                "the final contractual observation and maturity must resolve "
+                "to the same MOEX session")
+        resolved_sessions = [
+            value.isoformat() for value in resolver.business_sessions(
+                effective_date, resolved_maturity)
+        ]
+        calendar_evidence = dict(resolver.evidence)
+        contract_schedule = custom_products.canonical_instance_contract_schedule(
+            definition,
+            {
+                "schema_version": 1,
+                "effective_date": effective_date,
+                "maturity_date": resolved_maturity,
+                "observation_dates": resolved_observations,
+                "contractual_maturity_date": contractual_maturity,
+                "contractual_observation_dates": [
+                    str(value) for value in contractual_observations
+                ],
+                "business_day_convention": bdc,
+                "day_count_convention": str(schedule_request.get(
+                    "day_count_convention") or "ACT/365F"),
+                "fixing_convention": "MOEX_EXACT_FIXING_BINDINGS_V1",
+                "valuation_cutoff": str(schedule_request.get(
+                    "valuation_cutoff") or "POST_CLOSE_POST_EVENTS"),
+                "calendar": {
+                    "calendar_id": resolver.calendar_id,
+                    "source": str(calendar_evidence.get("source") or "MOEX"),
+                    "version": str(resolver.version),
+                    "payload_hash": resolver.payload_hash,
+                    "resolved_sessions": resolved_sessions,
+                },
+            },
+            slots=slots,
+        )
+
+        raw_bindings = schedule_request.get("fixing_bindings")
+        if (not isinstance(raw_bindings, list)
+                or len(raw_bindings) != len(expected_asset_names)):
+            raise ValueError(
+                "custom product fixing_bindings must contain exactly one row "
+                "per definition asset")
+        by_asset = {}
+        for raw_binding in raw_bindings:
+            if not isinstance(raw_binding, dict):
+                raise ValueError("custom product fixing binding must be an object")
+            asset_name = str(raw_binding.get("asset_name") or "").strip()
+            if not asset_name or asset_name in by_asset:
+                raise ValueError(
+                    "custom product fixing binding asset names must be unique")
+            by_asset[asset_name] = raw_binding
+        canonical_binding_rows = []
+        allowed_bases = {
+            "CLOSE", "LEGALCLOSEPRICE", "WAPRICE", "SETTLEPRICE"}
+        for asset_name, market_asset in zip(
+                expected_asset_names, ordered_assets):
+            raw_binding = by_asset.get(asset_name)
+            if raw_binding is None:
+                raise ValueError(
+                    f"custom product fixing binding for '{asset_name}' is missing")
+            secid = str(raw_binding.get("secid") or "").strip()
+            expected_secid = str(market_asset.get("secid") or "").strip()
+            if not secid or secid != expected_secid:
+                raise ValueError(
+                    f"custom product fixing binding SECID for '{asset_name}' "
+                    "does not match the bound market asset")
+            basis = str(raw_binding.get("price_basis") or "").strip().upper()
+            if basis not in allowed_bases:
+                raise ValueError(
+                    f"custom product fixing basis for '{asset_name}' is unsupported")
+            source = str(raw_binding.get("source") or "MOEX").strip().upper()
+            if source != "MOEX" or str(
+                    raw_binding.get("missing_fixing_policy") or "error"
+            ).strip().lower() != "error":
+                raise ValueError(
+                    "custom product actual state requires MOEX fixings and "
+                    "missing_fixing_policy=error")
+            board = str(
+                raw_binding.get("board") or market_asset.get("board") or ""
+            ).strip().upper()
+            if not board:
+                ref = market_db.get_instrument_ref(secid) or {}
+                board = str(ref.get("board") or "").strip().upper()
+            if not board:
+                raise ValueError(
+                    f"custom product fixing board for '{asset_name}' cannot "
+                    "be resolved from the instrument master")
+            canonical_binding_rows.append({
+                "asset_name": asset_name,
+                "secid": secid,
+                "factor_id": f"{secid}:price",
+                "price_basis": basis,
+                "board": board,
+                "session": str(raw_binding.get("session") or "").strip().upper(),
+                "source": "MOEX",
+                "missing_fixing_policy": "error",
+            })
+        fixing_bindings = {
+            "schema_version": 1,
+            "contract": "moex_exact_fixing_bindings_v1",
+            "schedule_hash": contract_schedule["schedule_hash"],
+            "calendar_id": resolver.calendar_id,
+            "calendar_version": resolver.version,
+            "calendar_payload_hash": resolver.payload_hash,
+            "asset_names": list(expected_asset_names),
+            "bindings": canonical_binding_rows,
+        }
+        fixing_bindings["bindings_hash"] = hashlib.sha256(json.dumps(
+            fixing_bindings, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")).hexdigest()
+
+    supplied_state = attachment.get("valuation_state")
+    if state_mode == "seasoned":
+        if not isinstance(supplied_state, dict):
+            raise ValueError(
+                "seasoned custom product requires explicit valuation_state")
+        if (supplied_state.get("mode") != "seasoned"
+                or supplied_state.get("state_contract")
+                != "custom_ast_seasoned_state_v1"
+                or state_source != "seasoned_observation"):
+            raise ValueError(
+                "seasoned custom product state mode/source/contract mismatch")
+        state_as_of = str(supplied_state.get("state_as_of") or "")[:10]
+        snapshot_as_of = str(getattr(snapshot, "valuation_date", "") or "")[:10]
+        if not state_as_of or state_as_of != snapshot_as_of:
+            raise ValueError(
+                "seasoned custom product state_as_of must match the active snapshot")
+        source_hash = str(supplied_state.get("state_source_hash") or "")
+        if (len(source_hash) != 64
+                or any(char not in "0123456789abcdefABCDEF"
+                       for char in source_hash)):
+            raise ValueError(
+                "seasoned custom product requires a SHA-256 state_source_hash")
+        state_spots = supplied_state.get("current_spots")
+        if (not isinstance(state_spots, dict)
+                or set(state_spots) != set(expected_asset_names)):
+            raise ValueError(
+                "seasoned custom product current_spots must exactly match "
+                "definition assets")
+        for asset_name, market_spot in zip(
+                expected_asset_names, current_spots):
+            try:
+                state_spot = float(state_spots[asset_name])
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    f"seasoned state spot for '{asset_name}' is invalid") from exc
+            if (not math.isfinite(state_spot)
+                    or not math.isclose(
+                        state_spot, market_spot,
+                        rel_tol=1e-12, abs_tol=1e-12)):
+                raise ValueError(
+                    f"seasoned state current_spots['{asset_name}'] must equal "
+                    "the bound market asset spot")
+        valuation_state = dict(supplied_state)
+    elif state_mode == "inception":
+        if state_source != "explicit_assumption":
+            raise ValueError(
+                "inception custom product requires explicit_assumption state source")
+        valuation_state = custom_products.inception_valuation_state(
+            definition,
+            dict(zip(expected_asset_names, current_spots)),
+            dict(zip(expected_asset_names, current_spots)),
+        )
+    else:
+        # Legacy attachments remain price-only and are explicitly excluded by
+        # the portfolio-risk capability contract below.
+        valuation_state = custom_products.inception_valuation_state(
+            definition,
+            dict(zip(expected_asset_names, current_spots)),
+            dict(zip(expected_asset_names, current_spots)),
+        )
+    if contract_schedule is not None:
+        if state_mode not in {"inception", "seasoned"}:
+            raise ValueError(
+                "dated custom product requires an explicit lifecycle state mode")
+        snapshot_as_of = str(getattr(snapshot, "valuation_date", "") or "")[:10]
+        if state_mode == "inception" and snapshot_as_of != \
+                contract_schedule["effective_date"]:
+            raise ValueError(
+                "dated inception state requires effective_date equal to the "
+                "active snapshot valuation date; use seasoned state otherwise")
+        reference_map = valuation_state.get("reference_spots") or {}
+        inception_seed = custom_products.inception_valuation_seed(
+            definition, contract_schedule, reference_map, slots=slots)
+        if state_mode == "inception":
+            valuation_state = dict(inception_seed["valuation_state"])
+        else:
+            valuation_state["instance_schedule_hash"] = contract_schedule[
+                "schedule_hash"]
+            valuation_state["inception_seed_hash"] = inception_seed["seed_hash"]
     result = store.reprice(
         product_id,
         slots,
@@ -918,6 +1211,7 @@ def _custom_product(svc, v, snapshot):
         n_sims=numerical.get("paths"),
         steps=numerical.get("steps"),
         seed=numerical.get("seed"),
+        contract_schedule=contract_schedule,
         version=definition_version,
         expected_definition_hash=definition_hash,
         include_greeks=True,
@@ -966,17 +1260,18 @@ def _custom_product(svc, v, snapshot):
                          str(item.get("category") or "").strip().lower())
         for item in ordered_assets
     ]
-    correlation_evidence = {
-        "source": "explicit_attachment",
-        "method": "user_supplied_static_correlation",
-        "matrix_hash": hashlib.sha256(json.dumps(
-            correlation, sort_keys=True, separators=(",", ":"),
-            ensure_ascii=False, allow_nan=False,
-        ).encode("utf-8")).hexdigest(),
-        "asset_names": expected_asset_names,
-        "snapshot_id": active_snapshot_id or None,
-        "historical_estimation_bound": False,
-    }
+    if correlation_evidence is None:
+        correlation_evidence = {
+            "source": "explicit_attachment",
+            "method": "user_supplied_static_correlation",
+            "matrix_hash": hashlib.sha256(json.dumps(
+                correlation, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, allow_nan=False,
+            ).encode("utf-8")).hexdigest(),
+            "asset_names": expected_asset_names,
+            "snapshot_id": active_snapshot_id or None,
+            "historical_estimation_bound": False,
+        }
     raw_component_greeks = result.get("component_greeks")
     if isinstance(raw_component_greeks, dict):
         market_components = {}
@@ -1008,7 +1303,10 @@ def _custom_product(svc, v, snapshot):
         "component_secids": component_secids,
         "component_kinds": component_kinds,
         "assets": current_spots,
-        "reference_spots": current_spots,
+        "reference_spots": [
+            float((valuation_state.get("reference_spots") or {}).get(name, spot))
+            for name, spot in zip(expected_asset_names, current_spots)
+        ],
         "sigmas": sigmas,
         "incomes": carries,
         "correlation": correlation,
@@ -1025,6 +1323,9 @@ def _custom_product(svc, v, snapshot):
         "state_mode": state_mode,
         "state_source": state_source,
         "valuation_state": valuation_state,
+        "contract_schedule": contract_schedule,
+        "fixing_bindings": fixing_bindings,
+        "inception_seed": inception_seed,
         "attachment": attachment,
     }
     resolved_inputs["repricing_contract_hash"] = hashlib.sha256(
@@ -1043,7 +1344,12 @@ def _custom_product(svc, v, snapshot):
         warnings.append(
             "Legacy custom attachment has no explicit inception state source; "
             "portfolio risk is unavailable")
-    if len(expected_asset_names) > 1:
+    if contract_schedule is None:
+        warnings.append(
+            "No governed contractual schedule/fixing bindings are attached; "
+            "actual_trade_backcast is unavailable (current-state HypPL remains available)")
+    if (len(expected_asset_names) > 1
+            and not correlation_evidence.get("historical_estimation_bound")):
         warnings.append(
             "Correlation matrix is an explicit static attachment input; no "
             "historical estimation window/source is bound yet")
@@ -1862,8 +2168,9 @@ PRODUCTS: list[WsProduct] = [
         _custom_product,
         note=("Generic typed payoff AST with version-pinned definition and explicit "
               "market-data evidence. Component Greeks and historical full-reprice "
-              "risk are supported for canonical inception state; seasoned products "
-              "remain fail-closed until their observation/path state is supplied.")),
+              "risk support canonical inception or explicit seasoned state. Multi-day "
+              "custom risk uses a sequential business/252 spot path; seasoned products "
+              "remain fail-closed only when their canonical observation state is absent.")),
     WsProduct(
         "basket_note", "Basket Note (real underlyings)", "hybrid", "Structured notes",
         [P("basket", "Basket SECID:weight", "SBER:0.4, GAZP:0.3, LKOH:0.3", "contract",
@@ -3194,6 +3501,9 @@ def _custom_product_position(v: dict) -> tuple[str, dict, str]:
     slots = contract.get("slots")
     correlation = contract.get("correlation")
     correlation_evidence = contract.get("correlation_evidence")
+    contract_schedule = contract.get("contract_schedule")
+    fixing_bindings = contract.get("fixing_bindings")
+    inception_seed = contract.get("inception_seed")
     if (not isinstance(market, Mapping)
             or not isinstance(market_evidence, Mapping)
             or not isinstance(numerical, Mapping)
@@ -3206,17 +3516,50 @@ def _custom_product_position(v: dict) -> tuple[str, dict, str]:
             "custom_product requires canonical market, evidence, numerical, "
             "valuation-state, slot and correlation inputs/evidence",
         )
-    if valuation_state.get("mode") != "inception":
+    if valuation_state.get("mode") not in {"inception", "seasoned"}:
+        raise PortfolioRepricingContractError(
+            "custom_valuation_state_invalid",
+            "custom_product portfolio risk requires canonical inception or seasoned state",
+        )
+    if (valuation_state.get("mode") == "seasoned"
+            and valuation_state.get("state_contract") != "custom_ast_seasoned_state_v1"):
         raise PortfolioRepricingContractError(
             "custom_seasoned_state_unsupported",
-            "custom_product portfolio risk currently supports only canonical "
-            "mode='inception'; seasoned observation/path state is required otherwise",
+            "custom_product seasoned state requires state_contract=custom_ast_seasoned_state_v1",
         )
     if list(valuation_state.get("asset_names") or []) != asset_names:
         raise PortfolioRepricingContractError(
             "custom_component_contract_invalid",
             "custom_product valuation-state assets do not match the pinned definition",
         )
+    lifecycle_parts = (contract_schedule, fixing_bindings, inception_seed)
+    if any(part is not None for part in lifecycle_parts):
+        if not all(isinstance(part, Mapping) for part in lifecycle_parts):
+            raise PortfolioRepricingContractError(
+                "custom_lifecycle_contract_incomplete",
+                "custom_product actual-state lifecycle evidence requires the "
+                "schedule, fixing bindings and inception seed together",
+            )
+        if (contract_schedule.get("contract")
+                != "custom_ast_instance_schedule_v1"
+                or fixing_bindings.get("contract")
+                != "moex_exact_fixing_bindings_v1"
+                or inception_seed.get("contract")
+                != "custom_ast_inception_seed_v1"):
+            raise PortfolioRepricingContractError(
+                "custom_lifecycle_contract_invalid",
+                "custom_product lifecycle schedule/binding/seed contract is unsupported",
+            )
+        schedule_hash = str(contract_schedule.get("schedule_hash") or "")
+        if (len(schedule_hash) != 64
+                or fixing_bindings.get("schedule_hash") != schedule_hash
+                or inception_seed.get("schedule_hash") != schedule_hash
+                or fixing_bindings.get("asset_names") != asset_names
+                or inception_seed.get("asset_names") != asset_names):
+            raise PortfolioRepricingContractError(
+                "custom_lifecycle_contract_invalid",
+                "custom_product lifecycle hashes/assets do not match the priced contract",
+            )
     if str(contract.get("definition_state_at_pricing") or "") != "published":
         raise PortfolioRepricingContractError(
             "custom_definition_not_published",
@@ -3234,10 +3577,14 @@ def _custom_product_position(v: dict) -> tuple[str, dict, str]:
             "custom_product portfolio risk requires payoff_basis="
             "'normalized_notional' and quantity_unit='currency_notional'",
         )
-    if state_mode != "inception" or state_source != "explicit_assumption":
+    expected_state_source = {
+        "inception": "explicit_assumption",
+        "seasoned": "seasoned_observation",
+    }.get(state_mode)
+    if expected_state_source is None or state_source != expected_state_source:
         raise PortfolioRepricingContractError(
             "custom_state_source_required",
-            "custom_product portfolio risk requires explicit inception state "
+            "custom_product portfolio risk requires explicit canonical state "
             "confirmation; legacy inferred state is pricing-only",
         )
 
@@ -3280,6 +3627,18 @@ def _custom_product_position(v: dict) -> tuple[str, dict, str]:
         "state_mode": state_mode,
         "state_source": state_source,
         "valuation_state": dict(valuation_state),
+        "contract_schedule": (
+            dict(contract_schedule) if isinstance(contract_schedule, Mapping)
+            else None
+        ),
+        "fixing_bindings": (
+            dict(fixing_bindings) if isinstance(fixing_bindings, Mapping)
+            else None
+        ),
+        "inception_seed": (
+            dict(inception_seed) if isinstance(inception_seed, Mapping)
+            else None
+        ),
         "attachment": dict(contract.get("attachment") or {}),
         "repricing_contract_hash": str(
             contract.get("repricing_contract_hash") or ""),

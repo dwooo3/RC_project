@@ -1600,6 +1600,228 @@ class MarketDataService:
             "pairs": pairs,
         }
 
+    def historical_correlation(
+        self,
+        factor_ids: list[str],
+        *,
+        as_of: date | None = None,
+        lookback: int = 252,
+        method: str = "pearson",
+        decay: float = 0.97,
+        min_samples: int = 20,
+        fallback_policy: str = "error",
+        prior_matrix: list[list[float]] | None = None,
+    ) -> dict[str, Any]:
+        """Calibrate a correlation matrix from aligned stored price history.
+
+        Unlike the legacy basket resolver (which always uses the full history
+        available before the snapshot), this explicit calibration API supports
+        a bounded lookback and exponentially weighted covariance.  The returned
+        evidence records the exact pairwise windows and the matrix adjustment,
+        making the result suitable for a reproducible pricing attachment.
+        """
+        if isinstance(factor_ids, (str, bytes)) or not isinstance(
+                factor_ids, (list, tuple)):
+            raise ValueError("factor_ids must be a sequence of factor ids")
+        names = [str(item).strip() for item in factor_ids]
+        if not names or any(not item for item in names):
+            raise ValueError("factor_ids must contain at least one non-empty id")
+        if len(names) > 50:
+            raise ValueError("factor_ids supports at most 50 factors")
+        if len(set(names)) != len(names):
+            raise ValueError("factor_ids must be unique")
+        if isinstance(lookback, bool) or int(lookback) != lookback or not 2 <= int(lookback) <= 10_000:
+            raise ValueError("lookback must be an integer in [2, 10000]")
+        lookback = int(lookback)
+        method = str(method).lower()
+        if method not in {"pearson", "ewma"}:
+            raise ValueError("method must be 'pearson' or 'ewma'")
+        if not np.isfinite(float(decay)) or not 0.0 < float(decay) < 1.0:
+            raise ValueError("decay must be in (0, 1)")
+        if isinstance(min_samples, bool) or int(min_samples) != min_samples or int(min_samples) < 2:
+            raise ValueError("min_samples must be an integer >= 2")
+        min_samples = int(min_samples)
+        if min_samples > lookback:
+            raise ValueError("min_samples must not exceed lookback")
+        fallback_policy = str(fallback_policy).strip().lower()
+        if fallback_policy not in {"error", "prior"}:
+            raise ValueError("fallback_policy must be 'error' or 'prior'")
+        cutoff = self._basket_day(as_of or date.today())
+        prior = None
+        if fallback_policy == "prior":
+            try:
+                prior = np.asarray(prior_matrix, dtype=float)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("prior_matrix must be numeric") from exc
+            if (prior.shape != (len(names), len(names))
+                    or not np.all(np.isfinite(prior))
+                    or not np.allclose(prior, prior.T, atol=1e-12, rtol=0.0)
+                    or not np.allclose(np.diag(prior), 1.0, atol=1e-12, rtol=0.0)
+                    or np.any(np.abs(prior) > 1.0)):
+                raise ValueError("prior_matrix is not a valid correlation matrix")
+
+        supported_kinds = {"price", "fix", "yield", "rate"}
+        levels: list[dict[date, float]] = []
+        series_evidence: list[dict[str, Any]] = []
+        transforms: list[str] = []
+        for token in names:
+            head, separator, suffix = token.rpartition(":")
+            if separator and head and suffix.lower() in supported_kinds:
+                factor_id, kind = token, suffix.lower()
+            else:
+                factor_id, kind = f"{token}:price", "price"
+            factor_levels: dict[date, float] = {}
+            invalid = future = 0
+            if factor_id == f"{token}:price":
+                factor_levels, _unused_returns, quality = (
+                    self._price_history_as_of(token, cutoff))
+                invalid = int(quality.get("invalid_observations_excluded", 0))
+                future = int(quality.get("future_observations_excluded", 0))
+            else:
+                rows = []
+                if self.market_db is not None:
+                    try:
+                        rows = self.market_db.get_time_series(factor_id, kind)
+                    except Exception:
+                        invalid += 1
+                for row in rows:
+                    try:
+                        observed = self._basket_day(row.get("dt"))
+                        value = float(row.get("value"))
+                    except (TypeError, ValueError, OverflowError):
+                        invalid += 1
+                        continue
+                    if observed > cutoff:
+                        future += 1
+                        continue
+                    if (not np.isfinite(value)
+                            or (kind in {"price", "fix"} and value <= 0.0)):
+                        invalid += 1
+                        continue
+                    factor_levels[observed] = value
+            transform = "log_return" if kind in {"price", "fix"} else "absolute_change"
+            canonical_levels = [
+                (day.isoformat(), float(value))
+                for day, value in sorted(factor_levels.items())
+            ]
+            levels.append(factor_levels)
+            transforms.append(transform)
+            series_evidence.append({
+                "requested_id": token,
+                "factor_id": factor_id,
+                "kind": kind,
+                "transform": transform,
+                "level_count": len(factor_levels),
+                "future_observations_excluded": future,
+                "invalid_observations_excluded": invalid,
+                "first_date": canonical_levels[0][0] if canonical_levels else None,
+                "last_date": canonical_levels[-1][0] if canonical_levels else None,
+                "series_hash": sha256(json.dumps(
+                    canonical_levels, separators=(",", ":"),
+                    ensure_ascii=False, allow_nan=False,
+                ).encode("utf-8")).hexdigest(),
+            })
+        matrix = np.eye(len(names), dtype=float)
+        pairs: list[dict[str, Any]] = []
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                shared = sorted(set(levels[i]).intersection(levels[j]))[-(lookback + 1):]
+                left_levels = np.asarray([levels[i][d] for d in shared], dtype=float)
+                right_levels = np.asarray([levels[j][d] for d in shared], dtype=float)
+                calendar_days = np.asarray([
+                    max((cur - prev).days, 1)
+                    for prev, cur in zip(shared, shared[1:])
+                ], dtype=float)
+                left = (np.diff(np.log(left_levels))
+                        if transforms[i] == "log_return"
+                        else np.diff(left_levels)) / np.sqrt(calendar_days)
+                right = (np.diff(np.log(right_levels))
+                         if transforms[j] == "log_return"
+                         else np.diff(right_levels)) / np.sqrt(calendar_days)
+                rho = None
+                reason = ""
+                effective_sample_size = float(left.size)
+                if left.size >= min_samples:
+                    left_variance = float(np.var(left))
+                    right_variance = float(np.var(right))
+                    if (not np.isfinite(left_variance)
+                            or not np.isfinite(right_variance)
+                            or left_variance <= 1e-24
+                            or right_variance <= 1e-24):
+                        value = np.nan
+                        reason = "zero_or_nonfinite_variance"
+                    elif method == "pearson":
+                        value = float(np.corrcoef(left, right)[0, 1])
+                    else:
+                        weights = float(decay) ** np.arange(left.size - 1, -1, -1)
+                        weights /= weights.sum()
+                        effective_sample_size = float(1.0 / np.sum(weights ** 2))
+                        lm = float(np.dot(weights, left)); rm = float(np.dot(weights, right))
+                        cov = float(np.dot(weights, (left - lm) * (right - rm)))
+                        lv = float(np.dot(weights, (left - lm) ** 2))
+                        rv = float(np.dot(weights, (right - rm) ** 2))
+                        value = cov / np.sqrt(lv * rv) if lv > 0 and rv > 0 else np.nan
+                    if np.isfinite(value):
+                        rho = float(np.clip(value, -0.999, 0.999))
+                    elif not reason:
+                        reason = "zero_or_nonfinite_weighted_variance"
+                else:
+                    reason = "insufficient_samples"
+                fallback = rho is None
+                if fallback:
+                    if fallback_policy == "error":
+                        raise ValueError(
+                            f"correlation {names[i]}/{names[j]} cannot be "
+                            f"calibrated: {reason} (samples={left.size})")
+                    rho = float(prior[i, j])
+                matrix[i, j] = matrix[j, i] = rho
+                pairs.append({
+                    "left": names[i], "right": names[j],
+                    "value": float(matrix[i, j]), "sample_count": int(left.size),
+                    "aligned_level_count": len(shared),
+                    "start_date": shared[1].isoformat() if len(shared) > 1 else None,
+                    "end_date": shared[-1].isoformat() if len(shared) > 1 else None,
+                    "max_calendar_gap_days": int(calendar_days.max())
+                    if calendar_days.size else None,
+                    "gap_normalization": "change_divided_by_sqrt_calendar_days",
+                    "effective_sample_size": effective_sample_size,
+                    "fallback": fallback,
+                    "fallback_source": "prior_matrix" if fallback else None,
+                    "reason": reason if fallback else "calibrated",
+                })
+        # Numerical projection keeps the matrix usable by Cholesky-based MC.
+        from instruments.structured.basket_note import nearest_correlation
+        adjusted = nearest_correlation(matrix)
+        raw_min_eigenvalue = float(np.linalg.eigvalsh(matrix).min())
+        adjusted_min_eigenvalue = float(np.linalg.eigvalsh(adjusted).min())
+        for pair in pairs:
+            i = names.index(pair["left"]); j = names.index(pair["right"])
+            pair["adjusted_value"] = float(adjusted[i, j])
+        adjustment = float(np.linalg.norm(adjusted - matrix, ord="fro"))
+        matrix_hash = sha256(json.dumps(
+            adjusted.tolist(), sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")).hexdigest()
+        return {
+            "factor_ids": names,
+            "as_of": cutoff.isoformat(),
+            "lookback": lookback,
+            "method": method,
+            "decay": float(decay),
+            "min_samples": int(min_samples),
+            "fallback_policy": fallback_policy,
+            "raw_matrix": matrix.tolist(),
+            "matrix": adjusted.tolist(),
+            "matrix_hash": matrix_hash,
+            "adjustment_frobenius": adjustment,
+            "raw_min_eigenvalue": raw_min_eigenvalue,
+            "adjusted_min_eigenvalue": adjusted_min_eigenvalue,
+            "adjustment_material": adjustment > 0.05,
+            "pairs": pairs,
+            "series": series_evidence,
+            "fallback": any(item["fallback"] for item in pairs),
+        }
+
     def get_fx_rate(self, pair: str, snapshot: MarketDataSnapshot | None = None) -> float:
         snapshot = snapshot or self.demo_snapshot()
         return snapshot.fx_rates[pair]

@@ -16,6 +16,7 @@ requested rolling/stress calendar and supplies enough actual shocks/windows.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -53,6 +54,8 @@ def _scenario_matrix_hash(shifts: dict) -> str:
     matrix_keys = (
         "dates", "eq", "dr", "dvol", "fx", "dr_tenors", "dr_curves",
         "eq_names", "vol_names", "dvol_positions", "fx_pairs",
+        "spot_return_paths",
+        "actual_trade_backcast",
     )
 
     def canonical(value):
@@ -980,7 +983,7 @@ def factor_shifts(ctx, window: int = 500, frm: str | None = None,
                     "IV30/RVI proxy is forbidden")
             surface_level_series[position_id] = levels
 
-    out_dates, eq_ret, dr, dvol, fx_ret = [], [], [], [], []
+    out_dates, previous_dates, eq_ret, dr, dvol, fx_ret = [], [], [], [], [], []
     dr_tenors: dict[float, list] = {t: [] for t in _KBD_TENORS}
     dr_curves: dict[str, dict[float, list]] = {
         curve_id: {tenor: [] for tenor in nodes}
@@ -995,6 +998,7 @@ def factor_shifts(ctx, window: int = 500, frm: str | None = None,
     for prev, cur in zip(dates, dates[1:]):
         if eq[prev] <= 0 or eq[cur] <= 0:
             continue
+        previous_dates.append(prev)
         out_dates.append(cur)
         eq_move = math.log(eq[cur] / eq[prev])
         eq_ret.append(eq_move)
@@ -1041,6 +1045,11 @@ def factor_shifts(ctx, window: int = 500, frm: str | None = None,
             sorted(dvol_positions))
     return {
         "dates": out_dates,
+        # Exact scenario-start session for each daily return.  This is
+        # intentionally carried separately from the end-date label: actual
+        # lifecycle backcast must reconstruct state at the window start,
+        # before applying the first observed return.
+        "previous_dates": previous_dates,
         "eq": np.array(eq_ret), "dr": np.array(dr), "dvol": np.array(dvol),
         "fx": np.array(fx_ret),
         "dr_tenors": {t: np.array(v) for t, v in dr_tenors.items()},
@@ -1154,6 +1163,438 @@ def _validated_hyppl(hp, *, context: str) -> np.ndarray:
     return pnl
 
 
+def _contract_digest(payload) -> str:
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _slice_actual_scenarios(shifts: dict, indices: list[int]) -> dict:
+    """Slice every scenario-aligned factor/path array by one exact index set."""
+    out = dict(shifts)
+
+    def sliced(values):
+        if isinstance(values, np.ndarray):
+            return values[np.asarray(indices, dtype=int)]
+        if isinstance(values, (list, tuple)):
+            return [values[index] for index in indices]
+        raise ValueError("actual backcast factor array is not scenario-aligned")
+
+    for key in ("dates", "previous_dates", "eq", "dr", "dvol", "fx"):
+        if key in shifts:
+            out[key] = sliced(shifts[key])
+    for key in ("dr_tenors", "eq_names", "vol_names",
+                "dvol_positions", "fx_pairs"):
+        out[key] = {
+            name: sliced(values)
+            for name, values in (shifts.get(key) or {}).items()
+        }
+    out["dr_curves"] = {
+        curve_id: {
+            tenor: sliced(values)
+            for tenor, values in nodes.items()
+        }
+        for curve_id, nodes in (shifts.get("dr_curves") or {}).items()
+    }
+    paths = shifts.get("spot_return_paths") or {}
+    out["spot_return_paths"] = {
+        **paths,
+        "dates": sliced(paths.get("dates") or []),
+        "start_dates": sliced(paths.get("start_dates") or []),
+        "fallback_log_returns": sliced(
+            paths.get("fallback_log_returns") or []),
+        "log_returns_by_factor": {
+            name: sliced(values)
+            for name, values in (paths.get("log_returns_by_factor") or {}).items()
+        },
+    }
+    return out
+
+
+def _actual_state_matches(reconstructed: dict, captured: dict) -> bool:
+    """Compare lifecycle economics while ignoring independently sourced hashes."""
+    if not isinstance(reconstructed, dict) or not isinstance(captured, dict):
+        return False
+    for key in ("mode", "asset_names", "observation_index", "alive", "state_as_of"):
+        if reconstructed.get(key) != captured.get(key):
+            return False
+    for key in ("elapsed_time",):
+        try:
+            if not math.isclose(
+                    float(reconstructed.get(key)), float(captured.get(key)),
+                    rel_tol=0.0, abs_tol=1e-12):
+                return False
+        except (TypeError, ValueError, OverflowError):
+            return False
+    for key in ("current_spots", "reference_spots", "running_min",
+                "running_max", "state_values"):
+        left = reconstructed.get(key)
+        right = captured.get(key)
+        if not isinstance(left, dict) or not isinstance(right, dict) \
+                or set(left) != set(right):
+            return False
+        try:
+            if any(not math.isclose(
+                    float(left[name]), float(right[name]),
+                    rel_tol=0.0, abs_tol=1e-12) for name in left):
+                return False
+        except (TypeError, ValueError, OverflowError):
+            return False
+    return True
+
+
+def _clone_portfolio_for_backcast(ps):
+    """Clone positions without copying DB connections/locks owned by services."""
+    from services.portfolio_service import PortfolioService
+
+    prepared = PortfolioService(
+        market_data=ps.market_data,
+        pricing=ps.pricing,
+        audit=ps.audit,
+        snapshot=ps.snapshot,
+    )
+    source_portfolio = getattr(ps, "portfolio", None)
+    target_portfolio = prepared.portfolio
+    for attr in ("portfolio_id", "name", "base_currency"):
+        if source_portfolio is not None and hasattr(source_portfolio, attr):
+            setattr(target_portfolio, attr, getattr(source_portfolio, attr))
+    for position in _portfolio_positions(ps):
+        prepared.add(copy.deepcopy(position))
+    return prepared
+
+
+def _prepare_actual_trade_backcast(ctx, ps, shifts: dict) -> tuple[object, dict]:
+    """Bind exact MOEX sessions/fixings and reconcile the current trade state.
+
+    This is intentionally performed after horizon aggregation: scenario start
+    and end dates are then final, and a single immutable fixing ledger can be
+    shared across all scenarios of one position.  Only pre-effective windows
+    may be removed; any in-life calendar/fixing gap fails the whole request.
+    """
+    positions = _portfolio_positions(ps)
+    if not positions or any(
+            getattr(position, "instrument", None) != "custom_product"
+            for position in positions):
+        raise ValueError(
+            "actual_trade_backcast supports all-custom_product books only")
+    position_ids = [str(getattr(position, "id", "") or "") for position in positions]
+    if any(not value for value in position_ids) or len(set(position_ids)) != len(position_ids):
+        raise ValueError(
+            "actual_trade_backcast requires unique non-empty position ids")
+
+    paths = shifts.get("spot_return_paths") or {}
+    dates = list(shifts.get("dates") or [])
+    starts = list(paths.get("start_dates") or [])
+    path_dates = list(paths.get("dates") or [])
+    if (paths.get("schema") != "historical-spot-return-paths-v1"
+            or len(starts) != len(dates) or len(path_dates) != len(dates)
+            or not dates or any(not isinstance(value, str) or not value
+                                for value in starts)):
+        raise ValueError(
+            "actual_trade_backcast requires aligned exact scenario start/end dates")
+
+    db = getattr(ctx, "market_db", None)
+    if db is None:
+        db = getattr(getattr(ps, "market_data", None), "market_db", None)
+    if db is None:
+        raise ValueError(
+            "actual_trade_backcast requires the governed market-data database")
+
+    from api import custom_products
+    from infra.moex_calendar import MoexCalendarResolver
+
+    store = custom_products.get_store()
+    specifications: list[dict] = []
+    calendar_signature = None
+    max_effective = ""
+    common_cutoff = None
+    for position in positions:
+        params = getattr(position, "params", None) or {}
+        schedule_raw = params.get("contract_schedule")
+        bindings_raw = params.get("fixing_bindings")
+        seed_raw = params.get("inception_seed")
+        if not all(isinstance(value, dict) for value in (
+                schedule_raw, bindings_raw, seed_raw)):
+            raise ValueError(
+                f"{position.id}: actual_trade_backcast requires schedule, "
+                "fixing bindings and inception seed")
+        product_id = str(params.get("custom_product_id") or "")
+        version = params.get("definition_version")
+        detail = store.get_version(product_id, version)
+        if detail.get("definition_hash") != params.get("definition_hash"):
+            raise ValueError(
+                f"{position.id}: actual backcast definition hash mismatch")
+        definition = detail["definition"]
+        schedule = custom_products.canonical_instance_contract_schedule(
+            definition, schedule_raw, slots=params.get("slots") or {})
+        if schedule != schedule_raw:
+            raise ValueError(
+                f"{position.id}: contract schedule is not canonical")
+        calendar = schedule["calendar"]
+        try:
+            calendar_version = int(calendar["version"])
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                f"{position.id}: calendar version is invalid") from exc
+        resolver = MoexCalendarResolver.from_db(
+            db, str(calendar["calendar_id"]), calendar_version)
+        signature = (
+            resolver.calendar_id, resolver.version, resolver.payload_hash)
+        if calendar_signature is None:
+            calendar_signature = signature
+        elif signature != calendar_signature:
+            raise ValueError(
+                "actual_trade_backcast requires one pinned MOEX calendar version")
+        if (calendar.get("source_hash") != resolver.payload_hash
+                or calendar.get("payload_hash") != resolver.payload_hash):
+            raise ValueError(
+                f"{position.id}: calendar payload differs from the governed DB version")
+        expected_sessions = [
+            day.isoformat() for day in resolver.business_sessions(
+                schedule["effective_date"], schedule["maturity_date"])
+        ]
+        if expected_sessions != calendar.get("resolved_sessions"):
+            raise ValueError(
+                f"{position.id}: resolved contract sessions differ from MOEX calendar")
+
+        bindings_payload = dict(bindings_raw)
+        supplied_bindings_hash = str(
+            bindings_payload.pop("bindings_hash", "") or "")
+        if (_contract_digest(bindings_payload) != supplied_bindings_hash
+                or bindings_raw.get("contract")
+                != "moex_exact_fixing_bindings_v1"
+                or bindings_raw.get("schedule_hash") != schedule["schedule_hash"]
+                or bindings_raw.get("calendar_id") != resolver.calendar_id
+                or int(bindings_raw.get("calendar_version", -1)) != resolver.version
+                or bindings_raw.get("calendar_payload_hash") != resolver.payload_hash):
+            raise ValueError(
+                f"{position.id}: exact fixing binding hash/calendar mismatch")
+        asset_names = list(params.get("asset_names") or [])
+        raw_rows = bindings_raw.get("bindings")
+        if (not isinstance(raw_rows, list) or len(raw_rows) != len(asset_names)
+                or bindings_raw.get("asset_names") != asset_names):
+            raise ValueError(
+                f"{position.id}: exact fixing bindings are not asset-aligned")
+        binding_by_asset = {
+            str(row.get("asset_name") or ""): row
+            for row in raw_rows if isinstance(row, dict)
+        }
+        if set(binding_by_asset) != set(asset_names):
+            raise ValueError(
+                f"{position.id}: exact fixing binding asset set mismatch")
+        for asset_name, secid in zip(
+                asset_names, list(params.get("component_secids") or [])):
+            binding = binding_by_asset[asset_name]
+            if (binding.get("secid") != secid
+                    or binding.get("factor_id") != f"{secid}:price"
+                    or binding.get("source") != "MOEX"
+                    or binding.get("missing_fixing_policy") != "error"):
+                raise ValueError(
+                    f"{position.id}: exact fixing identity mismatch for {asset_name}")
+
+        captured_state = params.get("valuation_state")
+        if not isinstance(captured_state, dict):
+            raise ValueError(
+                f"{position.id}: captured valuation state is missing")
+        cutoff = str(captured_state.get("state_as_of") or "")
+        if cutoff not in expected_sessions:
+            raise ValueError(
+                f"{position.id}: captured state_as_of is not a MOEX contract session")
+        max_effective = max(max_effective, schedule["effective_date"])
+        common_cutoff = cutoff if common_cutoff is None else min(common_cutoff, cutoff)
+        specifications.append({
+            "position_id": position.id,
+            "definition": definition,
+            "params": params,
+            "schedule": schedule,
+            "bindings": bindings_raw,
+            "binding_by_asset": binding_by_asset,
+            "seed": seed_raw,
+            "captured_state": captured_state,
+            "resolver": resolver,
+        })
+
+    retained = [index for index, start in enumerate(starts)
+                if start >= max_effective]
+    dropped_pre_effective = len(dates) - len(retained)
+    if not retained:
+        raise ValueError(
+            "actual_trade_backcast has no scenarios on or after trade effective date")
+    for index in retained:
+        if dates[index] > str(common_cutoff):
+            raise ValueError(
+                "actual_trade_backcast scenario end is after captured trade state")
+        for spec in specifications:
+            sessions = spec["schedule"]["calendar"]["resolved_sessions"]
+            start = starts[index]
+            end = dates[index]
+            if start not in sessions or end not in sessions:
+                raise ValueError(
+                    f"{spec['position_id']}: scenario endpoint is outside contract sessions")
+            left = sessions.index(start)
+            right = sessions.index(end)
+            expected_path = sessions[left + 1:right + 1]
+            if right <= left or list(path_dates[index]) != expected_path:
+                raise ValueError(
+                    f"{spec['position_id']}: historical scenario skips a MOEX session")
+    if len(retained) < 60:
+        raise ValueError(
+            "actual_trade_backcast requires at least 60 post-effective scenarios; "
+            f"got {len(retained)}")
+
+    prepared = _clone_portfolio_for_backcast(ps)
+    prepared_by_id = {
+        str(position.id): position for position in _portfolio_positions(prepared)
+    }
+    position_evidence = []
+    for spec in specifications:
+        schedule = spec["schedule"]
+        captured_state = spec["captured_state"]
+        required_end = str(captured_state["state_as_of"])
+        sessions = [
+            value for value in schedule["calendar"]["resolved_sessions"]
+            if schedule["effective_date"] <= value <= required_end
+        ]
+        exact_by_asset: dict[str, dict[str, dict]] = {}
+        provenance_rows = []
+        for asset_name in spec["params"]["asset_names"]:
+            binding = spec["binding_by_asset"][asset_name]
+            rows = db.get_contract_fixings_window(
+                binding["factor_id"], schedule["effective_date"], required_end,
+                price_basis=binding["price_basis"],
+                source=binding["source"], board=binding["board"],
+                session=binding["session"],
+            )
+            by_date = {}
+            for row in rows:
+                semantic = {
+                    "factor_id": str(row.get("factor_id") or ""),
+                    "observed_date": str(row.get("observed_date") or ""),
+                    "value": float(row.get("value")),
+                    "price_basis": str(row.get("price_basis") or "").upper(),
+                    "board": str(row.get("board") or "").upper(),
+                    "session": str(row.get("session") or "").upper(),
+                    "source": str(row.get("source") or "").upper(),
+                }
+                if (not math.isfinite(semantic["value"])
+                        or semantic["value"] <= 0.0
+                        or any(semantic[key] != binding[key] for key in (
+                            "factor_id", "price_basis", "board", "session", "source"))
+                        or _contract_digest(semantic)
+                        != str(row.get("payload_hash") or "")):
+                    raise ValueError(
+                        f"{spec['position_id']}: fixing semantic hash/identity "
+                        f"failed for {asset_name} {semantic['observed_date']}")
+                physical_date = semantic["observed_date"]
+                session_date = spec["resolver"].session_date_for(physical_date)
+                if session_date is None:
+                    raise ValueError(
+                        f"{spec['position_id']}: fixing exists on a closed MOEX "
+                        f"calendar date {physical_date}")
+                session_token = session_date.isoformat()
+                # MOEX reason=W rows belong to a later named session.  They are
+                # audit evidence but not a second contractual fixing; the row
+                # observed on the named session date is the authoritative close.
+                if physical_date == session_token and session_token in sessions:
+                    if session_token in by_date:
+                        raise ValueError(
+                            f"{spec['position_id']}: duplicate exact fixing for "
+                            f"{asset_name} {session_token}")
+                    by_date[session_token] = row
+                provenance_rows.append({
+                    **semantic,
+                    "official_session_date": session_token,
+                    "collapsed_weekend_session": physical_date != session_token,
+                    "payload_hash": str(row.get("payload_hash") or ""),
+                    "fetched_at": str(row.get("fetched_at") or ""),
+                })
+            missing = [value for value in sessions if value not in by_date]
+            if missing:
+                raise ValueError(
+                    f"{spec['position_id']}: exact fixing coverage failed for "
+                    f"{asset_name}; missing={missing[:5]}")
+            exact_by_asset[asset_name] = by_date
+
+        fixings = [{
+            "date": value,
+            "spots": {
+                asset_name: float(exact_by_asset[asset_name][value]["value"])
+                for asset_name in spec["params"]["asset_names"]
+            },
+        } for value in sessions]
+        manifest = {
+            "contract": "market_data_db_exact_fixings_v1",
+            "calendar_id": schedule["calendar"]["calendar_id"],
+            "calendar_version": schedule["calendar"]["version"],
+            "calendar_payload_hash": schedule["calendar"]["payload_hash"],
+            "bindings_hash": spec["bindings"]["bindings_hash"],
+            "rows": sorted(provenance_rows, key=lambda row: (
+                row["observed_date"], row["factor_id"], row["price_basis"],
+                row["board"], row["session"], row["source"])),
+        }
+        raw_ledger = {
+            "source": "MarketDataDB exact MOEX contract_fixings",
+            "source_version": (
+                "contract_fixings_v1:"
+                + spec["bindings"]["bindings_hash"]),
+            "payload_hash": _contract_digest(manifest),
+            "fixings": fixings,
+        }
+        ledger = custom_products.canonical_dated_fixing_ledger(
+            spec["definition"], schedule, raw_ledger,
+            slots=spec["params"].get("slots") or {},
+        )
+        reconciliation = custom_products.reconstruct_historical_valuation_state(
+            spec["definition"], schedule, spec["seed"], ledger, required_end,
+            slots=spec["params"].get("slots") or {},
+        )
+        if reconciliation.get("terminal") or not _actual_state_matches(
+                reconciliation.get("valuation_state"), captured_state):
+            raise ValueError(
+                f"{spec['position_id']}: reconstructed current lifecycle state "
+                "does not match the captured seasoned state")
+        backcast_payload = {
+            "schema": "custom-product-actual-backcast-v1",
+            "contract_schedule": schedule,
+            "inception_seed": spec["seed"],
+            "fixing_ledger": ledger,
+        }
+        backcast = {
+            **backcast_payload,
+            "contract_hash": _contract_digest(backcast_payload),
+        }
+        prepared_by_id[str(spec["position_id"])].params[
+            "historical_backcast_contract"] = backcast
+        position_evidence.append({
+            "position_id": str(spec["position_id"]),
+            "schedule_hash": schedule["schedule_hash"],
+            "bindings_hash": spec["bindings"]["bindings_hash"],
+            "inception_seed_hash": spec["seed"].get("seed_hash"),
+            "fixing_ledger_hash": ledger["ledger_hash"],
+            "fixing_source_hash": ledger["source_hash"],
+            "backcast_contract_hash": backcast["contract_hash"],
+            "current_state_reconciliation_hash": _contract_digest(
+                reconciliation["evidence"]),
+        })
+
+    prepared_shifts = _slice_actual_scenarios(shifts, retained)
+    prepared_shifts["actual_trade_backcast"] = {
+        "schema": "actual-trade-state-backcast-scenarios-v1",
+        "calendar_id": calendar_signature[0],
+        "calendar_version": calendar_signature[1],
+        "calendar_payload_hash": calendar_signature[2],
+        "dropped_pre_effective_scenarios": dropped_pre_effective,
+        "scenario_count": len(retained),
+        "positions": position_evidence,
+        "non_spot_market_parameter_basis": (
+            "current_snapshot_levels_plus_historical_rate_vol_changes"),
+    }
+    prepared_shifts["factors"] = list(shifts.get("factors") or [])
+    return prepared, prepared_shifts
+
+
 def _reprice_series(
     ps,
     shifts: dict,
@@ -1161,11 +1602,34 @@ def _reprice_series(
     custom_repricing_profile: str | None = None,
     evidence: dict | None = None,
     deadline_seconds: float | None = None,
+    horizon: int = 1,
+    historical_state_mode: str = "current_state_hyppl",
 ) -> tuple[np.ndarray, set[str]]:
     dates = list(shifts.get("dates") or [])
+    previous_dates = list(shifts.get("previous_dates") or [])
+    if previous_dates and len(previous_dates) != len(dates):
+        raise ValueError("previous_dates length does not match factor dates")
     if not dates:
         raise ValueError("historical full reprice: scenario set is empty")
     has_custom = _portfolio_has_custom_product(ps)
+    if historical_state_mode not in {
+            "current_state_hyppl", "actual_trade_backcast"}:
+        raise ValueError(
+            "historical full reprice: unsupported historical_state_mode")
+    if historical_state_mode == "actual_trade_backcast" and not has_custom:
+        raise ValueError(
+            "historical full reprice: actual_trade_backcast requires a "
+            "custom_product lifecycle contract")
+    if historical_state_mode == "actual_trade_backcast" and any(
+            getattr(position, "instrument", None) != "custom_product"
+            for position in _portfolio_positions(ps)):
+        raise ValueError(
+            "historical full reprice: actual_trade_backcast supports "
+            "all-custom_product books only")
+    if historical_state_mode == "actual_trade_backcast" and not previous_dates:
+        raise ValueError(
+            "historical full reprice: actual_trade_backcast requires exact "
+            "scenario start dates")
     if custom_repricing_profile is not None:
         if custom_repricing_profile != CUSTOM_HISTORICAL_REPRICING_PROFILE:
             raise ValueError(
@@ -1200,10 +1664,39 @@ def _reprice_series(
     vol_names = shifts.get("vol_names") or {}
     dvol_positions = shifts.get("dvol_positions") or {}
     fx_pairs = shifts.get("fx_pairs") or {}
+    spot_return_paths = shifts.get("spot_return_paths") or {}
+    if has_custom:
+        if spot_return_paths.get("schema") != "historical-spot-return-paths-v1":
+            raise ValueError(
+                "historical full reprice: custom products require sequential "
+                "spot-return paths")
+        if spot_return_paths.get("day_count_basis") != 252:
+            raise ValueError(
+                "historical full reprice: custom sequential paths require "
+                "business/252 time roll")
+        path_dates = list(spot_return_paths.get("dates") or [])
+        fallback_paths = list(spot_return_paths.get("fallback_log_returns") or [])
+        named_paths = spot_return_paths.get("log_returns_by_factor") or {}
+        path_start_dates = list(spot_return_paths.get("start_dates") or [])
+        if (len(path_dates) != len(dates) or len(fallback_paths) != len(dates)
+                or len(path_start_dates) != len(dates)
+                or any(len(values) != len(dates)
+                       for values in named_paths.values())):
+            raise ValueError(
+                "historical full reprice: sequential spot paths are not aligned "
+                "with scenario endpoints")
     warnings: set[str] = set()
     base_value_sources: set[str] = set()
     profile_base_value: float | None = None
     ordinary_base_value: float | None = None
+    path_roll_hashes: list[str] = []
+    path_roll_evidence: list[dict] = []
+    actual_backcast_evidence: list[dict] = []
+    scenario_base_values: list[float] = []
+    custom_position_count = sum(
+        getattr(position, "instrument", None) == "custom_product"
+        for position in _portfolio_positions(ps)
+    )
     for i in range(len(pnl)):
         elapsed = time.monotonic() - started
         if deadline_seconds is not None and elapsed > deadline_seconds:
@@ -1231,11 +1724,29 @@ def _reprice_series(
             )
             if custom_repricing_profile is not None:
                 kwargs["custom_repricing_profile"] = custom_repricing_profile
+                kwargs["custom_path_scenario"] = {
+                    "schema": "historical-custom-spot-path-v1",
+                    "day_count_basis": int(
+                        spot_return_paths.get("day_count_basis", 252)),
+                    "dates": list(path_dates[i]),
+                    "fallback_log_returns": list(fallback_paths[i]),
+                    "log_returns_by_factor": {
+                        factor_id: list(values[i])
+                        for factor_id, values in named_paths.items()
+                    },
+                }
+                if historical_state_mode == "actual_trade_backcast":
+                    kwargs["custom_path_scenario"].update({
+                        "start_date": previous_dates[i],
+                        "end_date": dates[i],
+                    })
             elif ordinary_base_value is not None:
                 # For ordinary books the first scenario establishes the exact
                 # static-book base PV.  Reuse it on later observations; every
                 # shocked book is still fully repriced.
                 kwargs["base_value_override"] = ordinary_base_value
+            kwargs["horizon"] = int(horizon)
+            kwargs["historical_state_mode"] = historical_state_mode
             res = ps.full_reprice_pnl(**kwargs)
         except Exception as exc:
             raise ValueError(f"{scenario_context}: {exc}") from exc
@@ -1247,7 +1758,121 @@ def _reprice_series(
             raw_warnings = [raw_warnings]
         warnings.update(str(item) for item in raw_warnings if item not in (None, ""))
 
-        if custom_repricing_profile is not None:
+        if has_custom and historical_state_mode == "current_state_hyppl":
+            if res.get("pnl_convention") != \
+                    "horizon_cashflows_plus_end_pv_minus_current_base_pv":
+                raise ValueError(
+                    f"{scenario_context}: custom holding-period P&L "
+                    "convention evidence is missing")
+            rolls = res.get("custom_path_roll_evidence")
+            if (not isinstance(rolls, list)
+                    or len(rolls) != custom_position_count):
+                raise ValueError(
+                    f"{scenario_context}: custom path-roll evidence is incomplete")
+            for roll in rolls:
+                if (not isinstance(roll, dict)
+                        or roll.get("contract")
+                        != "custom_ast_historical_path_roll_v1"
+                        or int(roll.get("requested_days", -1)) != int(horizon)
+                        or roll.get("day_count_basis") != 252
+                        or float(roll.get("end_elapsed_time", 0.0))
+                        <= float(roll.get("start_elapsed_time", 0.0))):
+                    raise ValueError(
+                        f"{scenario_context}: custom path-roll evidence is invalid")
+                hashes = {
+                    key: str(roll.get(key) or "")
+                    for key in (
+                        "path_hash", "transition_hash",
+                        "cashflow_ledger_hash",
+                    )
+                }
+                output_state_hash = roll.get("output_state_hash")
+                valid_output_state = (
+                    (roll.get("terminal") is True and output_state_hash is None)
+                    or (isinstance(output_state_hash, str)
+                        and len(output_state_hash) == 64)
+                )
+                if (any(len(value) != 64 for value in hashes.values())
+                        or not valid_output_state):
+                    raise ValueError(
+                        f"{scenario_context}: custom path-roll audit hash is invalid")
+                path_roll_hashes.append(hashes["path_hash"])
+                path_roll_evidence.append({
+                    "scenario_index": i,
+                    "scenario_date": dates[i],
+                    "position_id": str(roll.get("position_id") or ""),
+                    **hashes,
+                    "output_state_hash": output_state_hash,
+                    "terminal": bool(roll.get("terminal")),
+                    "requested_days": int(roll["requested_days"]),
+                    "consumed_days": int(roll.get("consumed_days", -1)),
+                    "cashflow_count": int(roll.get("cashflow_count", -1)),
+                    "horizon_cashflow": float(
+                        roll.get("horizon_cashflow", 0.0)),
+                })
+        elif has_custom:
+            if (res.get("historical_state_mode") != "actual_trade_backcast"
+                    or res.get("pnl_convention")
+                    != "horizon_cashflows_plus_end_pv_minus_backcast_start_pv"
+                    or res.get("base_value_source")
+                    != "actual_trade_backcast_reconstructed"):
+                raise ValueError(
+                    f"{scenario_context}: actual trade backcast P&L evidence is missing")
+            records = res.get("actual_trade_backcast_evidence")
+            if not isinstance(records, list) or len(records) != custom_position_count:
+                raise ValueError(
+                    f"{scenario_context}: actual trade backcast evidence is incomplete")
+            for record in records:
+                reconstruction = record.get("reconstruction") \
+                    if isinstance(record, dict) else None
+                dated_roll = record.get("dated_roll") \
+                    if isinstance(record, dict) else None
+                finite_fields = (
+                    record.get("start_state_value"),
+                    record.get("end_state_value"),
+                    record.get("normalized_horizon_cashflow"),
+                    record.get("quantity"),
+                ) if isinstance(record, dict) else ()
+                try:
+                    finite_ok = len(finite_fields) == 4 and all(
+                        math.isfinite(float(value)) for value in finite_fields)
+                except (TypeError, ValueError, OverflowError):
+                    finite_ok = False
+                required_hashes = [
+                    record.get("backcast_contract_hash"),
+                    reconstruction.get("schedule_hash")
+                    if isinstance(reconstruction, dict) else None,
+                    reconstruction.get("fixing_ledger_hash")
+                    if isinstance(reconstruction, dict) else None,
+                    reconstruction.get("transition_hash")
+                    if isinstance(reconstruction, dict) else None,
+                    dated_roll.get("transition_hash")
+                    if isinstance(dated_roll, dict) else None,
+                    dated_roll.get("cashflow_ledger_hash")
+                    if isinstance(dated_roll, dict) else None,
+                ]
+                if (not isinstance(record, dict) or not finite_ok
+                        or record.get("cashflow_unit") != "normalized_notional"
+                        or reconstruction.get("contract")
+                        != "custom_ast_historical_state_reconstruction_v1"
+                        or dated_roll.get("contract")
+                        != "custom_ast_dated_path_roll_v1"
+                        or reconstruction.get("end_as_of") != previous_dates[i]
+                        or dated_roll.get("start_as_of") != previous_dates[i]
+                        or dated_roll.get("end_as_of") != dates[i]
+                        or any(not isinstance(value, str) or len(value) != 64
+                               for value in required_hashes)):
+                    raise ValueError(
+                        f"{scenario_context}: actual trade state/roll evidence is invalid")
+                actual_backcast_evidence.append({
+                    "scenario_index": i,
+                    "scenario_start_date": previous_dates[i],
+                    "scenario_end_date": dates[i],
+                    **record,
+                })
+
+        if (custom_repricing_profile is not None
+                and historical_state_mode == "current_state_hyppl"):
             try:
                 current_base = float(res["base_value"])
             except (KeyError, TypeError, ValueError, OverflowError) as exc:
@@ -1270,6 +1895,16 @@ def _reprice_series(
                     current_base, profile_base_value, rel_tol=1e-12, abs_tol=1e-9):
                 raise ValueError(
                     f"{scenario_context}: custom paired base value changed across scenarios")
+        elif custom_repricing_profile is not None:
+            try:
+                current_base = float(res["base_value"])
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    f"{scenario_context}: reconstructed start PV is invalid") from exc
+            if not math.isfinite(current_base):
+                raise ValueError(
+                    f"{scenario_context}: reconstructed start PV is non-finite")
+            scenario_base_values.append(current_base)
         elif "base_value" in res:
             try:
                 current_base = float(res["base_value"])
@@ -1300,18 +1935,48 @@ def _reprice_series(
                 if custom_repricing_profile is not None else None
             ),
             "common_random_numbers": custom_repricing_profile is not None,
-            "paired_profile_base": custom_repricing_profile is not None,
+            "paired_profile_base": (
+                custom_repricing_profile is not None
+                and historical_state_mode == "current_state_hyppl"),
+            "paired_scenario_start_end": (
+                custom_repricing_profile is not None
+                and historical_state_mode == "actual_trade_backcast"),
             "base_value": (
                 profile_base_value
-                if custom_repricing_profile is not None else ordinary_base_value
+                if (custom_repricing_profile is not None
+                    and historical_state_mode == "current_state_hyppl")
+                else ordinary_base_value
             ),
+            "scenario_base_values": scenario_base_values,
             "base_value_sources": sorted(base_value_sources),
-            "base_value_repriced_once": True,
+            "base_value_repriced_once": (
+                historical_state_mode == "current_state_hyppl"),
             "scenario_count": len(dates),
             "elapsed_seconds": elapsed,
             "deadline_seconds": deadline_seconds,
             "spot_shock_convention": "log",
-            "pnl_convention": "shocked_market_value_minus_base_market_value",
+            "path_roll_contract": (
+                "custom_ast_dated_path_roll_v1"
+                if historical_state_mode == "actual_trade_backcast" else
+                "historical-custom-spot-path-v1" if has_custom else None),
+            "path_day_count_basis": (
+                spot_return_paths.get("day_count_basis") if has_custom else None),
+            "path_days": int(horizon) if has_custom else None,
+            "path_roll_applied": bool(has_custom),
+            "path_roll_hashes": path_roll_hashes,
+            "path_roll_evidence": path_roll_evidence,
+            "actual_trade_backcast_evidence": actual_backcast_evidence,
+            "actual_trade_backcast": (
+                dict(shifts.get("actual_trade_backcast") or {})
+                if historical_state_mode == "actual_trade_backcast" else None),
+            "historical_state_mode": historical_state_mode,
+            "pnl_convention": (
+                "horizon_cashflows_plus_end_pv_minus_backcast_start_pv"
+                if historical_state_mode == "actual_trade_backcast" else
+                "horizon_cashflows_plus_end_pv_minus_current_base_pv"
+                if has_custom else
+                "shocked_market_value_minus_base_market_value"
+            ),
             "loss_convention": "negative_pnl",
         })
     # Preserve the successful HypPL return arity. Invalid observations raise
@@ -1332,10 +1997,41 @@ def aggregate_factor_shifts(shifts: dict, horizon: int,
     h = int(horizon)
     if h < 1 or h != horizon:
         raise ValueError("horizon must be a positive integer")
-    if h == 1:
-        return shifts, "none"
 
     dates = list(shifts.get("dates") or [])
+    previous_dates = list(shifts.get("previous_dates") or [])
+    if previous_dates and len(previous_dates) != len(dates):
+        raise ValueError("previous_dates length does not match factor dates")
+
+    def rolling_paths(values, width: int) -> list[list[float]]:
+        arr = np.asarray(values, dtype=float)
+        if len(arr) != len(dates):
+            raise ValueError("factor series length does not match dates")
+        return [arr[i:i + width].astype(float).tolist()
+                for i in range(len(arr) - width + 1)]
+
+    def attach_paths(payload: dict, width: int) -> dict:
+        enriched = dict(payload)
+        enriched["spot_return_paths"] = {
+            "schema": "historical-spot-return-paths-v1",
+            "day_count_basis": 252,
+            "dates": [dates[i:i + width]
+                      for i in range(len(dates) - width + 1)],
+            "start_dates": [
+                previous_dates[i] if previous_dates else None
+                for i in range(len(dates) - width + 1)
+            ],
+            "fallback_log_returns": rolling_paths(shifts["eq"], width),
+            "log_returns_by_factor": {
+                name: rolling_paths(values, width)
+                for name, values in (shifts.get("eq_names") or {}).items()
+            },
+        }
+        return enriched
+
+    if h == 1:
+        return attach_paths(shifts, 1), "none"
+
     n_windows = len(dates) - h + 1
     if n_windows < int(min_windows):
         return shifts, "sqrt_time"
@@ -1348,6 +2044,8 @@ def aggregate_factor_shifts(shifts: dict, horizon: int,
 
     aggregated = dict(shifts)
     aggregated["dates"] = dates[h - 1:]
+    if previous_dates:
+        aggregated["previous_dates"] = previous_dates[:n_windows]
     for key in ("eq", "dr", "dvol", "fx"):
         aggregated[key] = rolling_sum(shifts[key])
     for key in ("dr_tenors", "eq_names", "vol_names", "dvol_positions", "fx_pairs"):
@@ -1362,7 +2060,7 @@ def aggregate_factor_shifts(shifts: dict, horizon: int,
         }
         for curve_id, nodes in (shifts.get("dr_curves") or {}).items()
     }
-    return aggregated, "factor_aggregation_full_reprice"
+    return attach_paths(aggregated, h), "factor_aggregation_full_reprice"
 
 
 def _hyppl_from_scenarios(
@@ -1373,8 +2071,14 @@ def _hyppl_from_scenarios(
     horizon: int = 1,
     custom_repricing_profile: str | None = None,
     deadline_seconds: float | None = None,
+    historical_state_mode: str = "current_state_hyppl",
 ) -> dict:
     """Reprice a portfolio on an already prepared, shared scenario set."""
+    if horizon_method == "sqrt_time" and _portfolio_has_custom_product(ps):
+        raise ValueError(
+            "historical custom-product risk requires overlapping sequential "
+            "factor paths; sqrt-time fallback is not valid for path-dependent "
+            "state")
     repricing_evidence: dict = {}
     scenario_matrix_hash = _scenario_matrix_hash(shifts)
     if (custom_repricing_profile is None and deadline_seconds is None
@@ -1389,6 +2093,8 @@ def _hyppl_from_scenarios(
             custom_repricing_profile=custom_repricing_profile,
             evidence=repricing_evidence,
             deadline_seconds=deadline_seconds,
+            horizon=horizon,
+            historical_state_mode=historical_state_mode,
         )
     if horizon_method == "sqrt_time":
         pnl = pnl * math.sqrt(int(horizon))
@@ -1413,6 +2119,7 @@ def hyppl(
     *,
     custom_repricing_profile: str | None = None,
     deadline_seconds: float | None = None,
+    historical_state_mode: str = "current_state_hyppl",
 ) -> dict:
     """Step 2 — Hypothetical P&L: full revaluation of the book on every
     historical joint scenario. For h>1 the factor changes are accumulated
@@ -1421,6 +2128,7 @@ def hyppl(
     key = (
         getattr(ctx.snapshot, "snapshot_id", "?"), int(window), frm, till,
         int(horizon), custom_repricing_profile, deadline_seconds,
+        historical_state_mode,
     )
     if portfolio is None and key in _CACHE:
         return _CACHE[key]
@@ -1428,6 +2136,8 @@ def hyppl(
     daily_shifts = factor_shifts(
         ctx, window, frm, till, portfolio=ps, horizon=horizon)
     shifts, horizon_method = aggregate_factor_shifts(daily_shifts, horizon)
+    if historical_state_mode == "actual_trade_backcast":
+        ps, shifts = _prepare_actual_trade_backcast(ctx, ps, shifts)
     out = _hyppl_from_scenarios(
         ps,
         shifts,
@@ -1435,6 +2145,7 @@ def hyppl(
         horizon=horizon,
         custom_repricing_profile=custom_repricing_profile,
         deadline_seconds=deadline_seconds,
+        historical_state_mode=historical_state_mode,
     )
     if portfolio is None:
         _CACHE[key] = out

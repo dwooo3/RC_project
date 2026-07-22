@@ -55,6 +55,29 @@ class _FakeIss:
         ]
 
 
+class _RangeIss:
+    """Range-aware history stub exposing every contractual price basis."""
+
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.history_calls = []
+
+    def get_blocks(self, path, params=None):
+        if path.startswith("securities/") and not path.endswith("/dividends"):
+            return {"description": [
+                {"name": "SHORTNAME", "title": "Name", "value": "Test"},
+            ]}
+        return {}
+
+    def get_block_paginated(self, path, block, params=None, **kw):
+        params = dict(params or {})
+        self.history_calls.append((params["from"], params["till"]))
+        return [
+            dict(row) for row in self.rows
+            if params["from"] <= row["TRADEDATE"] <= params["till"]
+        ]
+
+
 class _FakeForts:
     """FORTS stub: 3 Si contracts (2 live, 1 expired) + description + history."""
     def get_blocks(self, path, params=None):
@@ -140,3 +163,91 @@ def test_market_store_preload_bond_idempotent():
     assert abs(ref["change_pct"] - (100.0 - 99.0) / 99.0 * 100) < 1e-9
     n2 = st.preload_bond("SU26238RMFS4", "TQOB", years=1, today=today)
     assert n2 == 0                                    # append-missing: nothing new
+
+
+def _exact_history_row(day: str, close: float) -> dict:
+    return {
+        "SECID": "SBER",
+        "BOARDID": "TQBR",
+        "TRADEDATE": day,
+        "CLOSE": close,
+        "LEGALCLOSEPRICE": close + 0.1,
+        "WAPRICE": close - 0.1,
+        "VOLUME": 100.0,
+    }
+
+
+def test_preload_backfills_empty_exact_fixings_behind_existing_price_history():
+    db = MarketDataDB(":memory:")
+    today = dt.date(2026, 7, 22)
+    target = "2025-07-22"
+    db.save_price_history([{
+        "secid": "SBER", "market": "shares", "dt": today.isoformat(),
+        "close": 110.0,
+    }])
+    iss = _RangeIss([
+        _exact_history_row(target, 90.0),
+        _exact_history_row("2026-01-15", 100.0),
+        _exact_history_row(today.isoformat(), 110.0),
+    ])
+
+    # No forward price-history append is needed, but the independent exact
+    # fixing cursor must still trigger a full-depth operational backfill.
+    added = MarketStore(db, iss).preload_equity(
+        "SBER", "TQBR", years=1, today=today)
+
+    assert added == 0
+    assert iss.history_calls == [(target, today.isoformat())]
+    coverage = db.contract_fixing_coverage(
+        "SBER:price", source="MOEX", board="TQBR", session="")
+    assert coverage["first_date"] == target
+    assert coverage["last_date"] == today.isoformat()
+    assert coverage["date_count"] == 3
+    legal = db.get_contract_fixings_window(
+        "SBER:price", target, today,
+        price_basis="LEGALCLOSEPRICE", source="MOEX", board="TQBR",
+    )
+    assert [row["observed_date"] for row in legal] == [
+        target, "2026-01-15", today.isoformat(),
+    ]
+    assert db.price_history_min_dt("SBER", "shares") == target
+
+    # Exact boundary coverage is an independent idempotent cursor: a repeat
+    # preload does not download the already governed range again.
+    iss.history_calls.clear()
+    assert MarketStore(db, iss).preload_equity(
+        "SBER", "TQBR", years=1, today=today) == 0
+    assert iss.history_calls == []
+
+
+def test_preload_backfills_only_missing_old_exact_fixing_range():
+    db = MarketDataDB(":memory:")
+    today = dt.date(2026, 7, 22)
+    target = "2025-07-22"
+    db.save_price_history([{
+        "secid": "SBER", "market": "shares", "dt": today.isoformat(),
+        "close": 110.0,
+    }])
+    iss = _RangeIss([
+        _exact_history_row(target, 90.0),
+        _exact_history_row("2026-01-15", 100.0),
+        _exact_history_row(today.isoformat(), 110.0),
+    ])
+    store = MarketStore(db, iss)
+    # Simulate recent rows written by append_daily after contract_fixings was
+    # introduced, while the older price_history predates the immutable ledger.
+    assert store._save_contract_fixings([
+        _exact_history_row(today.isoformat(), 110.0)
+    ]) == 3
+    iss.history_calls.clear()
+
+    added_dates = store.backfill_contract_fixings(
+        "SBER", "shares", "TQBR", years=1, today=today)
+
+    assert added_dates == 2
+    assert iss.history_calls == [(target, "2026-07-21")]
+    coverage = db.contract_fixing_coverage(
+        "SBER:price", source="MOEX", board="TQBR", session="")
+    assert coverage["first_date"] == target
+    assert coverage["last_date"] == today.isoformat()
+    assert coverage["date_count"] == 3

@@ -452,7 +452,11 @@ class PortfolioService:
                          dr_curves: dict | None = None,
                          dvol_by_position: dict | None = None,
                          base_value_override: float | None = None,
-                         custom_repricing_profile: str | None = None) -> dict:
+                         custom_repricing_profile: str | None = None,
+                         horizon: int = 1,
+                         custom_path_scenario: dict | None = None,
+                         historical_state_mode: str = "current_state_hyppl",
+                         ) -> dict:
         """
         FULL-REPRICE portfolio P&L under a joint factor shock — every position
         is repriced through its actual pricer with shocked params, no
@@ -502,6 +506,74 @@ class PortfolioService:
         if custom_repricing_profile not in {None, "custom_hist_crn_v1"}:
             raise ValueError(
                 "custom_repricing_profile must be None or 'custom_hist_crn_v1'")
+        if historical_state_mode not in {
+                "current_state_hyppl", "actual_trade_backcast"}:
+            raise ValueError(
+                "historical_state_mode must be 'current_state_hyppl' or "
+                "'actual_trade_backcast'")
+        actual_trade_backcast = historical_state_mode == "actual_trade_backcast"
+        if actual_trade_backcast:
+            if custom_repricing_profile != "custom_hist_crn_v1":
+                raise ValueError(
+                    "actual_trade_backcast requires custom_hist_crn_v1 profile")
+            if any(pos.instrument != "custom_product" for pos in self.positions):
+                raise ValueError(
+                    "actual_trade_backcast supports custom_product positions only")
+            if base_value_override is not None:
+                raise ValueError(
+                    "actual_trade_backcast forbids current base_value_override")
+        try:
+            horizon = int(horizon)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("horizon must be a positive integer") from exc
+        if horizon < 1 or horizon > 250:
+            raise ValueError("horizon must be between 1 and 250")
+        if custom_path_scenario is not None:
+            if not isinstance(custom_path_scenario, dict):
+                raise ValueError("custom_path_scenario must be an object")
+            if custom_path_scenario.get("schema") != \
+                    "historical-custom-spot-path-v1":
+                raise ValueError("custom_path_scenario schema is unsupported")
+            if spot_shock_convention != "log":
+                raise ValueError(
+                    "custom_path_scenario requires log spot shocks")
+            path_dates = custom_path_scenario.get("dates")
+            fallback_path = custom_path_scenario.get("fallback_log_returns")
+            named_paths = custom_path_scenario.get("log_returns_by_factor")
+            raw_day_count_basis = custom_path_scenario.get("day_count_basis")
+            if (isinstance(raw_day_count_basis, bool)
+                    or raw_day_count_basis != 252):
+                raise ValueError(
+                    "custom_path_scenario requires business/252 day count")
+            if (not isinstance(path_dates, list)
+                    or not isinstance(fallback_path, list)
+                    or not isinstance(named_paths, dict)
+                    or len(path_dates) != horizon
+                    or len(fallback_path) != horizon):
+                raise ValueError(
+                    "custom_path_scenario is not aligned to horizon")
+            if actual_trade_backcast:
+                from datetime import date as _date
+
+                start_date = custom_path_scenario.get("start_date")
+                end_date = custom_path_scenario.get("end_date")
+                try:
+                    parsed_start = _date.fromisoformat(start_date)
+                    parsed_end = _date.fromisoformat(end_date)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        "actual_trade_backcast requires ISO start_date/end_date"
+                    ) from exc
+                if (parsed_start.isoformat() != start_date
+                        or parsed_end.isoformat() != end_date
+                        or parsed_end <= parsed_start
+                        or not path_dates
+                        or path_dates[-1] != end_date):
+                    raise ValueError(
+                        "actual_trade_backcast scenario dates are inconsistent")
+        elif actual_trade_backcast:
+            raise ValueError(
+                "actual_trade_backcast requires custom_path_scenario")
 
         def _finite_scalar(value, label: str) -> float:
             try:
@@ -609,13 +681,17 @@ class PortfolioService:
         warnings: set[str] = set()
         profile_base_active = bool(
             custom_repricing_profile == "custom_hist_crn_v1"
+            and not actual_trade_backcast
             and any(pos.instrument == "custom_product" for pos in self.positions)
         )
         base_value_source = (
             "provided_override" if base_value_override is not None
             else "scenario_reprice"
         )
-        if profile_base_active:
+        if actual_trade_backcast:
+            base_total = 0.0
+            base_value_source = "actual_trade_backcast_reconstructed"
+        elif profile_base_active:
             import hashlib
             import json
 
@@ -674,6 +750,7 @@ class PortfolioService:
                         shocks=dict(dS=applied_dS, dr=dr, dvol=dvol,
                                     dfx=applied_dfx),
                         custom_repricing_profile=custom_repricing_profile,
+                        horizon=horizon,
                         base_value_source="profile_base_failed",
                     )
                 self._scenario_base_cache[cache_key] = profile_total
@@ -693,6 +770,8 @@ class PortfolioService:
             )
         skip_base_reprice = profile_base_active or base_value_override is not None
         shocked_total = 0.0
+        custom_path_roll_evidence: list[dict] = []
+        actual_trade_backcast_evidence: list[dict] = []
         for pos in self.positions:
             base = copy.deepcopy(pos)
             shocked = copy.deepcopy(pos)
@@ -700,6 +779,16 @@ class PortfolioService:
                     and pos.instrument == "custom_product"):
                 base.params["custom_repricing_profile"] = custom_repricing_profile
                 shocked.params["custom_repricing_profile"] = custom_repricing_profile
+            if actual_trade_backcast:
+                private_dates = list(custom_path_scenario["dates"])
+                for target, phase in ((base, "start"), (shocked, "end")):
+                    target.params["historical_state_mode"] = historical_state_mode
+                    target.params["historical_backcast_phase"] = phase
+                    target.params["historical_scenario_start_date"] = (
+                        custom_path_scenario["start_date"])
+                    target.params["historical_scenario_end_date"] = (
+                        custom_path_scenario["end_date"])
+                    target.params["historical_scenario_dates"] = private_dates
             secid = (pos.params or {}).get("secid")
             is_fx = pos.instrument.startswith(("fx", "ndf", "xccy"))
             if is_fx:
@@ -764,11 +853,61 @@ class PortfolioService:
                     continue
                 multipliers = {}
                 sigma_shifts = {}
+                asset_return_path: list[dict[str, float]] | None = (
+                    [dict() for _ in range(horizon)]
+                    if (custom_path_scenario is not None
+                        and not actual_trade_backcast) else None
+                )
                 route_failed = False
                 for asset_name, factor_id, kind, base_sigma in zip(
                         asset_names, component_ids, kinds, sigmas):
                     raw = (dS_by_name or {}).get(factor_id, dS)
-                    multiplier = 1.0 + _simple_spot_shock(raw)
+                    if custom_path_scenario is not None and not actual_trade_backcast:
+                        raw_path = (
+                            custom_path_scenario["log_returns_by_factor"].get(
+                                factor_id,
+                                custom_path_scenario["fallback_log_returns"],
+                            )
+                        )
+                        if (not isinstance(raw_path, list)
+                                or len(raw_path) != horizon):
+                            errors.append(
+                                f"{pos.id}: historical path for custom component "
+                                f"'{factor_id}' is not aligned to horizon")
+                            route_failed = True
+                            break
+                        try:
+                            parsed_path = [
+                                _finite_scalar(value, (
+                                    f"custom_path_scenario[{factor_id!r}][{index}]"
+                                ))
+                                for index, value in enumerate(raw_path)
+                            ]
+                        except ValueError as exc:
+                            errors.append(f"{pos.id}: {exc}")
+                            route_failed = True
+                            break
+                        if not math.isclose(
+                                sum(parsed_path), float(raw),
+                                rel_tol=1e-10, abs_tol=1e-12):
+                            errors.append(
+                                f"{pos.id}: cumulative historical path for "
+                                f"'{factor_id}' differs from endpoint shock")
+                            route_failed = True
+                            break
+                        for day, value in enumerate(parsed_path):
+                            asset_return_path[day][asset_name] = value
+                        # The sequential path advances absolute current spots;
+                        # applying the cumulative endpoint again would double
+                        # shock the remaining-life valuation.
+                        multiplier = 1.0
+                    elif actual_trade_backcast:
+                        # Absolute historical fixings already define the end
+                        # state.  Applying the endpoint return a second time
+                        # would double-shock the position.
+                        multiplier = 1.0
+                    else:
+                        multiplier = 1.0 + _simple_spot_shock(raw)
                     if not math.isfinite(multiplier) or multiplier <= 0.0:
                         errors.append(
                             f"{pos.id}: spot shock produces invalid multiplier "
@@ -801,6 +940,43 @@ class PortfolioService:
                     "spot_multipliers": multipliers,
                     "sigma_shifts": sigma_shifts,
                 }
+                if asset_return_path is not None:
+                    source_dates = list(custom_path_scenario["dates"])
+                    roll_dates = list(source_dates)
+                    schedule = shocked.params.get("contract_schedule")
+                    if isinstance(schedule, dict):
+                        calendar = schedule.get("calendar") or {}
+                        sessions = calendar.get("resolved_sessions")
+                        valuation_state = shocked.params.get("valuation_state") or {}
+                        state_as_of = str(
+                            valuation_state.get("state_as_of") or "")
+                        if (not isinstance(sessions, list)
+                                or state_as_of not in sessions):
+                            errors.append(
+                                f"{pos.id}: schedule-bound current-state path "
+                                "requires state_as_of in resolved sessions")
+                            continue
+                        start_index = sessions.index(state_as_of)
+                        roll_dates = list(sessions[
+                            start_index + 1:start_index + 1 + horizon
+                        ])
+                        if len(roll_dates) != horizon:
+                            errors.append(
+                                f"{pos.id}: contract schedule has fewer than "
+                                f"{horizon} remaining sessions after state_as_of")
+                            continue
+                    shocked.params["historical_path_roll"] = {
+                        "schema": "custom-asset-log-return-path-v1",
+                        "day_count_basis": int(
+                            custom_path_scenario.get("day_count_basis", 252)),
+                        # Source dates identify the historical return window;
+                        # roll dates identify where that sequence is applied to
+                        # today's lifecycle state.  They are intentionally
+                        # different for current-state HypPL on a dated trade.
+                        "source_dates": source_dates,
+                        "dates": roll_dates,
+                        "log_returns": asset_return_path,
+                    }
                 custom_market = dict(shocked.params.get("market") or {})
                 custom_rate = float(custom_market.get("r", 0.0)) + dr_pos
                 if not math.isfinite(custom_rate) or not -1.0 <= custom_rate <= 2.0:
@@ -949,6 +1125,51 @@ class PortfolioService:
                 if not skip_base_reprice:
                     self._price_position(base, calculate_risk=False)
                 self._price_position(shocked, calculate_risk=False)
+                if custom_path_scenario is not None and pos.instrument == "custom_product":
+                    if actual_trade_backcast:
+                        base_evidence = base.metadata.get(
+                            "custom_product_evidence") or {}
+                        end_evidence = shocked.metadata.get(
+                            "custom_product_evidence") or {}
+                        reconstruction = base_evidence.get(
+                            "state_reconstruction_evidence")
+                        dated_roll = end_evidence.get("dated_roll_evidence")
+                        if (not isinstance(reconstruction, dict)
+                                or reconstruction.get("contract")
+                                != "custom_ast_historical_state_reconstruction_v1"
+                                or not isinstance(dated_roll, dict)
+                                or dated_roll.get("contract")
+                                != "custom_ast_dated_path_roll_v1"):
+                            raise ValueError(
+                                "actual trade backcast evidence is incomplete")
+                        actual_trade_backcast_evidence.append({
+                            "position_id": pos.id,
+                            "backcast_contract_hash": end_evidence.get(
+                                "backcast_contract_hash"),
+                            "start_state_value": float(base.price),
+                            "end_state_value": float(
+                                end_evidence.get("remaining_value", 0.0)),
+                            "normalized_horizon_cashflow": float(
+                                end_evidence.get("horizon_cashflow", 0.0)),
+                            "quantity": float(pos.quantity),
+                            "cashflow_unit": "normalized_notional",
+                            "reconstruction": reconstruction,
+                            "dated_roll": dated_roll,
+                        })
+                    else:
+                        roll_evidence = (
+                            (shocked.metadata.get("custom_product_evidence") or {})
+                            .get("path_roll_evidence")
+                        )
+                        if (not isinstance(roll_evidence, dict)
+                                or roll_evidence.get("contract")
+                                != "custom_ast_historical_path_roll_v1"):
+                            raise ValueError(
+                                "custom historical path roll evidence is missing")
+                        custom_path_roll_evidence.append({
+                            "position_id": pos.id,
+                            **roll_evidence,
+                        })
                 values = (shocked.price, shocked.market_value)
                 if not skip_base_reprice:
                     values = (base.price, base.market_value, *values)
@@ -973,6 +1194,8 @@ class PortfolioService:
                         shocks=dict(dS=applied_dS, dr=dr, dvol=dvol,
                                     dfx=applied_dfx),
                         custom_repricing_profile=custom_repricing_profile,
+                        historical_state_mode=historical_state_mode,
+                        horizon=horizon,
                         base_value_source=base_value_source)
         return dict(pnl=shocked_total - base_total, base_value=base_total,
                     shocked_value=shocked_total, errors=[], valid=True,
@@ -980,6 +1203,18 @@ class PortfolioService:
                     shocks=dict(dS=applied_dS, dr=dr, dvol=dvol,
                                 dfx=applied_dfx),
                     custom_repricing_profile=custom_repricing_profile,
+                    historical_state_mode=historical_state_mode,
+                    horizon=horizon,
+                    custom_path_roll_evidence=custom_path_roll_evidence,
+                    actual_trade_backcast_evidence=(
+                        actual_trade_backcast_evidence),
+                    pnl_convention=(
+                        "horizon_cashflows_plus_end_pv_minus_backcast_start_pv"
+                        if actual_trade_backcast else
+                        "horizon_cashflows_plus_end_pv_minus_current_base_pv"
+                        if custom_path_scenario is not None
+                        else "shocked_market_value_minus_base_market_value"
+                    ),
                     base_value_source=base_value_source)
 
     def price_all(self, *, calculate_risk: bool = True):
@@ -1472,20 +1707,35 @@ class PortfolioService:
             request = self._custom_product_repricing_inputs(p)
             from api import custom_products
 
-            raw = custom_products.get_store().reprice(
-                request["product_id"],
-                request["slots"],
-                request["market"],
-                valuation_state=request["valuation_state"],
-                scenario=request["scenario"],
-                n_sims=request["numerical"]["paths"],
-                steps=request["numerical"]["steps"],
-                seed=request["numerical"]["seed"],
-                version=request["definition_version"],
-                expected_definition_hash=request["definition_hash"],
-                include_greeks=calculate_risk,
-            )
-            price = float(raw["value"])
+            if request.get("terminal"):
+                raw = {
+                    "value": 0.0,
+                    "state": "terminal",
+                    "engine": "custom_ast_path_roll",
+                    "repricing_evidence": {
+                        "terminal_at_horizon": True,
+                    },
+                    "greeks_evidence": {},
+                }
+            else:
+                raw = custom_products.get_store().reprice(
+                    request["product_id"],
+                    request["slots"],
+                    request["market"],
+                    valuation_state=request["valuation_state"],
+                    scenario=request["scenario"],
+                    n_sims=request["numerical"]["paths"],
+                    steps=request["numerical"]["steps"],
+                    seed=request["numerical"]["seed"],
+                    chunk_size=request.get("chunk_size"),
+                    version=request["definition_version"],
+                    expected_definition_hash=request["definition_hash"],
+                    include_greeks=calculate_risk,
+                    contract_schedule=request.get("contract_schedule"),
+                )
+            remaining_value = float(raw["value"])
+            horizon_cashflow = float(request.get("horizon_cashflow", 0.0))
+            price = remaining_value + horizon_cashflow
             if not math.isfinite(price):
                 raise ValueError("custom product returned a non-finite price")
             pos.price = price
@@ -1503,6 +1753,18 @@ class PortfolioService:
                 "repricing_contract_hash": request["repricing_contract_hash"],
                 "resolved_snapshot_id": request["resolved_snapshot_id"],
                 "engine": raw.get("engine"),
+                "remaining_value": remaining_value,
+                "horizon_cashflow": horizon_cashflow,
+                "terminal_at_horizon": bool(request.get("terminal")),
+                "path_roll_evidence": request.get("path_roll_evidence"),
+                "historical_state_mode": request.get("historical_state_mode"),
+                "backcast_contract_hash": request.get(
+                    "backcast_contract_hash"),
+                "state_reconstruction_evidence": request.get(
+                    "state_reconstruction_evidence"),
+                "dated_roll_evidence": request.get("dated_roll_evidence"),
+                "normalized_cashflows": request.get("normalized_cashflows"),
+                "cashflow_unit": request.get("cashflow_unit"),
                 "repricing_profile": request["repricing_profile"],
                 "payoff_basis": request["payoff_basis"],
                 "quantity_unit": request["quantity_unit"],
@@ -1609,16 +1871,46 @@ class PortfolioService:
                     "Vega", 0.01, factor_type="model_vol",
                     factor_id=f"vol.{slug}.model")
             pos.delta = totals["delta"]
-            pos.gamma = totals["gamma"]
+            try:
+                parallel_gamma = float(raw["parallel_gamma"]) * qt
+                parallel_cross_gamma = float(raw["parallel_cross_gamma"]) * qt
+                parallel_diagonal_gamma = float(
+                    raw["parallel_diagonal_gamma"]) * qt
+                cross_gamma_matrix = [
+                    [float(value) * qt for value in row]
+                    for row in raw["cross_gamma_matrix"]
+                ]
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    "custom product parallel/cross Gamma evidence is missing") from exc
+            if (not math.isfinite(parallel_gamma)
+                    or not math.isfinite(parallel_cross_gamma)
+                    or not math.isfinite(parallel_diagonal_gamma)
+                    or not isinstance(cross_gamma_matrix, list)):
+                raise ValueError(
+                    "custom product parallel/cross Gamma evidence is invalid")
+            pos.gamma = parallel_gamma
             pos.vega = totals["vega"]
-            pos.metadata["custom_product_evidence"]["gamma_aggregation"] = (
-                "sum_diagonal_component_gammas_cross_gamma_excluded")
-            if len(asset_names) > 1:
-                pos.warnings.append(
-                    "Custom product headline Gamma is the sum of diagonal "
-                    "component gammas; cross-gamma and parallel gamma are not "
-                    "available yet."
-                )
+            pos.metadata["custom_product_evidence"].update({
+                "gamma_aggregation": "parallel_relative_spot_shock",
+                "parallel_gamma": parallel_gamma,
+                "parallel_cross_gamma": parallel_cross_gamma,
+                "parallel_diagonal_gamma": parallel_diagonal_gamma,
+                "absolute_diagonal_gamma_sum": totals["gamma"],
+                "cross_gamma_matrix": cross_gamma_matrix,
+                "cross_gamma_pairs": [
+                    {
+                        **row,
+                        "cross_gamma": float(row["cross_gamma"]) * qt,
+                        "parallel_contribution": float(
+                            row["parallel_contribution"]) * qt,
+                    }
+                    for row in (raw.get("cross_gamma_pairs") or [])
+                ],
+                "gamma_convention": raw.get("gamma_convention"),
+                "cross_gamma_units": (
+                    "position d2PV per absolute spot_i and spot_j units"),
+            })
 
         elif inst in ("barrier", "asian", "lookback", "spread", "basket", "autocall"):
             # Engines return price only (or MC) -> sensitivities via finite difference.
@@ -2055,9 +2347,16 @@ class PortfolioService:
                 or quantity_unit != "currency_notional"):
             raise ValueError(
                 "custom product payoff/quantity unit contract is unsupported")
-        if state_mode != "inception" or state_source != "explicit_assumption":
+        if state_mode not in {"inception", "seasoned"}:
             raise ValueError(
-                "custom product requires explicit canonical inception state")
+                "custom product requires canonical inception or seasoned state")
+        expected_state_source = (
+            "explicit_assumption" if state_mode == "inception"
+            else "seasoned_observation"
+        )
+        if state_source != expected_state_source:
+            raise ValueError(
+                "custom product state source does not match canonical state mode")
         for key, value in (
             ("custom_product_id", product_id),
             ("definition_hash", definition_hash),
@@ -2149,6 +2448,9 @@ class PortfolioService:
         numerical = (params or {}).get("numerical")
         valuation_state = (params or {}).get("valuation_state")
         attachment = (params or {}).get("attachment")
+        contract_schedule_input = (params or {}).get("contract_schedule")
+        fixing_bindings = (params or {}).get("fixing_bindings")
+        inception_seed_input = (params or {}).get("inception_seed")
         if (not isinstance(slots, dict) or not isinstance(market, dict)
                 or not isinstance(numerical, dict)
                 or not isinstance(valuation_state, dict)
@@ -2164,14 +2466,72 @@ class PortfolioService:
             ("attachment", attachment),
             ("correlation", correlation),
             ("correlation_evidence", correlation_evidence),
+            ("contract_schedule", contract_schedule_input),
+            ("fixing_bindings", fixing_bindings),
+            ("inception_seed", inception_seed_input),
         ):
             if resolved_contract.get(key) != value:
                 raise ValueError(
                     f"custom product {key} differs from resolved contract")
-        if valuation_state.get("mode") != "inception":
+        lifecycle_parts = (
+            contract_schedule_input, fixing_bindings, inception_seed_input,
+        )
+        if any(part is not None for part in lifecycle_parts):
+            if not all(isinstance(part, dict) for part in lifecycle_parts):
+                raise ValueError(
+                    "custom product lifecycle schedule/bindings/seed are incomplete")
+            if (contract_schedule_input.get("contract")
+                    != "custom_ast_instance_schedule_v1"
+                    or fixing_bindings.get("contract")
+                    != "moex_exact_fixing_bindings_v1"
+                    or inception_seed_input.get("contract")
+                    != "custom_ast_inception_seed_v1"):
+                raise ValueError("custom product lifecycle contract is unsupported")
+            bindings_hash = str(fixing_bindings.get("bindings_hash") or "")
+            binding_payload = dict(fixing_bindings)
+            binding_payload.pop("bindings_hash", None)
+            try:
+                actual_bindings_hash = hashlib.sha256(json.dumps(
+                    binding_payload, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=False, allow_nan=False,
+                ).encode("utf-8")).hexdigest()
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "custom product fixing bindings are not canonical JSON"
+                ) from exc
+            schedule_hash = str(
+                contract_schedule_input.get("schedule_hash") or "")
+            bindings = fixing_bindings.get("bindings")
+            if (len(schedule_hash) != 64
+                    or actual_bindings_hash != bindings_hash
+                    or fixing_bindings.get("schedule_hash") != schedule_hash
+                    or inception_seed_input.get("schedule_hash") != schedule_hash
+                    or fixing_bindings.get("asset_names") != asset_names
+                    or inception_seed_input.get("asset_names") != asset_names
+                    or not isinstance(bindings, list)
+                    or [row.get("asset_name") for row in bindings]
+                    != asset_names
+                    or any(row.get("source") != "MOEX"
+                           or row.get("missing_fixing_policy") != "error"
+                           for row in bindings)):
+                raise ValueError(
+                    "custom product lifecycle hashes/assets/bindings mismatch")
+            calendar = contract_schedule_input.get("calendar") or {}
+            if (fixing_bindings.get("calendar_id")
+                    != calendar.get("calendar_id")
+                    or fixing_bindings.get("calendar_version")
+                    != calendar.get("version")
+                    or fixing_bindings.get("calendar_payload_hash")
+                    != calendar.get("payload_hash")):
+                raise ValueError(
+                    "custom product fixing bindings calendar evidence mismatch")
+            contract_schedule = contract_schedule_input
+        if valuation_state.get("mode") not in {"inception", "seasoned"}:
             raise ValueError(
-                "custom product seasoned state is unsupported; canonical "
-                "inception state is required")
+                "custom product valuation state must be canonical inception or seasoned")
+        if (valuation_state.get("mode") == "seasoned"
+                and valuation_state.get("state_contract") != "custom_ast_seasoned_state_v1"):
+            raise ValueError("custom product seasoned state contract is incomplete")
         if list(valuation_state.get("asset_names") or []) != asset_names:
             raise ValueError(
                 "custom product valuation-state assets do not match definition")
@@ -2207,9 +2567,171 @@ class PortfolioService:
         if repricing_profile == "custom_hist_crn_v1":
             paths = 1_000
 
+        historical_state_mode = str(
+            (params or {}).get("historical_state_mode")
+            or "current_state_hyppl"
+        )
+        if historical_state_mode not in {
+                "current_state_hyppl", "actual_trade_backcast"}:
+            raise ValueError("custom product historical state mode is unsupported")
+        backcast_contract_hash = None
+        # Preserve the immutable lifecycle schedule for ordinary/current-state
+        # repricing too.  Schedule-bound valuation states are rejected by the
+        # AST engine if their matching instance schedule is silently dropped.
+        contract_schedule = (
+            contract_schedule_input
+            if isinstance(contract_schedule_input, dict) else None
+        )
+        state_reconstruction_evidence = None
+        dated_roll_evidence = None
+        normalized_cashflows: list[dict] = []
+        terminal = False
+        actual_backcast = (params or {}).get("historical_backcast_contract")
+        if actual_backcast is not None:
+            if not isinstance(actual_backcast, dict):
+                raise ValueError(
+                    "custom product historical_backcast_contract must be an object")
+            expected_backcast_keys = {
+                "schema", "contract_schedule", "inception_seed",
+                "fixing_ledger", "contract_hash",
+            }
+            if set(actual_backcast) != expected_backcast_keys:
+                raise ValueError(
+                    "custom product historical backcast contract schema mismatch")
+            if actual_backcast.get("schema") != \
+                    "custom-product-actual-backcast-v1":
+                raise ValueError(
+                    "custom product historical backcast schema is unsupported")
+            supplied_hash = str(actual_backcast.get("contract_hash") or "")
+            backcast_payload = dict(actual_backcast)
+            backcast_payload.pop("contract_hash")
+            try:
+                encoded_backcast = json.dumps(
+                    backcast_payload, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=False, allow_nan=False,
+                ).encode("utf-8")
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "custom product historical backcast is not canonical JSON"
+                ) from exc
+            actual_backcast_hash = hashlib.sha256(encoded_backcast).hexdigest()
+            if (len(supplied_hash) != 64
+                    or actual_backcast_hash != supplied_hash):
+                raise ValueError(
+                    "custom product historical backcast contract hash mismatch")
+            backcast_contract_hash = supplied_hash
+
+            # Only now, after the immutable portfolio resolved-contract and
+            # independent backcast hash have both passed, resolve definitions
+            # and process any private historical scenario fields.
+            from api import custom_products
+
+            detail = custom_products.get_store().get_version(
+                product_id, definition_version)
+            if detail.get("definition_hash") != definition_hash:
+                raise ValueError(
+                    "custom product historical backcast definition hash mismatch")
+            definition = detail["definition"]
+            contract_schedule = custom_products.canonical_instance_contract_schedule(
+                definition, actual_backcast["contract_schedule"], slots=slots,
+            )
+            fixing_ledger = custom_products.canonical_dated_fixing_ledger(
+                definition, contract_schedule, actual_backcast["fixing_ledger"],
+                slots=slots,
+            )
+            if (contract_schedule != actual_backcast["contract_schedule"]
+                    or fixing_ledger != actual_backcast["fixing_ledger"]):
+                raise ValueError(
+                    "custom product historical backcast inputs are not canonical")
+            if (contract_schedule_input is None
+                    or fixing_bindings is None
+                    or inception_seed_input is None
+                    or contract_schedule != contract_schedule_input
+                    or actual_backcast["inception_seed"] != inception_seed_input
+                    or fixing_ledger.get("schedule_hash")
+                    != fixing_bindings.get("schedule_hash")
+                    or fixing_ledger.get("asset_names")
+                    != fixing_bindings.get("asset_names")):
+                raise ValueError(
+                    "historical backcast differs from resolved lifecycle contract")
+        if historical_state_mode == "actual_trade_backcast":
+            if actual_backcast is None or repricing_profile != "custom_hist_crn_v1":
+                raise ValueError(
+                    "actual_trade_backcast requires canonical contract and "
+                    "custom_hist_crn_v1")
+            phase = str((params or {}).get("historical_backcast_phase") or "")
+            start_date = str(
+                (params or {}).get("historical_scenario_start_date") or "")
+            end_date = str(
+                (params or {}).get("historical_scenario_end_date") or "")
+            scenario_dates = (params or {}).get("historical_scenario_dates")
+            if phase not in {"start", "end"}:
+                raise ValueError("actual_trade_backcast phase must be start or end")
+            sessions = contract_schedule["calendar"]["resolved_sessions"]
+            if start_date not in sessions or end_date not in sessions:
+                raise ValueError(
+                    "actual_trade_backcast endpoints are not contract sessions")
+            start_index = sessions.index(start_date)
+            end_index = sessions.index(end_date)
+            expected_scenario_dates = sessions[start_index + 1:end_index + 1]
+            if (end_index <= start_index
+                    or scenario_dates != expected_scenario_dates):
+                raise ValueError(
+                    "actual_trade_backcast scenario dates do not match exact sessions")
+            reconstruction = custom_products.reconstruct_historical_valuation_state(
+                definition,
+                contract_schedule,
+                actual_backcast["inception_seed"],
+                fixing_ledger,
+                start_date,
+                slots=slots,
+            )
+            if reconstruction.get("terminal"):
+                raise ValueError(
+                    "custom product terminated before historical scenario start")
+            rolled_state = dict(reconstruction["valuation_state"])
+            state_reconstruction_evidence = dict(reconstruction["evidence"])
+            if phase == "end":
+                dated_roll = custom_products.roll_forward_dated_valuation_state(
+                    definition, contract_schedule, rolled_state, fixing_ledger,
+                    end_date, slots=slots,
+                )
+                dated_roll_evidence = dict(dated_roll["evidence"])
+                normalized_cashflows = [
+                    dict(row) for row in dated_roll.get("cashflows") or []
+                ]
+                if any(
+                    str(row.get("date") or "") < end_date
+                    and float(row.get("amount", 0.0)) != 0.0
+                    for row in normalized_cashflows
+                ):
+                    # The user has intentionally deferred selection of the
+                    # daily rate source.  Until that policy is explicit, an
+                    # intermediate payment cannot be carried to the horizon by
+                    # either the aggregate market rate or an implicit zero rate.
+                    raise ValueError(
+                        "daily rate path policy is required for intermediate "
+                        "cashflow carry")
+                terminal = bool(dated_roll["terminal"])
+                if not terminal:
+                    rolled_state = dict(dated_roll["valuation_state"])
+
         scenario = (params or {}).get("scenario")
         if scenario is not None and not isinstance(scenario, dict):
             raise ValueError("custom product scenario must be an object")
+        if historical_state_mode == "actual_trade_backcast":
+            if phase == "start" and scenario is not None:
+                raise ValueError(
+                    "actual_trade_backcast start valuation cannot be shocked")
+            if phase == "end":
+                multipliers = (scenario or {}).get("spot_multipliers")
+                if (not isinstance(multipliers, dict)
+                        or set(multipliers) != set(asset_names)
+                        or any(float(value) != 1.0
+                               for value in multipliers.values())
+                        or "absolute_current_spots" in (scenario or {})):
+                    raise ValueError(
+                        "actual_trade_backcast end spots must come from fixing ledger")
         try:
             rate_shift = float((params or {}).get("scenario_rate_shift", 0.0))
         except (TypeError, ValueError, OverflowError) as exc:
@@ -2225,6 +2747,54 @@ class PortfolioService:
         if (not math.isfinite(scenario_market["r"])
                 or not -1.0 <= scenario_market["r"] <= 2.0):
             raise ValueError("custom product scenario market rate is invalid")
+        if historical_state_mode != "actual_trade_backcast":
+            rolled_state = dict(valuation_state)
+            terminal = False
+        horizon_cashflow = float(sum(
+            float(row["amount"]) for row in normalized_cashflows
+        ))
+        path_roll_evidence = None
+        path_roll = (params or {}).get("historical_path_roll")
+        if historical_state_mode == "actual_trade_backcast" and path_roll is not None:
+            raise ValueError(
+                "actual_trade_backcast cannot consume current-state return path")
+        if path_roll is not None:
+            if (not isinstance(path_roll, dict)
+                    or path_roll.get("schema")
+                    != "custom-asset-log-return-path-v1"):
+                raise ValueError("custom product historical path schema is unsupported")
+            log_returns = path_roll.get("log_returns")
+            dates = path_roll.get("dates")
+            source_dates = path_roll.get("source_dates", dates)
+            if (not isinstance(log_returns, list) or not log_returns
+                    or not isinstance(dates, list)
+                    or len(dates) != len(log_returns)
+                    or not isinstance(source_dates, list)
+                    or len(source_dates) != len(log_returns)):
+                raise ValueError("custom product historical path is incomplete")
+            from api import custom_products
+
+            detail = custom_products.get_store().get_version(
+                product_id, definition_version)
+            if detail.get("definition_hash") != definition_hash:
+                raise ValueError(
+                    "custom product historical roll definition hash mismatch")
+            roll = custom_products.historical_roll_forward_state(
+                detail["definition"],
+                valuation_state,
+                log_returns,
+                slots=slots,
+                day_count_basis=int(path_roll.get("day_count_basis", 252)),
+                reinvestment_rate=scenario_market["r"],
+                contract_schedule=contract_schedule,
+                path_dates=(dates if contract_schedule is not None else None),
+                source_dates=source_dates,
+            )
+            terminal = bool(roll["terminal"])
+            horizon_cashflow = float(roll["horizon_cashflow"])
+            path_roll_evidence = dict(roll["evidence"])
+            if not terminal:
+                rolled_state = dict(roll["valuation_state"])
         return {
             "product_id": product_id,
             "definition_version": definition_version,
@@ -2244,14 +2814,31 @@ class PortfolioService:
             "slots": dict(slots),
             "market": scenario_market,
             "numerical": {"paths": paths, "steps": steps, "seed": seed},
+            # Historical custom repricing is intentionally chunked so the
+            # inner Monte-Carlo grid has bounded peak memory.  Keep the
+            # chunking policy outside the immutable product contract.
+            "chunk_size": 1_000 if repricing_profile == "custom_hist_crn_v1" else None,
             "repricing_profile": repricing_profile,
             "payoff_basis": payoff_basis,
             "quantity_unit": quantity_unit,
             "state_mode": state_mode,
             "state_source": state_source,
-            "valuation_state": dict(valuation_state),
+            "valuation_state": rolled_state,
             "scenario": dict(scenario) if scenario is not None else None,
+            "contract_schedule": contract_schedule,
             "attachment": dict(attachment),
+            "terminal": terminal,
+            "horizon_cashflow": horizon_cashflow,
+            "path_roll_evidence": path_roll_evidence,
+            "historical_state_mode": historical_state_mode,
+            "backcast_contract_hash": backcast_contract_hash,
+            "state_reconstruction_evidence": state_reconstruction_evidence,
+            "dated_roll_evidence": dated_roll_evidence,
+            "normalized_cashflows": normalized_cashflows,
+            "cashflow_unit": (
+                "normalized_notional"
+                if historical_state_mode == "actual_trade_backcast" else None
+            ),
         }
 
     def _equity_exotic_pricer(self, inst: str, p: dict):

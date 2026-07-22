@@ -40,6 +40,22 @@ class FakeIss:
     def get_block_paginated(self, path, block, params=None, **kw):
         if path in self.fail_paths:
             raise OSError(f"iss down: {path}")
+        if path == "calendars/stock" and block == "off_days":
+            start = date.fromisoformat(params["from"])
+            end = date.fromisoformat(params["till"])
+            rows = []
+            current = start
+            while current <= end:
+                traded = int(current.weekday() < 5)
+                rows.append({
+                    "tradedate": current.isoformat(),
+                    "is_traded": traded,
+                    "trade_session_date": None,
+                    "reason": None if traded else "H",
+                    "updatetime": "2026-06-02 23:00:00",
+                })
+                current += timedelta(days=1)
+            return rows
         return self.paginated.get(path, {}).get(block, [])
 
 
@@ -83,6 +99,8 @@ def test_eod_job_runs_all_sources_and_builds_snapshot():
     job = _job()
     summary = job.run(VAL)
     s = summary["steps"]
+    assert s["trading_calendar"]["calendar_id"] == "MOEX_STOCK"
+    assert s["trading_calendar"]["row_count"] > 3_000
     assert s["gcurve"] == 6 and s["fx"] == 2 and s["bonds"] == 1
     assert s["equity_quotes"] == 1 and s["vol_surface"] == 1
     assert s["index:IMOEX"] == 1 and s["equity:SBER"] == 1

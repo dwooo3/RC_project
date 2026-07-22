@@ -204,11 +204,13 @@ struct WsEnvironment: Decodable, Sendable, Identifiable, Hashable {
     let envID: String
     let name: String
     let purpose: String
+    let snapshotID: String?
     var id: String { envID }
 
     enum CodingKeys: String, CodingKey {
         case name, purpose
         case envID = "env_id"
+        case snapshotID = "snapshot_id"
     }
 
     var allowsAnalyticsLab: Bool {
@@ -467,13 +469,14 @@ struct UnderlyingFacts: Decodable, Sendable {
     let category: String
     let label: String
     let currency: String?
+    let board: String?
     let facts: [String: Double?]
     let snapshotID: String?
     let marketDataSource: String?
     let marketDataQuality: String?
 
     enum CodingKeys: String, CodingKey {
-        case secid, category, label, currency, facts
+        case secid, category, label, currency, board, facts
         case snapshotID = "snapshot_id"
         case marketDataSource = "market_data_source"
         case marketDataQuality = "market_data_quality"
@@ -485,6 +488,7 @@ struct UnderlyingFacts: Decodable, Sendable {
         category = try c.decode(String.self, forKey: .category)
         label = try c.decode(String.self, forKey: .label)
         currency = try c.decodeIfPresent(String.self, forKey: .currency)
+        board = try c.decodeIfPresent(String.self, forKey: .board)
         facts = try c.decode([String: Double?].self, forKey: .facts)
         snapshotID = try c.decodeIfPresent(String.self, forKey: .snapshotID)
         marketDataSource = try c.decodeIfPresent(String.self, forKey: .marketDataSource)

@@ -15,6 +15,7 @@ the full ISS description in ref_json for the instrument card.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 
 # ISS bond markets / boards we track (OFZ + corporates).
@@ -63,11 +64,13 @@ class MarketStore:
         }
 
     def fetch_daily_history(self, secid: str, market: str, frm: _dt.date, till: _dt.date,
-                            engine: str = "stock") -> list[dict]:
+                            engine: str = "stock", board: str | None = None) -> list[dict]:
         """Daily OHLCV (+ yield) for a security over [frm, till], one row per day."""
         endpoint = f"history/engines/{engine}/markets/{market}/securities/{secid}"
         rows = self.iss.get_block_paginated(
             endpoint, "history", {"from": frm.isoformat(), "till": till.isoformat()})
+        self._save_contract_fixings(
+            rows, fallback_secid=secid, fallback_board=board)
         by_date: dict[str, dict] = {}
         for r in rows:
             d = r.get("TRADEDATE")
@@ -89,6 +92,71 @@ class MarketStore:
                     "numtrades": _num(r.get("NUMTRADES")),
                 }
         return [by_date[d] for d in sorted(by_date)]
+
+    def _save_contract_fixings(
+        self, rows: list[dict], *, fallback_secid: str | None = None,
+        fallback_board: str | None = None,
+    ) -> int:
+        """Persist exact ISS close/settlement fields with their identities.
+
+        ``price_history.close`` remains a display/history convenience and may
+        choose between columns.  Lifecycle reconstruction must instead bind a
+        named basis (CLOSE, LEGALCLOSEPRICE, WAPRICE or SETTLEPRICE), board and
+        session.  Store every available positive basis without fallback so a
+        contract can later request one exact series and fail closed on gaps.
+        """
+        saver = getattr(self.db, "save_contract_fixings", None)
+        if not callable(saver) or not rows:
+            return 0
+        fetched_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        # Some history endpoints can return more than one physical row for the
+        # same security/date/board.  Match the display-history rule and bind
+        # the contractual fixing to the most-traded row deterministically.
+        best_rows: dict[tuple[str, str, str, str], dict] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            secid = str(row.get("SECID") or fallback_secid or "").strip()
+            observed_date = str(row.get("TRADEDATE") or "").strip()
+            board = str(row.get("BOARDID") or fallback_board or "").strip().upper()
+            session = str(
+                row.get("TRADINGSESSION") or row.get("TRADE_SESSION") or ""
+            ).strip().upper()
+            if not secid or not observed_date:
+                continue
+            key = (secid, observed_date, board, session)
+            previous = best_rows.get(key)
+            volume = _num(row.get("VOLUME")) or 0.0
+            previous_volume = (_num(previous.get("VOLUME")) or 0.0) if previous else -1.0
+            if previous is None or volume >= previous_volume:
+                best_rows[key] = row
+
+        fixings: list[dict] = []
+        for (secid, observed_date, board, session), row in best_rows.items():
+            for basis in (
+                    "CLOSE", "LEGALCLOSEPRICE", "WAPRICE", "SETTLEPRICE"):
+                value = _num(row.get(basis))
+                if value is None or value <= 0.0:
+                    continue
+                semantic = {
+                    "factor_id": f"{secid}:price",
+                    "observed_date": observed_date,
+                    "value": value,
+                    "price_basis": basis,
+                    "board": board,
+                    "session": session,
+                    "source": "MOEX",
+                }
+                payload_hash = hashlib.sha256(json.dumps(
+                    semantic, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=False, allow_nan=False,
+                ).encode("utf-8")).hexdigest()
+                fixings.append({
+                    **semantic,
+                    "fetched_at": fetched_at,
+                    "payload_hash": payload_hash,
+                })
+        return int(saver(fixings)) if fixings else 0
 
     def board_secids(self, market: str, boards) -> list[tuple[str, str]]:
         """(secid, board) for every security on the given stock-market boards."""
@@ -141,14 +209,90 @@ class MarketStore:
         chg = ((last["close"] - prev) / prev * 100.0) if prev else None
         return last["close"], chg, last["dt"]
 
+    def backfill_contract_fixings(
+        self,
+        secid: str,
+        market: str,
+        board: str,
+        *,
+        years: int = 5,
+        engine: str = "stock",
+        today: _dt.date | None = None,
+    ) -> int:
+        """Backfill the immutable MOEX fixing cursor behind existing history.
+
+        This is independent from the append cursor in ``price_history``.  It is
+        primarily a migration path for stores populated before
+        ``contract_fixings`` existed: if exact rows are absent or cover a
+        shorter boundary span, fetch only the missing leading/trailing ranges.
+        Interior exchange holidays are intentionally not inferred here; the
+        governed MOEX calendar remains the authority at valuation time.
+
+        Returns the number of newly covered fixing dates (across all available
+        named bases) and leaves repeated calls idempotent.
+        """
+        today = today or _dt.date.today()
+        history_end_raw = self.db.price_history_max_dt(secid, market)
+        if not history_end_raw:
+            # The normal preload request will fetch the full requested range
+            # and persist both price_history and exact fixings in one pass.
+            return 0
+        history_end = min(_dt.date.fromisoformat(history_end_raw), today)
+        target_start = today.replace(year=today.year - years)
+        if target_start > history_end:
+            return 0
+
+        factor_id = f"{secid}:price"
+        coverage = self.db.contract_fixing_coverage(
+            factor_id, source="MOEX", board=board, session="",
+        )
+        before = int(coverage["date_count"])
+        first = (
+            _dt.date.fromisoformat(coverage["first_date"])
+            if coverage.get("first_date") else None
+        )
+        last = (
+            _dt.date.fromisoformat(coverage["last_date"])
+            if coverage.get("last_date") else None
+        )
+        ranges: list[tuple[_dt.date, _dt.date]] = []
+        if first is None or last is None:
+            ranges.append((target_start, history_end))
+        else:
+            old_end = min(history_end, first - _dt.timedelta(days=1))
+            if target_start <= old_end:
+                ranges.append((target_start, old_end))
+            recent_start = max(target_start, last + _dt.timedelta(days=1))
+            if recent_start <= history_end:
+                ranges.append((recent_start, history_end))
+
+        for frm, till in ranges:
+            hist = self.fetch_daily_history(
+                secid, market, frm, till, engine=engine, board=board,
+            )
+            if hist:
+                # Exact fixings are saved inside fetch_daily_history.  Preserve
+                # the useful older display history too; save_price_history is
+                # idempotent for already populated stores.
+                self.db.save_price_history(hist)
+
+        after = self.db.contract_fixing_coverage(
+            factor_id, source="MOEX", board=board, session="",
+        )
+        return max(int(after["date_count"]) - before, 0)
+
     def _preload_one(self, secid: str, board: str, *, category: str, market: str,
                      years: int, today: _dt.date, with_dividends: bool = False) -> int:
         """Full ref + append-missing daily history for one security → rows added."""
         ref = self.fetch_ref(secid)
         start = self.db.price_history_max_dt(secid, market)
+        if start:
+            self.backfill_contract_fixings(
+                secid, market, board, years=years, today=today)
         frm = (_dt.date.fromisoformat(start) + _dt.timedelta(days=1)) if start \
             else today.replace(year=today.year - years)
-        hist = self.fetch_daily_history(secid, market, frm, today) if frm <= today else []
+        hist = self.fetch_daily_history(
+            secid, market, frm, today, board=board) if frm <= today else []
         if hist:
             self.db.save_price_history(hist)
         if with_dividends:
@@ -230,14 +374,18 @@ class MarketStore:
                 try:
                     if boards:
                         for b in boards:
-                            date_rows += self.iss.get_block_paginated(
+                            board_rows = self.iss.get_block_paginated(
                                 f"history/engines/{engine}/markets/{iss_market}"
                                 f"/boards/{b}/securities",
                                 "history", {"date": d.isoformat()})
+                            self._save_contract_fixings(
+                                board_rows, fallback_board=b)
+                            date_rows += board_rows
                     else:
                         date_rows = self.iss.get_block_paginated(
                             f"history/engines/{engine}/markets/{iss_market}/securities",
                             "history", {"date": d.isoformat()})
+                        self._save_contract_fixings(date_rows)
                 except Exception:
                     date_rows = []             # one bad date must not kill the append
                 hist = self._daily_rows(date_rows, market)

@@ -47,6 +47,72 @@ def _prices(start: date, count: int, initial: float, phase: int = 0):
     return points
 
 
+def test_explicit_historical_correlation_supports_ewma_and_records_window():
+    svc = MarketDataService()
+    days = [AS_OF - timedelta(days=20 - i) for i in range(21)]
+    left_values = [100.0]
+    right_values = [200.0]
+    for i in range(20):
+        move = (0.004 + 0.001 * (i % 5)) * (-1.0 if i % 4 == 0 else 1.0)
+        left_values.append(left_values[-1] * np.exp(move))
+        right_values.append(right_values[-1] * np.exp(0.8 * move + 0.0003 * (-1) ** i))
+    left = dict(zip(days, left_values))
+    right = dict(zip(days, right_values))
+    svc._price_history_as_of = lambda factor, cutoff: (
+        left if factor == "A" else right, {}, {})
+    result = svc.historical_correlation(
+        ["A", "B"], as_of=AS_OF, lookback=15, method="ewma",
+        decay=0.95, min_samples=5,
+    )
+    assert result["method"] == "ewma"
+    assert result["lookback"] == 15
+    assert result["pairs"][0]["sample_count"] == 15
+    left_returns = np.diff(np.log(np.asarray(left_values[-16:])))
+    right_returns = np.diff(np.log(np.asarray(right_values[-16:])))
+    weights = 0.95 ** np.arange(14, -1, -1); weights /= weights.sum()
+    lm = np.dot(weights, left_returns); rm = np.dot(weights, right_returns)
+    expected = np.dot(
+        weights, (left_returns - lm) * (right_returns - rm),
+    ) / np.sqrt(
+        np.dot(weights, (left_returns - lm) ** 2)
+        * np.dot(weights, (right_returns - rm) ** 2)
+    )
+    assert result["matrix"][0][1] == pytest.approx(expected)
+    assert result["pairs"][0]["effective_sample_size"] < 15
+    assert len(result["matrix_hash"]) == 64
+    assert "adjustment_frobenius" in result
+
+
+def test_historical_correlation_fails_closed_on_zero_variance_or_uses_prior():
+    svc = MarketDataService()
+    days = [AS_OF - timedelta(days=10 - i) for i in range(11)]
+    flat_growth = {day: 100.0 * np.exp(0.01 * i)
+                   for i, day in enumerate(days)}
+    varied = {day: 100.0 * np.exp(0.002 * i * i)
+              for i, day in enumerate(days)}
+    svc._price_history_as_of = lambda factor, cutoff: (
+        flat_growth if factor == "A" else varied, {}, {})
+    with pytest.raises(ValueError, match="zero_or_nonfinite_variance"):
+        svc.historical_correlation(
+            ["A", "B"], as_of=AS_OF, lookback=10, min_samples=5)
+
+    result = svc.historical_correlation(
+        ["A", "B"], as_of=AS_OF, lookback=10, min_samples=5,
+        fallback_policy="prior", prior_matrix=[[1.0, 0.35], [0.35, 1.0]],
+    )
+    assert result["fallback"] is True
+    assert result["pairs"][0]["reason"] == "zero_or_nonfinite_variance"
+    assert result["matrix"][0][1] == pytest.approx(0.35)
+
+
+def test_historical_correlation_validates_factor_contract():
+    svc = MarketDataService()
+    with pytest.raises(ValueError, match="sequence"):
+        svc.historical_correlation("AB")
+    with pytest.raises(ValueError, match="must not exceed"):
+        svc.historical_correlation(["A", "B"], lookback=5, min_samples=6)
+
+
 def _seed_governed_basket() -> tuple[MarketDataDB, MarketDataService]:
     db = MarketDataDB(":memory:")
     _save_meta(db, SID, AS_OF)
