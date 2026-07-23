@@ -132,6 +132,7 @@ struct InstrumentCard: View {
                     HStack(spacing: 4) {
                         if c.isActive == 1 {
                             Text("●").font(.system(size: 8)).foregroundStyle(Theme.positive)
+                                .accessibilityLabel("Активный контракт")
                         }
                         Text(c.shortname ?? c.secid).font(.system(size: 11, weight: c.isActive == 1 ? .semibold : .regular))
                         Spacer(minLength: 0)

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Semantic design tokens. Colours are chosen to read well in both light and
 /// dark appearance — surfaces and text use system materials so the window
@@ -117,6 +118,20 @@ enum AppTheme: String, CaseIterable, Identifiable {
         case .light:  return .light
         case .dark:   return .dark
         }
+    }
+}
+
+// MARK: - Color → hex (for the web chart palette)
+
+extension Color {
+    /// "#rrggbb" in sRGB — used to pass the (user-tunable) accent into the
+    /// Lightweight-Charts WKWebView so the chart matches the app.
+    var hexRGB: String {
+        let ns = NSColor(self).usingColorSpace(.sRGB) ?? .systemOrange
+        let r = Int((ns.redComponent * 255).rounded())
+        let g = Int((ns.greenComponent * 255).rounded())
+        let b = Int((ns.blueComponent * 255).rounded())
+        return String(format: "#%02x%02x%02x", r, g, b)
     }
 }
 

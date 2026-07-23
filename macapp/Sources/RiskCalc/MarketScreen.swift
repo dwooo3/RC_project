@@ -204,7 +204,7 @@ struct MarketScreen: View {
                 }
             }
             Spacer(minLength: 0)
-            Text(identityLine).font(.caption2).foregroundStyle(.tertiary)
+            Text(identityLine).font(Typography.caption).foregroundStyle(.secondary)
         }
         .padding(.horizontal, Theme.s4).padding(.top, Theme.s2).padding(.bottom, Theme.s2)
     }
@@ -240,7 +240,7 @@ struct MarketScreen: View {
         case "curves":
             ScreenScaffold {
                 if vm.serverDown {
-                    ContentUnavailableView("Bridge offline", systemImage: "bolt.horizontal.circle").frame(height: 200)
+                    ContentUnavailableView("Мост недоступен", systemImage: "bolt.horizontal.circle").frame(height: 200)
                 } else {
                     curvesSection
                 }
@@ -250,7 +250,7 @@ struct MarketScreen: View {
         case "history":
             ScreenScaffold {
                 if vm.serverDown {
-                    ContentUnavailableView("Bridge offline", systemImage: "bolt.horizontal.circle").frame(height: 200)
+                    ContentUnavailableView("Мост недоступен", systemImage: "bolt.horizontal.circle").frame(height: 200)
                 } else {
                     historySection
                 }
@@ -372,7 +372,7 @@ struct MarketScreen: View {
                         }
                     }
                 }
-                .chartXAxisLabel("Тенор").chartYAxisLabel("Zero-ставка (%)")
+                .chartXAxisLabel("Тенор").chartYAxisLabel("Бескупонная ставка (%)")
                 .frame(height: 260)
             }
         }
@@ -397,7 +397,7 @@ struct MarketScreen: View {
         GlassCard(padding: Theme.s2) {
             VStack(spacing: 0) {
                 HStack(spacing: Theme.s2) {
-                    tableHead("Тенор"); tableHead("Zero-ставка"); tableHead("Дисконт-фактор")
+                    tableHead("Тенор"); tableHead("Бескупонная ставка", align: .trailing); tableHead("Дисконт-фактор", align: .trailing)
                 }
                 .padding(.horizontal, Theme.s2).padding(.vertical, Theme.s2)
                 Divider()
@@ -420,11 +420,14 @@ struct MarketScreen: View {
     private var historySection: some View {
         VStack(alignment: .leading, spacing: Theme.s3) {
             if let cat = vm.tsCatalog, cat.groups.count > 1 {
-                SegmentedBar(
-                    items: cat.groups.map { ($0.id, $0.label) },
-                    selection: Binding(get: { vm.tsGroup }, set: { vm.changeTSGroup($0) })
-                )
-                .fixedSize()
+                ScrollView(.horizontal, showsIndicators: false) {
+                    SegmentedBar(
+                        items: cat.groups.map { ($0.id, $0.label) },
+                        selection: Binding(get: { vm.tsGroup }, set: { vm.changeTSGroup($0) }),
+                        compact: true
+                    )
+                    .fixedSize()
+                }
             }
             HStack(spacing: Theme.s3) {
                 Picker("Series", selection: Binding(get: { vm.tsSeriesID }, set: { vm.changeTSSeries($0) })) {
@@ -432,7 +435,7 @@ struct MarketScreen: View {
                 }
                 .labelsHidden().neutralControlTint().fixedSize()
                 Spacer()
-                SegmentedBar(items: [(1, "1Y"), (3, "3Y"), (5, "5Y"), (0, "Все")],
+                SegmentedBar(items: [(1, "1Y"), (3, "3Y"), (5, "5Y"), (0, "Всё")],
                              selection: $vm.tsYears, compact: true)
                     .fixedSize()
                 if vm.isLoading { ProgressView().controlSize(.small) }
@@ -476,7 +479,7 @@ struct MarketScreen: View {
         GlassCard(padding: Theme.s2) {
             VStack(spacing: 0) {
                 HStack(spacing: Theme.s2) {
-                    tableHead("Дата"); tableHead(d.isRate ? "Ставка" : "Значение")
+                    tableHead("Дата"); tableHead(d.isRate ? "Ставка" : "Значение", align: .trailing)
                 }
                 .padding(.horizontal, Theme.s2).padding(.vertical, Theme.s2)
                 Divider()
@@ -497,9 +500,9 @@ struct MarketScreen: View {
         }
     }
 
-    private func tableHead(_ t: String) -> some View {
+    private func tableHead(_ t: String, align: Alignment = .leading) -> some View {
         Text(t.uppercased()).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: align)
     }
 
     private func cell(_ t: String, weight: Font.Weight = .regular, align: Alignment = .trailing) -> some View {

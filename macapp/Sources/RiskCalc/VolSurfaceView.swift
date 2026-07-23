@@ -71,9 +71,9 @@ struct VolSurfaceView: View {
     private var listPane: some View {
         Group {
             if vm.serverDown {
-                ContentUnavailableView("Bridge offline", systemImage: "bolt.horizontal.circle")
+                ContentUnavailableView("Мост недоступен", systemImage: "bolt.horizontal.circle")
             } else if vm.underlyings.isEmpty && !vm.loading {
-                Text("Нет поверхностей. Запусти ingest.")
+                Text("Нет поверхностей. Запустите загрузку данных.")
                     .font(.caption).foregroundStyle(.secondary).padding().frame(maxHeight: .infinity)
             } else {
                 VStack(spacing: 0) {
@@ -82,7 +82,7 @@ struct VolSurfaceView: View {
                         TextField("Поиск…", text: $filter).textFieldStyle(.plain).font(.system(size: 11))
                     }
                     .padding(.horizontal, Theme.s2).padding(.vertical, 5)
-                    .background(Color.gray.opacity(0.1))
+                    .background(Color.primary.opacity(0.06))
                     Divider()
                     underlyingList
                 }
@@ -273,7 +273,7 @@ struct VolSurfaceView: View {
                 ForEach(otc.tenors) { t in
                     HStack(spacing: Theme.s2) {
                         cell(t.expiry, .leading, .medium)
-                        cell(String(format: "%.2f", t.t), .trailing)
+                        cell(Fmt.number(t.t, digits: 2), .trailing)
                         cell(t.atm.map { Fmt.percent($0 * 100, digits: 1) } ?? "—", .trailing)
                         cell(t.rr25.map { Fmt.signedPercent($0 * 100, digits: 1) } ?? "—", .trailing,
                              .regular, (t.rr25 ?? 0) < 0 ? Theme.negative : Theme.positive)
@@ -405,16 +405,19 @@ struct VolSurfaceView: View {
                                 cell(p.delta.map { Fmt.number($0, digits: 2) } ?? "—", .trailing)
                                 cell(p.iv.map { Fmt.percent($0 * 100, digits: 2) } ?? "—", .trailing)
                                 cell(p.quote.map { Fmt.number($0, digits: 1) } ?? "—", .trailing)
-                                cell(p.fairValue.map { Fmt.number($0, digits: 1) } ?? "—", .trailing,
-                                     .regular, fairColor(p))
+                                // rich/cheap conveyed by an arrow glyph too, not
+                                // colour alone (colour-blind / VoiceOver safe)
+                                cell(fairText(p), .trailing, .regular, fairColor(p))
                             }
                             .padding(.horizontal, Theme.s2).padding(.vertical, 3)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel(fairAccessibility(p))
                             Divider().opacity(0.25)
                         }
                     } label: {
                         HStack(spacing: Theme.s2) {
                             Text(e.expiry).font(.system(size: 11, weight: .semibold))
-                            if let t = e.t { Text(String(format: "%.2f г", t)).font(.system(size: 9)).foregroundStyle(.tertiary) }
+                            if let t = e.t { Text("\(Fmt.number(t, digits: 2)) г").font(.system(size: 9)).foregroundStyle(.tertiary) }
                             if let a = e.atmIv { Text("ATM \(Fmt.percent(a * 100, digits: 1))").font(.system(size: 9)).foregroundStyle(.secondary) }
                             Spacer()
                             Text("\(e.points.count) опц.").font(.system(size: 9)).foregroundStyle(.tertiary)
@@ -433,14 +436,33 @@ struct VolSurfaceView: View {
         return f > q ? Theme.positive : (f < q ? Theme.negative : .primary)   // fair vs market
     }
 
+    /// Fair value with a direction glyph so cheap/rich isn't colour-only.
+    private func fairText(_ p: VolPoint) -> String {
+        guard let f = p.fairValue else { return "—" }
+        let v = Fmt.number(f, digits: 1)
+        guard let q = p.quote, q > 0 else { return v }
+        if f > q { return "▲ \(v)" }
+        if f < q { return "▼ \(v)" }
+        return v
+    }
+
+    private func fairAccessibility(_ p: VolPoint) -> String {
+        guard let f = p.fairValue else { return "Справедливая цена недоступна" }
+        guard let q = p.quote, q > 0 else { return "Справедливая цена \(Fmt.number(f, digits: 1))" }
+        let rel = f > q ? "выше рынка" : (f < q ? "ниже рынка" : "на уровне рынка")
+        return "Справедливая цена \(Fmt.number(f, digits: 1)), \(rel)"
+    }
+
     private func head(_ t: String, _ align: Alignment) -> some View {
         Text(t.uppercased()).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+            .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: align)
     }
 
     private func cell(_ t: String, _ align: Alignment, _ weight: Font.Weight = .regular,
                       _ color: Color = .primary) -> some View {
         Text(t).font(.system(size: 11, weight: weight)).monospacedDigit().foregroundStyle(color)
+            .lineLimit(1).minimumScaleFactor(0.8)
             .frame(maxWidth: .infinity, alignment: align)
     }
 }

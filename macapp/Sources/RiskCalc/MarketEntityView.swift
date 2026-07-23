@@ -408,8 +408,9 @@ struct MarketEntityView: View {
             } else if vm.filtered.isEmpty {
                 VStack(spacing: 6) {
                     Image(systemName: "tray").foregroundStyle(.tertiary)
-                    Text("Нет данных. Запусти предзагрузку:").font(Typography.caption).foregroundStyle(.secondary)
-                    Text("python3.14 -m scripts.preload_history \(category)").font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
+                    Text("Нет данных по этой категории").font(Typography.caption).foregroundStyle(.secondary)
+                    Text("Загрузите рыночные данные кнопкой обновления в панели инструментов")
+                        .font(Typography.caption).foregroundStyle(.tertiary)
                 }
                 .multilineTextAlignment(.center).padding().frame(maxHeight: .infinity)
             } else {
@@ -539,7 +540,7 @@ struct MarketEntityView: View {
         return HStack(alignment: .firstTextBaseline, spacing: Theme.s3) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(e.issuerRu ?? e.secid).font(.system(size: 18, weight: .bold))
-                Text("\(e.secid)\(e.isin.map { " · \($0)" } ?? "") · \(e.secType ?? "")")
+                Text("\(e.secid)\(e.isin.map { " · \($0)" } ?? "")\(e.secType.map { " · \($0)" } ?? "")")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer()
@@ -597,9 +598,9 @@ struct MarketEntityView: View {
     /// One compact row of dropdown chips: interval · chart mode · period/LIVE.
     private var rangeBar: some View {
         HStack(spacing: Theme.s2) {
-            chipMenu(vm.intervals,
+            chipMenu("Интервал графика", vm.intervals,
                      Binding(get: { vm.interval }, set: { vm.changeInterval($0) }))
-            chipMenu(vm.chartModes,
+            chipMenu("Тип графика", vm.chartModes,
                      Binding(get: { vm.chartMode }, set: { vm.changeChartMode($0) }))
             if vm.intradayMinutes != nil {
                 HStack(spacing: 4) {
@@ -607,15 +608,18 @@ struct MarketEntityView: View {
                     Text("LIVE · 15с").font(.system(size: 10, weight: .medium))
                         .foregroundStyle(Theme.positive)
                 }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Живые данные, обновление каждые 15 секунд")
             } else {
-                chipMenu(vm.rangeOptions,
+                chipMenu("Период", vm.rangeOptions,
                          Binding(get: { vm.range }, set: { vm.changeRange($0) }))
             }
             Spacer()
         }
     }
 
-    private func chipMenu(_ options: [String], _ binding: Binding<String>) -> some View {
+    private func chipMenu(_ role: String, _ options: [String],
+                          _ binding: Binding<String>) -> some View {
         Menu {
             ForEach(options, id: \.self) { o in
                 Button { binding.wrappedValue = o } label: {
@@ -629,10 +633,13 @@ struct MarketEntityView: View {
                 Image(systemName: "chevron.down").font(.system(size: 7))
             }
             .padding(.horizontal, Theme.s2).padding(.vertical, 4)
-            .background(Color.gray.opacity(0.14), in: RoundedRectangle(cornerRadius: 7))
+            .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
             .foregroundStyle(.primary)
         }
         .menuStyle(.borderlessButton).fixedSize()
+        .help(role)
+        .accessibilityLabel(role)
+        .accessibilityValue(binding.wrappedValue)
     }
 
     private func dayStats(_ e: MDEntity) -> some View {
@@ -659,6 +666,7 @@ struct MarketEntityView: View {
                             Text(m.title).font(Typography.micro).foregroundStyle(.secondary)
                             Text(m.value).font(Typography.subtitle.weight(.semibold))
                                 .monospacedDigit().foregroundStyle(m.color)
+                                .lineLimit(1).minimumScaleFactor(0.7)
                         }
                     }
                 }
@@ -683,9 +691,11 @@ struct MarketEntityView: View {
             }
         } label: {
             Image(systemName: "square.and.arrow.up").font(.system(size: 12)).foregroundStyle(.secondary)
+                .frame(width: 24, height: 24).contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton).fixedSize()
         .help("Экспорт в CSV")
+        .accessibilityLabel("Экспорт в CSV")
     }
 
     /// Upcoming events (next coupon / offer / amortization / maturity / dividend)
@@ -756,7 +766,7 @@ struct MarketEntityView: View {
             Text(value).font(.system(size: 11, weight: .medium)).monospacedDigit().foregroundStyle(color)
         }
         .padding(.horizontal, Theme.s2).padding(.vertical, 3)
-        .background(Color.gray.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
     }
 
     private func keyInfo(_ e: MDEntity) -> some View {

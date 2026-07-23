@@ -65,6 +65,7 @@ struct OptionChainView: View {
                 Button("OI ≥ 1000") { minOI = 1000 }
             } label: {
                 Text("OI ≥ \(Int(minOI))").font(.system(size: 11, weight: minOI > 0 ? .semibold : .regular))
+                    .foregroundStyle(.primary)
             }
             .menuStyle(.borderlessButton).fixedSize()
             Spacer()

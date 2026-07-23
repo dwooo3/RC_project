@@ -9,6 +9,20 @@ struct PricingNewScreen: View {
     @State private var vm = PricingNewWorkspaceViewModel()
     @State private var showCustomBuilder = false
 
+    /// The run name is required to price; surface that instead of leaving the
+    /// primary action silently disabled.
+    private var runNameMissing: Bool {
+        vm.runName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Why "Рассчитать и сохранить" is disabled, or nil when it is ready.
+    private var priceBlockedHint: String? {
+        guard !vm.canPrice, !vm.isPricing else { return nil }
+        if runNameMissing { return "Укажите имя расчёта" }
+        if vm.legs.isEmpty { return "Добавьте хотя бы одну позицию" }
+        return "Проверьте параметры позиций"
+    }
+
     var body: some View {
         ScrollView {
             pageContent
@@ -72,12 +86,23 @@ struct PricingNewScreen: View {
                     .fixedSize(horizontal: true, vertical: false)
                     Divider().frame(height: 34)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("ИМЯ РАСЧЁТА")
-                            .font(Typography.label).foregroundStyle(.secondary)
+                        HStack(spacing: 3) {
+                            Text("ИМЯ РАСЧЁТА")
+                                .font(Typography.label).foregroundStyle(.secondary)
+                            Text("*")
+                                .font(Typography.label)
+                                .foregroundStyle(runNameMissing ? Theme.warning : Color.secondary)
+                        }
                         TextField("Например: Autocall validation · 16 Jul",
                                   text: $vm.runName)
                             .textFieldStyle(.roundedBorder)
                             .frame(minWidth: 210, maxWidth: 380)
+                            .overlay {
+                                if runNameMissing {
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .stroke(Theme.warning.opacity(0.5), lineWidth: 1)
+                                }
+                            }
                     }
                     .layoutPriority(1)
                     VStack(alignment: .leading, spacing: 2) {
@@ -103,6 +128,11 @@ struct PricingNewScreen: View {
                             .fixedSize()
                     }
                     Spacer(minLength: Theme.s2)
+                    if let hint = priceBlockedHint {
+                        Label(hint, systemImage: "info.circle")
+                            .font(Typography.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).fixedSize()
+                    }
                     Button {
                         showCustomBuilder.toggle()
                     } label: {
@@ -132,6 +162,7 @@ struct PricingNewScreen: View {
                     .buttonStyle(.borderedProminent).tint(Theme.accent)
                     .controlSize(.small)
                     .disabled(!vm.canPrice)
+                    .help(priceBlockedHint ?? "Рассчитать и сохранить (⌘↵)")
                     .keyboardShortcut(.return, modifiers: [.command])
                 }
             }
@@ -226,6 +257,16 @@ struct PricingNewScreen: View {
         }
     }
 
+    /// Up to four aggregate greeks, priority-ordered (delta, gamma, vega,
+    /// theta, rho, dv01, cs01 first; anything else after) for the headline tiles.
+    private func headlineGreeks(_ result: WsBookResult) -> [WsMeasure] {
+        let priority = ["delta", "gamma", "vega", "theta", "rho", "dv01", "cs01"]
+        let rank: (WsMeasure) -> Int = { g in
+            priority.firstIndex(of: g.key.lowercased()) ?? priority.count
+        }
+        return Array(result.greeks.sorted { rank($0) < rank($1) }.prefix(4))
+    }
+
     private func resultSummary(_ result: WsBookResult) -> some View {
         HStack(spacing: Theme.s2) {
             PricingNewMetricTile(label: "Priced", value: "\(result.successCount)/\(result.count)",
@@ -239,7 +280,10 @@ struct PricingNewScreen: View {
                 PricingNewMetricTile(label: "Aggregate PV", value: "blocked",
                                      color: Theme.warning)
             }
-            ForEach(result.greeks.prefix(4)) { greek in
+            // Headline tiles show the greeks traders read first (delta, gamma,
+            // vega, theta…) rather than whatever order the engine emitted, so
+            // second-order greeks like charm/color don't crowd out the majors.
+            ForEach(headlineGreeks(result)) { greek in
                 PricingNewMetricTile(label: greek.label,
                                      value: Fmt.number(greek.value, digits: 4),
                                      color: Theme.bucketColor("Volatility"))
@@ -257,7 +301,7 @@ struct PricingNewScreen: View {
             }
             ScrollView(.horizontal) {
                 VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 0) {
+                    HStack(spacing: Theme.s3) {
                         resultHeader("POSITION", width: 180, alignment: .leading)
                         resultHeader("PRODUCT / PRICER", width: 210, alignment: .leading)
                         resultHeader("QTY", width: 70, alignment: .trailing)
@@ -271,7 +315,7 @@ struct PricingNewScreen: View {
                     .padding(.vertical, 5)
                     Divider()
                     ForEach(Array(result.legs.enumerated()), id: \.element.id) { index, leg in
-                        HStack(spacing: 0) {
+                        HStack(spacing: Theme.s3) {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(leg.label).font(Typography.bodyMedium).lineLimit(1)
                                 Text("#\(index + 1)").font(Typography.micro).foregroundStyle(.tertiary)
@@ -390,7 +434,7 @@ struct PricingNewScreen: View {
                 HStack(spacing: Theme.s2) {
                     Text("MARKET DATA · MODEL EVIDENCE")
                         .font(Typography.label).tracking(0.5)
-                    Pill(text: "\(evidenceLegs.count) priced legs",
+                    Pill(text: "оценено позиций: \(evidenceLegs.count)",
                          color: Theme.positive)
                 }
                 .foregroundStyle(.secondary)

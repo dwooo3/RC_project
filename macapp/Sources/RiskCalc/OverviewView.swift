@@ -33,7 +33,7 @@ struct OverviewView: View {
     var body: some View {
         ScreenScaffold {
             if vm.serverDown {
-                ContentUnavailableView("Bridge offline", systemImage: "bolt.horizontal.circle").frame(height: 200)
+                ContentUnavailableView("Мост недоступен", systemImage: "bolt.horizontal.circle").frame(height: 200)
             } else if let d = vm.data, d.available {
                 if let line = asOfLine(d) {
                     Text(line).font(.caption).foregroundStyle(.secondary)
@@ -45,7 +45,7 @@ struct OverviewView: View {
             } else if vm.loading {
                 ProgressView().frame(maxWidth: .infinity, minHeight: 200)
             } else {
-                Text("Нет данных. Запусти ingest.").font(.caption).foregroundStyle(.secondary).frame(height: 120)
+                Text("Нет данных. Запустите загрузку данных.").font(.caption).foregroundStyle(.secondary).frame(height: 120)
             }
         }
         .task {
@@ -94,7 +94,7 @@ struct OverviewView: View {
                                     Text(r.secid).font(.system(size: 9)).foregroundStyle(.tertiary)
                                 }
                                 .padding(.horizontal, Theme.s3).padding(.vertical, 5)
-                                .background(Color.gray.opacity(0.12), in: Capsule())
+                                .background(Color.primary.opacity(0.06), in: Capsule())
                                 .contentShape(Capsule())
                             }
                             .buttonStyle(.plain)

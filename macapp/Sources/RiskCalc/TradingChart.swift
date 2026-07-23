@@ -14,6 +14,7 @@ struct TradingChart: View {
     let bars: [MDBar]
     let mode: String            // JS ids: "Candles" | "Line" | "Yield"
     let events: [ChartEvent]    // coupons / offers / dividends / maturity …
+    @Environment(\.colorScheme) private var scheme
 
     init(bars: [MDBar], mode: String = "Candles", events: [ChartEvent] = []) {
         self.bars = bars
@@ -22,7 +23,8 @@ struct TradingChart: View {
     }
 
     var body: some View {
-        LWChartView(bars: bars, mode: mode, events: events)
+        LWChartView(bars: bars, mode: mode, events: events,
+                    dark: scheme == .dark, accentHex: Theme.accent.hexRGB)
             .frame(height: 440)
     }
 }
@@ -33,6 +35,8 @@ private struct LWChartView: NSViewRepresentable {
     let bars: [MDBar]
     let mode: String          // "Candles" | "Line" | "Yield"
     let events: [ChartEvent]
+    let dark: Bool            // drive the JS palette from the app color scheme
+    let accentHex: String     // brand accent (user-tunable) for line/area series
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -71,7 +75,9 @@ private struct LWChartView: NSViewRepresentable {
         let dataSig = "\(bars.count)|\(bars.first?.date ?? "")|\(bars.last?.date ?? "")"
             + "|\(bars.first?.close ?? 0)|\(bars.last?.close ?? 0)|\(bars.last?.volume ?? 0)"
             + "|ev\(events.count)"
-        let sig = dataSig + "|\(mode)"
+        // Theme is part of the render signature: toggling light/dark or the
+        // accent must force a full re-render (not the updateLast fast-path).
+        let sig = dataSig + "|\(mode)|\(dark ? "d" : "l")|\(accentHex)"
         guard sig != co.lastSig else { return }
         co.lastSig = sig
 
@@ -80,7 +86,7 @@ private struct LWChartView: NSViewRepresentable {
         // The first bar's close must be unchanged too — otherwise the whole
         // series was refetched (e.g. a total-return / vs-index transform) and
         // every bar differs, which the tail fast-path would corrupt.
-        let staticSig = "\(mode)|\(bars.first?.date ?? "")"
+        let staticSig = "\(mode)|\(bars.first?.date ?? "")|\(dark ? "d" : "l")|\(accentHex)"
         let sameSeries = co.ready && staticSig == co.staticSig && !bars.isEmpty
             && bars.first?.close == co.firstClose
             && (bars.count == co.lastCount
@@ -119,12 +125,55 @@ private struct LWChartView: NSViewRepresentable {
         let yld: Double?
     }
 
+    private struct LWTheme: Encodable {
+        let dark: Bool
+        let accent: String       // series line/area + measure legend
+        let text: String         // base legend / axis labels
+        let textStrong: String   // bold OHLC legend values
+        let textDim: String      // date / muted legend
+        let grid: String
+        let cross: String
+        let crossLabelBg: String
+        let border: String       // price/time scale borders
+        let areaTop: String
+        let areaBottom: String
+    }
+
     private struct LWConfig: Encodable {
         let bars: [LWBar]
         let mode: String
         let intraday: Bool
         let keepView: Bool
         let events: [ChartEvent]
+        let theme: LWTheme
+    }
+
+    private var themePayload: LWTheme {
+        let a = accentHex
+        if dark {
+            return LWTheme(
+                dark: true, accent: a,
+                text: "#9aa0aa", textStrong: "#e8eaed", textDim: "#6f7680",
+                grid: "rgba(255,255,255,0.05)", cross: "rgba(255,255,255,0.30)",
+                crossLabelBg: "#3b4754", border: "rgba(255,255,255,0.12)",
+                areaTop: hexA(a, 0.25), areaBottom: hexA(a, 0.02))
+        }
+        return LWTheme(
+            dark: false, accent: a,
+            text: "#5b616e", textStrong: "#1c1c1e", textDim: "#9aa0aa",
+            grid: "rgba(0,0,0,0.06)", cross: "rgba(0,0,0,0.35)",
+            crossLabelBg: "#4a5560", border: "rgba(0,0,0,0.14)",
+            areaTop: hexA(a, 0.22), areaBottom: hexA(a, 0.02))
+    }
+
+    /// "#rrggbb" + alpha → an rgba(...) string the JS palette can consume.
+    private func hexA(_ hex: String, _ alpha: Double) -> String {
+        let h = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        guard h.count == 6, let v = Int(h, radix: 16) else {
+            return "rgba(41,98,255,\(alpha))"
+        }
+        let r = (v >> 16) & 0xff, g = (v >> 8) & 0xff, b = v & 0xff
+        return "rgba(\(r),\(g),\(b),\(alpha))"
     }
 
     private func lwBar(_ b: MDBar) -> LWBar {
@@ -135,7 +184,7 @@ private struct LWChartView: NSViewRepresentable {
     private func configJSON(keepView: Bool = false) -> String {
         let payload = LWConfig(bars: bars.map(lwBar), mode: mode,
                                intraday: bars.last?.ts != nil,
-                               keepView: keepView, events: events)
+                               keepView: keepView, events: events, theme: themePayload)
         guard let data = try? JSONEncoder().encode(payload),
               let s = String(data: data, encoding: .utf8) else { return "{}" }
         return s
@@ -159,7 +208,11 @@ private struct LWChartView: NSViewRepresentable {
     let chart = null, priceSeries = null, volSeries = null;
     let lastBar = null, lastMode = 'Candles';
 
-    const UP = '#26a69a', DOWN = '#ef5350', ACCENT = '#2962ff';
+    // Palette is theme-driven (light/dark + brand accent) — set by applyTheme
+    // from the config the app sends; these are only first-paint fallbacks.
+    const UP = '#26a69a', DOWN = '#ef5350';
+    let ACCENT = '#2962ff';
+    let THEME = null;
 
     function el(id) { return document.getElementById(id); }
 
@@ -169,21 +222,36 @@ private struct LWChartView: NSViewRepresentable {
             layout: { background: { type: 'solid', color: 'transparent' },
                       textColor: '#9aa0aa', fontSize: 11, attributionLogo: false,
                       fontFamily: '-apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif' },
-            grid: { vertLines: { color: 'rgba(255,255,255,0.05)' },
-                    horzLines: { color: 'rgba(255,255,255,0.05)' } },
-            crosshair: {
-                mode: LightweightCharts.CrosshairMode.Normal,
-                vertLine: { color: 'rgba(255,255,255,0.3)', width: 1, style: 3,
-                            labelBackgroundColor: '#3b4754' },
-                horzLine: { color: 'rgba(255,255,255,0.3)', width: 1, style: 3,
-                            labelBackgroundColor: '#3b4754' },
-            },
-            rightPriceScale: { borderColor: 'rgba(255,255,255,0.12)',
-                               scaleMargins: { top: 0.08, bottom: 0.24 } },
-            timeScale: { borderColor: 'rgba(255,255,255,0.12)', rightOffset: 2 },
+            crosshair: { mode: LightweightCharts.CrosshairMode.Normal,
+                         vertLine: { width: 1, style: 3 }, horzLine: { width: 1, style: 3 } },
+            rightPriceScale: { scaleMargins: { top: 0.08, bottom: 0.24 } },
+            timeScale: { rightOffset: 2 },
             localization: { locale: 'ru-RU' },
         });
         chart.subscribeCrosshairMove(onCrosshair);
+    }
+
+    // Apply the light/dark palette to chart chrome + legend CSS. Called on
+    // every render so a theme toggle re-colors the whole chart.
+    function applyTheme(t) {
+        if (!t) return;
+        THEME = t;
+        ACCENT = t.accent;
+        if (chart) chart.applyOptions({
+            layout: { textColor: t.text },
+            grid: { vertLines: { color: t.grid }, horzLines: { color: t.grid } },
+            crosshair: {
+                vertLine: { color: t.cross, labelBackgroundColor: t.crossLabelBg },
+                horzLine: { color: t.cross, labelBackgroundColor: t.crossLabelBg },
+            },
+            rightPriceScale: { borderColor: t.border },
+            timeScale: { borderColor: t.border },
+        });
+        let st = el('legendTheme');
+        if (!st) { st = document.createElement('style'); st.id = 'legendTheme'; document.head.appendChild(st); }
+        st.textContent = '#legend{color:' + t.text + '}'
+            + '#legend b{color:' + t.textStrong + '}'
+            + '#legend .d{color:' + t.textDim + '}';
     }
 
     function precisionFor(v) {
@@ -290,6 +358,7 @@ private struct LWChartView: NSViewRepresentable {
     window.render = function (cfg) {
         const firstRender = !chart;
         if (!chart) makeChart();
+        applyTheme(cfg.theme);
         // keepView: same data, only mode/sma/log toggled — preserve the viewport
         const prevRange = (!firstRender && cfg.keepView)
             ? chart.timeScale().getVisibleLogicalRange() : null;
@@ -319,7 +388,8 @@ private struct LWChartView: NSViewRepresentable {
         if (lineMode) {
             priceSeries = chart.addAreaSeries({
                 lineColor: ACCENT, lineWidth: 2,
-                topColor: 'rgba(41,98,255,0.25)', bottomColor: 'rgba(41,98,255,0.02)',
+                topColor: (THEME ? THEME.areaTop : 'rgba(41,98,255,0.25)'),
+                bottomColor: (THEME ? THEME.areaBottom : 'rgba(41,98,255,0.02)'),
                 priceFormat: { type: 'price', ...pf },
                 crosshairMarkerRadius: 3,
             });
